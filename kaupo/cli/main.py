@@ -15,6 +15,8 @@ from kaupo.config import get_settings
 from kaupo.domain import Pair, Timeframe
 
 app = typer.Typer(name="kaupo", help="Kaupo — autonomous algorithmic trading", no_args_is_help=True)
+run_app = typer.Typer(help="Start long-running trading loops", no_args_is_help=True)
+app.add_typer(run_app, name="run")
 console = Console()
 err_console = Console(stderr=True)
 
@@ -162,3 +164,57 @@ def lint_strategies(strategies_dir: StrategiesDirOpt = None) -> None:
     for v in violations:
         err_console.print(f"[red]{v}[/red]")
     raise typer.Exit(1)
+
+
+@run_app.command(name="shadow")
+def run_shadow_cmd(
+    strategy: StrategyOpt,
+    pair: PairOpt,
+    timeframe: TimeframeOpt = "1h",
+    param: ParamOpt = [],
+    cash: Annotated[float, typer.Option(help="virtual starting cash")] = 10_000.0,
+    warmup: Annotated[int, typer.Option(help="history candles preloaded from DB")] = 100,
+    strategies_dir: StrategiesDirOpt = None,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Start shadow trading: live market data, virtual money. Ctrl-C to stop."""
+    _setup_logging(verbose)
+    from kaupo.core.runner import ShadowRequest, run_shadow
+    from kaupo.data.kraken import KrakenClient
+    from kaupo.db.session import get_sessionmaker
+    from kaupo.sdk.loader import load_strategies
+
+    directory = strategies_dir or get_settings().strategies_dir
+    strategies = load_strategies(directory)
+    if strategy not in strategies:
+        err_console.print(
+            f"[red]Unknown strategy {strategy!r}[/red]. Available: {', '.join(sorted(strategies))}"
+        )
+        raise typer.Exit(1)
+
+    request = ShadowRequest(
+        strategy=strategies[strategy],
+        params=_parse_params(param),
+        pair=Pair.parse(pair),
+        timeframe=Timeframe.parse(timeframe),
+        starting_cash=cash,
+        warmup=warmup,
+        poll_interval_seconds=get_settings().poll_interval_seconds,
+    )
+
+    async def _run() -> Any:
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        import signal
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
+        async with KrakenClient() as client:
+            return await run_shadow(request, get_sessionmaker(), client, stop=stop)
+
+    result = asyncio.run(_run())
+    console.print(
+        f"[bold]Shadow run ended[/bold] — status {result.status.value}, "
+        f"fills {result.num_fills}, final equity {float(result.final_equity):.2f}"
+        + (f", reason: {result.halt_reason}" if result.halt_reason else "")
+    )

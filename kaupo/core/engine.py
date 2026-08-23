@@ -124,10 +124,15 @@ class Engine:
         self._fills = 0
         self._halt_reason = ""
 
-    async def run(self, candles: AsyncIterable[Candle], stop: asyncio.Event | None = None) -> RunResult:
+    async def run(
+        self, candles: AsyncIterable[Candle], stop: asyncio.Event | None = None, warmup: int = 0
+    ) -> RunResult:
+        """Run the loop. The first ``warmup`` candles only populate history —
+        no orders, no snapshots — so a live run starts with full context."""
         await self.recorder.start(self.run_info)
         status = RunStatus.COMPLETED
         last_candle: Candle | None = None
+        seen = 0
         try:
             async for candle in candles:
                 if stop is not None and stop.is_set():
@@ -135,6 +140,11 @@ class Engine:
                     self._halt_reason = "stopped externally"
                     break
                 last_candle = candle
+                if seen < warmup:
+                    seen += 1
+                    self.clock.set(candle)
+                    self.history.append(candle)
+                    continue
                 await self._process_candle(candle)
                 if self.risk.halted:
                     status = RunStatus.HALTED
