@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from kaupo.api.routes import backtests, data, runs, status
+from kaupo.api.routes import backtests, data, runs, status, strategies
 from kaupo.api.ws import live_ws
 from kaupo.config import get_settings
 from kaupo.db.session import dispose_engine
@@ -38,5 +38,6 @@ app.include_router(status.router)
 app.include_router(runs.router)
 app.include_router(backtests.router)
 app.include_router(data.router)
+app.include_router(strategies.router)
 
 app.websocket("/ws/live")(live_ws)

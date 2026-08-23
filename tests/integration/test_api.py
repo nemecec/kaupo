@@ -38,8 +38,16 @@ async def client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
 async def _seed_run(session: AsyncSession) -> RunId:
     """A real backtest run with orders, fills, and equity snapshots."""
     candles = [
-        Candle(pair=PAIR, timeframe=Timeframe.H1, ts=BASE + timedelta(hours=i),
-               open=100 + i, high=101 + i, low=99 + i, close=100 + i, volume=1.0)
+        Candle(
+            pair=PAIR,
+            timeframe=Timeframe.H1,
+            ts=BASE + timedelta(hours=i),
+            open=100 + i,
+            high=101 + i,
+            low=99 + i,
+            close=100 + i,
+            volume=1.0,
+        )
         for i in range(12)
     ]
     await upsert_candles(session, candles)
@@ -110,8 +118,16 @@ async def test_runs_endpoints(client: AsyncClient, session: AsyncSession) -> Non
 
 async def test_backtest_job(client: AsyncClient, session: AsyncSession) -> None:
     candles = [
-        Candle(pair=PAIR, timeframe=Timeframe.H1, ts=BASE + timedelta(hours=i),
-               open=100 + i, high=101 + i, low=99 + i, close=100 + i, volume=1.0)
+        Candle(
+            pair=PAIR,
+            timeframe=Timeframe.H1,
+            ts=BASE + timedelta(hours=i),
+            open=100 + i,
+            high=101 + i,
+            low=99 + i,
+            close=100 + i,
+            volume=1.0,
+        )
         for i in range(120)
     ]
     await upsert_candles(session, candles)
@@ -137,16 +153,22 @@ async def test_backtest_job(client: AsyncClient, session: AsyncSession) -> None:
     assert r.json()["status"] == "completed"
     assert r.json()["run"]["metrics"]["num_fills"] >= 0
 
-    r = await client.post(
-        "/api/v1/backtests", json={"strategy": "nope", "pair": "BTC/EUR"}
-    )
+    r = await client.post("/api/v1/backtests", json={"strategy": "nope", "pair": "BTC/EUR"})
     assert r.status_code == 404
 
 
 async def test_candles_endpoint(client: AsyncClient, session: AsyncSession) -> None:
     candles = [
-        Candle(pair=PAIR, timeframe=Timeframe.H1, ts=BASE + timedelta(hours=i),
-               open=100 + i, high=101 + i, low=99 + i, close=100 + i, volume=1.0)
+        Candle(
+            pair=PAIR,
+            timeframe=Timeframe.H1,
+            ts=BASE + timedelta(hours=i),
+            open=100 + i,
+            high=101 + i,
+            low=99 + i,
+            close=100 + i,
+            volume=1.0,
+        )
         for i in range(5)
     ]
     await upsert_candles(session, candles)
@@ -175,9 +197,7 @@ async def test_control_writes_command_events(client: AsyncClient, session: Async
     assert r.status_code == 200
     assert r.json()["command"] == "kill"
 
-    rows = (
-        (await session.execute(select(EventRow).where(EventRow.source == "control"))).scalars().all()
-    )
+    rows = (await session.execute(select(EventRow).where(EventRow.source == "control"))).scalars().all()
     assert len(rows) == 1
     assert rows[0].data == {"command": "kill", "run_id": "abc"}
 
@@ -211,33 +231,61 @@ async def test_daily_report(client: AsyncClient, session: AsyncSession) -> None:
     for oid, side in (("o1", "buy"), ("o2", "sell")):
         session.add(
             OrderRow(
-                id=oid, run_id=run_id, ts=today, pair="BTC/EUR", side=side, type="market",
-                size=1.0, status="filled",
+                id=oid,
+                run_id=run_id,
+                ts=today,
+                pair="BTC/EUR",
+                side=side,
+                type="market",
+                size=1.0,
+                status="filled",
             )
         )
     await session.flush()
     session.add(
         EquitySnapshotRow(
-            id=new_id(), run_id=run_id, ts=today - timedelta(hours=1), equity=10_000, cash=10_000,
+            id=new_id(),
+            run_id=run_id,
+            ts=today - timedelta(hours=1),
+            equity=10_000,
+            cash=10_000,
             unrealized_pnl=0,
         )
     )
     session.add(
         EquitySnapshotRow(
-            id=new_id(), run_id=run_id, ts=today + timedelta(hours=3), equity=10_150, cash=10_150,
+            id=new_id(),
+            run_id=run_id,
+            ts=today + timedelta(hours=3),
+            equity=10_150,
+            cash=10_150,
             unrealized_pnl=0,
         )
     )
     session.add(
         FillRow(
-            id=new_id(), order_id="o1", run_id=run_id, ts=today + timedelta(hours=1), pair="BTC/EUR",
-            side="buy", price=100, size=1.0, fee=0.26,
+            id=new_id(),
+            order_id="o1",
+            run_id=run_id,
+            ts=today + timedelta(hours=1),
+            pair="BTC/EUR",
+            side="buy",
+            price=100,
+            size=1.0,
+            fee=0.26,
         )
     )
     session.add(
         FillRow(
-            id=new_id(), order_id="o2", run_id=run_id, ts=today + timedelta(hours=2), pair="BTC/EUR",
-            side="sell", price=101.5, size=1.0, fee=0.26,
+            id=new_id(),
+            order_id="o2",
+            run_id=run_id,
+            ts=today + timedelta(hours=2),
+            pair="BTC/EUR",
+            side="sell",
+            price=101.5,
+            size=1.0,
+            fee=0.26,
         )
     )
     await session.commit()
@@ -268,3 +316,12 @@ async def test_daily_report(client: AsyncClient, session: AsyncSession) -> None:
     r = await client.get("/api/v1/reports/daily", params={"day": day_str})
     rows = (await session.execute(select(ReportRow))).scalars().all()
     assert len(rows) == 1
+
+
+async def test_strategies_endpoint(client: AsyncClient) -> None:
+    r = await client.get("/api/v1/strategies")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["id"] == "regime-switch"
+    assert body[0]["params_schema"]["type"] == "object"
