@@ -18,7 +18,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import ClassVar, Protocol
+from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel
 
@@ -90,6 +90,6 @@ class LoadedStrategy:
     def version(self) -> str:
         return self.source_hash[:12]
 
-    def create(self, params: dict) -> StrategyBase:
+    def create(self, params: dict[str, Any]) -> StrategyBase:
         validated = self.cls.params_schema.model_validate(params or {})
         return self.cls(validated)
