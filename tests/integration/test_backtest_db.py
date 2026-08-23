@@ -103,3 +103,39 @@ async def test_backtest_persists_full_run(session: AsyncSession, tmp_path: Path)
         .all()
     )
     assert len(equity) == 12
+
+
+async def test_two_runs_same_strategy_succeed(session: AsyncSession, tmp_path: Path) -> None:
+    """Regression: StrategyRow insert must be idempotent across runs."""
+    candles = [
+        Candle(
+            pair=PAIR,
+            timeframe=Timeframe.H1,
+            ts=BASE + timedelta(hours=i),
+            open=100 + i,
+            high=101 + i,
+            low=99 + i,
+            close=100 + i,
+            volume=1.0,
+        )
+        for i in range(12)
+    ]
+    await upsert_candles(session, candles)
+    await session.commit()
+
+    (tmp_path / "s.py").write_text(STRATEGY)
+    strategy = load_strategies(tmp_path)["buy-and-sell"]
+
+    for _ in range(2):
+        _run_id, result, _ = await run_backtest(
+            BacktestRequest(
+                strategy=strategy,
+                params={},
+                pair=PAIR,
+                timeframe=Timeframe.H1,
+                start=BASE,
+                end=BASE + timedelta(hours=12),
+            ),
+            get_sessionmaker(),
+        )
+        assert result.num_fills == 2

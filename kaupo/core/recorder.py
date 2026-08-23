@@ -56,14 +56,17 @@ class DbRecorder:
 
     async def start(self, info: RunInfo) -> None:
         async with self._sessionmaker() as session:
-            session.add(
-                StrategyRow(
+            stmt = (
+                pg_insert(StrategyRow)
+                .values(
                     id=info.strategy_id,
                     version=info.strategy_version,
                     source_hash=info.strategy_source_hash,
                     params=info.config.get("params", {}),
                 )
+                .on_conflict_do_nothing()
             )
+            await session.execute(stmt)
             session.add(
                 RunRow(
                     id=self.run_id,

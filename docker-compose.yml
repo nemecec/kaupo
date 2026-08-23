@@ -15,6 +15,16 @@ services:
       timeout: 3s
       retries: 10
 
+  migrate:
+    build: .
+    command: alembic upgrade head
+    environment:
+      KAUPO_DATABASE_URL: postgresql+asyncpg://kaupo:kaupo@db:5432/kaupo
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
   api:
     build: .
     command: uvicorn kaupo.api.app:app --host 0.0.0.0 --port 8000
@@ -26,14 +36,19 @@ services:
     volumes:
       - ${KAUPO_STRATEGIES_DIR:-./examples/strategies}:/strategies:ro
     ports:
-      - "8000:8000"
+      - "8100:8000"
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   shadow:
     build: .
-    command: kaupo run shadow --pair BTC/EUR --timeframe 1h --strategy regime-switch --yes
+    command: kaupo run shadow --strategy regime-switch --pair BTC/EUR --timeframe 1h
     profiles: ["trading"]
     environment:
       KAUPO_DATABASE_URL: postgresql+asyncpg://kaupo:kaupo@db:5432/kaupo
@@ -41,8 +56,8 @@ services:
     volumes:
       - ${KAUPO_STRATEGIES_DIR:-./examples/strategies}:/strategies:ro
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   ui:
     build:
@@ -50,7 +65,8 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   pgdata:
