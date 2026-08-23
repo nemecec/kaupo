@@ -49,7 +49,16 @@ cd ui && npm install && npm run dev
 ```
 
 Or the whole stack in Docker: `docker compose up` (add `--profile trading` to
-also start a shadow-trading container).
+also start a shadow-trading container). Then open the dashboard at
+<http://localhost:3000> (API at <http://localhost:8100>).
+
+To trade your private strategies instead of the bundled example:
+
+```bash
+KAUPO_STRATEGIES_DIR=../kaupo-strategies/strategies docker compose --profile trading up -d
+```
+
+Stop everything with `docker compose --profile trading down`.
 
 ## Tests
 
