@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Tooling
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Node / UI
+node_modules/
+ui/dist/
+
+# Local data & env
+.env
+*.local
+data/
+*.sqlite3
+.candle-cache/
+
+# OS
+.DS_Store

@@ -1,0 +1,56 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kaupo
+      POSTGRES_PASSWORD: kaupo
+      POSTGRES_DB: kaupo
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kaupo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    command: uvicorn kaupo.api.app:app --host 0.0.0.0 --port 8000
+    environment:
+      KAUPO_DATABASE_URL: postgresql+asyncpg://kaupo:kaupo@db:5432/kaupo
+      KAUPO_ADMIN_TOKEN: ${KAUPO_ADMIN_TOKEN:-}
+      KAUPO_READONLY_TOKEN: ${KAUPO_READONLY_TOKEN:-}
+      KAUPO_STRATEGIES_DIR: /strategies
+    volumes:
+      - ${KAUPO_STRATEGIES_DIR:-./examples/strategies}:/strategies:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  shadow:
+    build: .
+    command: kaupo run shadow --pair BTC/EUR --timeframe 1h --strategy regime-switch --yes
+    profiles: ["trading"]
+    environment:
+      KAUPO_DATABASE_URL: postgresql+asyncpg://kaupo:kaupo@db:5432/kaupo
+      KAUPO_STRATEGIES_DIR: /strategies
+    volumes:
+      - ${KAUPO_STRATEGIES_DIR:-./examples/strategies}:/strategies:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  ui:
+    build:
+      context: ./ui
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
