@@ -70,7 +70,7 @@ uv run ruff check . && uv run mypy         # lint + typecheck
 
 ## Design
 
-See `docs/design.md` (or `kaupo-design.html`) for the full architecture and roadmap.
+See `docs/design.html` for the full architecture and roadmap.
 
 ## License
 
