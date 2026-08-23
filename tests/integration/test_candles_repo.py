@@ -26,9 +26,7 @@ def make_candle(ts: datetime, price: float = 100.0) -> Candle:
 
 
 async def test_migration_created_tables(session: AsyncSession) -> None:
-    result = await session.execute(
-        text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
-    )
+    result = await session.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))
     tables = {r[0] for r in result}
     assert {
         "candles",
@@ -48,9 +46,7 @@ async def test_upsert_and_query(session: AsyncSession) -> None:
     candles = [make_candle(base + timedelta(hours=i), 100 + i) for i in range(10)]
     assert await upsert_candles(session, candles) == 10
 
-    loaded = await get_candles(
-        session, PAIR, Timeframe.H1, base, base + timedelta(hours=10)
-    )
+    loaded = await get_candles(session, PAIR, Timeframe.H1, base, base + timedelta(hours=10))
     assert len(loaded) == 10
     assert loaded[0].ts == base
     assert loaded[5].close == pytest.approx((105) * 1.005)
@@ -81,7 +77,5 @@ async def test_query_respects_bounds_and_pair(session: AsyncSession) -> None:
     loaded = await get_candles(session, PAIR, Timeframe.H1, base, base + timedelta(hours=2))
     assert len(loaded) == 2
 
-    other = await get_candles(
-        session, Pair.parse("ETH/EUR"), Timeframe.H1, base, base + timedelta(hours=5)
-    )
+    other = await get_candles(session, Pair.parse("ETH/EUR"), Timeframe.H1, base, base + timedelta(hours=5))
     assert other == []
