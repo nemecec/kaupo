@@ -52,7 +52,8 @@ async def session(migrated_url: str) -> AsyncIterator[AsyncSession]:
     get_settings.cache_clear()
     await dispose_engine()
     async with session_scope() as s:
-        # isolate tests: wipe mutable tables
+        # isolate tests: wipe mutable tables (committed so the TRUNCATE locks
+        # don't block the code under test writing from other connections)
         for table in (
             "equity_snapshots",
             "ledger_entries",
@@ -65,6 +66,7 @@ async def session(migrated_url: str) -> AsyncIterator[AsyncSession]:
             "reports",
         ):
             await s.execute(text(f"TRUNCATE {table} CASCADE"))
+        await s.commit()
         yield s
     await dispose_engine()
     get_settings.cache_clear()

@@ -148,7 +148,7 @@ class Order:
     stop_loss: float | None = None
     take_profit: float | None = None
     reason: str = ""
-    id: OrderId = OrderId(new_id())
+    id: OrderId = field(default_factory=lambda: OrderId(new_id()))
     status: OrderStatus = OrderStatus.OPEN
     created_ts: datetime = field(default_factory=utc_now)
     filled_price: float | None = None

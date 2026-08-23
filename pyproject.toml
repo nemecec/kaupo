@@ -61,6 +61,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
 "examples/**" = ["ANN001"]
+"kaupo/cli/**" = ["B006"]  # typer list-option idiom, never mutated
 "kaupo/db/migrations/**" = ["ANN", "E", "F"]
 
 [tool.mypy]
