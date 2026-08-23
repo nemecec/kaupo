@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from collections.abc import AsyncIterable, Sequence
+from collections.abc import AsyncIterable, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -110,6 +110,7 @@ class Engine:
         recorder: RunRecorder,
         config: EngineConfig,
         run_info: RunInfo,
+        control_probe: Callable[[], Awaitable[str | None]] | None = None,
     ) -> None:
         self.strategy = strategy
         self.venue = venue
@@ -123,6 +124,8 @@ class Engine:
         self._ctx = _Context(self)
         self._fills = 0
         self._halt_reason = ""
+        self._control_probe = control_probe
+        self._killed = False
 
     async def run(
         self, candles: AsyncIterable[Candle], stop: asyncio.Event | None = None, warmup: int = 0
@@ -146,6 +149,11 @@ class Engine:
                     self.history.append(candle)
                     continue
                 await self._process_candle(candle)
+                if self._killed:
+                    status = RunStatus.HALTED
+                    self._halt_reason = "killed via control API"
+                    log.warning("Run killed via control API")
+                    break
                 if self.risk.halted:
                     status = RunStatus.HALTED
                     self._halt_reason = self.risk.halt_reason
@@ -190,6 +198,17 @@ class Engine:
         # 4. risk time-based checks
         if not self.risk.on_candle(self._risk_state(candle)):
             return
+
+        # external control: kill halts, pause skips strategy actions
+        if self._control_probe is not None:
+            command = await self._control_probe()
+            if command == "kill":
+                self._killed = True
+                return
+            if command == "pause":
+                log.info("Run paused; skipping strategy for %s", candle.ts)
+                self.history.append(candle)
+                return
 
         # 5-6. strategy + risk-filtered intents
         self.history.append(candle)

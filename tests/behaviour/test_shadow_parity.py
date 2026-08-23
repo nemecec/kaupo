@@ -23,8 +23,16 @@ BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
 def candle(i: int) -> Candle:
     p = 100 + i
-    return Candle(pair=PAIR, timeframe=Timeframe.H1, ts=BASE + timedelta(hours=i),
-                  open=p, high=p + 1, low=p - 1, close=p, volume=1.0)
+    return Candle(
+        pair=PAIR,
+        timeframe=Timeframe.H1,
+        ts=BASE + timedelta(hours=i),
+        open=p,
+        high=p + 1,
+        low=p - 1,
+        close=p,
+        volume=1.0,
+    )
 
 
 class BuyLowSellHigh(StrategyBase):
@@ -53,8 +61,9 @@ def build(recorder: InMemoryRecorder, mode: RunMode) -> Engine:
         ledger=Ledger("EUR", 10_000.0, BASE),
         recorder=recorder,
         config=EngineConfig(pair=PAIR, timeframe=Timeframe.H1, starting_cash=10_000),
-        run_info=RunInfo(mode=mode, strategy_id="parity-script", strategy_version="v1",
-                         strategy_source_hash="x", config={}),
+        run_info=RunInfo(
+            mode=mode, strategy_id="parity-script", strategy_version="v1", strategy_source_hash="x", config={}
+        ),
     )
 
 
@@ -78,9 +87,7 @@ async def test_backtest_shadow_parity() -> None:
     assert [(f.ts, f.side, f.price, f.size, f.fee) for f in bt_rec.fills] == [
         (f.ts, f.side, f.price, f.size, f.fee) for f in sh_rec.fills
     ]
-    assert [(ts, eq) for ts, eq, _, _ in bt_rec.equity] == [
-        (ts, eq) for ts, eq, _, _ in sh_rec.equity
-    ]
+    assert [(ts, eq) for ts, eq, _, _ in bt_rec.equity] == [(ts, eq) for ts, eq, _, _ in sh_rec.equity]
 
 
 async def test_warmup_prefills_history_without_trading() -> None:

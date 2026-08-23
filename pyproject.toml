@@ -62,6 +62,7 @@ ignore = [
 "tests/**" = ["ANN"]
 "examples/**" = ["ANN001"]
 "kaupo/cli/**" = ["B006"]  # typer list-option idiom, never mutated
+"kaupo/api/**" = ["B008"]  # FastAPI Depends/Query idiom
 "kaupo/db/migrations/**" = ["ANN", "E", "F"]
 
 [tool.mypy]

@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.core.engine import Engine, EngineConfig, RunResult
@@ -19,6 +20,7 @@ from kaupo.core.recorder import DbRecorder, RunInfo
 from kaupo.data.candles import get_candles, upsert_candles
 from kaupo.data.ingest import LiveCandlePoller, backfill
 from kaupo.data.kraken import KrakenClient
+from kaupo.db.models import EventRow
 from kaupo.db.session import session_scope
 from kaupo.domain import Candle, Pair, RunMode, Timeframe
 from kaupo.ledger.ledger import Ledger
@@ -62,6 +64,33 @@ async def _chain_persist(
         async with session_scope() as session:
             await upsert_candles(session, [candle])
         yield candle
+
+
+class DbControlProbe:
+    """Latest control command (kill/pause/resume) from the events table.
+
+    Commands may target this run specifically or all runs (run_id null).
+    "resume" clears a pause; state sticks until a newer command arrives.
+    """
+
+    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession], run_id: str) -> None:
+        self._sessionmaker = sessionmaker
+        self._run_id = run_id
+        self._command: str | None = None
+
+    async def __call__(self) -> str | None:
+        async with session_scope() as session:
+            rows = await session.execute(
+                select(EventRow).where(EventRow.source == "control").order_by(EventRow.ts.desc()).limit(20)
+            )
+            for row in rows.scalars():
+                data = row.data or {}
+                if data.get("run_id") in (None, self._run_id):
+                    command = data.get("command")
+                    if command in ("kill", "pause", "resume"):
+                        self._command = None if command == "resume" else command
+                        break
+        return self._command
 
 
 async def run_shadow(
@@ -125,6 +154,7 @@ async def run_shadow(
                 "warmup": request.warmup,
             },
         ),
+        control_probe=DbControlProbe(sessionmaker, recorder.run_id),
     )
 
     poller = LiveCandlePoller(
