@@ -21,7 +21,7 @@ ui/dist/
 # Local data & env
 .env
 *.local
-data/
+/data/
 *.sqlite3
 .candle-cache/
 
