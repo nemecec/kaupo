@@ -280,7 +280,7 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
 <p>Auth uses two bearer tokens. The admin token gives full access. The read-only token is for agents. There is no user management. The OpenAPI schema generates the TypeScript client for the UI.</p>
 
 <h2 id="ui"><span class="num">10.</span>UI (React + TypeScript)</h2>
-<p>The dashboard uses React 19, TypeScript, Vite, TanStack Query, TradingView lightweight-charts, and Tailwind. The charts library is open-source and purpose-built for candles and equity curves.</p>
+<p>The dashboard uses React 19, TypeScript, Vite, TanStack Query, TradingView lightweight-charts, and Tailwind. The charts library is open-source and purpose-built for candles and equity curves. Without a valid token, the UI shows a token prompt and nothing else.</p>
 <ul>
   <li><strong>Dashboard</strong> — equity curve, P&amp;L, open positions, engine status, kill switch</li>
   <li><strong>Runs</strong> — list and filter runs, open a run detail</li>

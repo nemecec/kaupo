@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom'
+import { AuthGate } from './components/AuthGate'
 import { Layout } from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import RunsPage from './pages/RunsPage'
@@ -34,7 +35,13 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <Routes>
-          <Route element={<Layout />}>
+          <Route
+            element={
+              <AuthGate>
+                <Layout />
+              </AuthGate>
+            }
+          >
             <Route index element={<Dashboard />} />
             <Route path="runs" element={<RunsPage />} />
             <Route path="runs/:id" element={<RunDetailPage />} />

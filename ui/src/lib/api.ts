@@ -62,6 +62,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T
 }
 
+/** Result of checking a candidate token against the API. */
+export type TokenCheck = 'ok' | 'invalid' | 'unreachable'
+
+/** Check a candidate token against the API without persisting it. */
+export async function validateToken(token: string): Promise<TokenCheck> {
+  let res: Response
+  try {
+    res = await fetch('/api/v1/status', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  } catch {
+    return 'unreachable'
+  }
+  return res.ok ? 'ok' : 'invalid'
+}
+
 type QueryValue = string | number | undefined | null
 
 function qs(params: Record<string, QueryValue>): string {
