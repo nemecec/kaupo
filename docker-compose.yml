@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: kaupo
       POSTGRES_DB: kaupo
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -14,6 +14,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   migrate:
     build: .
@@ -36,7 +37,7 @@ services:
     volumes:
       - ${KAUPO_STRATEGIES_DIR:-./examples/strategies}:/strategies:ro
     ports:
-      - "8100:8000"
+      - "127.0.0.1:8100:8000"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -45,6 +46,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   shadow:
     build: .
@@ -58,15 +60,17 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    restart: unless-stopped
 
   ui:
     build:
       context: ./ui
     ports:
-      - "3000:80"
+      - "127.0.0.1:3000:80"
     depends_on:
       api:
         condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   pgdata:

@@ -1,7 +1,7 @@
 # ---- Build stage ----
 FROM python:3.12-slim AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.3 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
@@ -16,12 +16,17 @@ RUN uv sync --frozen --no-dev
 # ---- Runtime stage ----
 FROM python:3.12-slim
 
+RUN useradd --create-home --uid 1000 kaupo
+
 WORKDIR /app
 
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/kaupo ./kaupo
 COPY --from=builder /app/examples ./examples
 COPY alembic.ini ./
+
+RUN chown -R kaupo:kaupo /app
+USER kaupo
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
