@@ -36,7 +36,8 @@ set_env() { # key value — replace the line or append it
 }
 set_env KAUPO_TAG "$TAG"
 if [[ -d "$STRATEGIES_DIR/.git" ]]; then
-  set_env KAUPO_STRATEGIES_HOST_DIR "$STRATEGIES_DIR"
+  # strategies live in the strategies/ subdirectory of the repository
+  set_env KAUPO_STRATEGIES_HOST_DIR "$STRATEGIES_DIR/strategies"
 fi
 
 compose() {
