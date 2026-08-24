@@ -28,6 +28,9 @@ jobs:
       - name: Mypy
         run: uv run mypy
 
+      - name: Determinism lint (example strategies)
+        run: uv run kaupo lint-strategies
+
       - name: Tests (unit + behaviour)
         run: uv run pytest tests/unit tests/behaviour --cov --cov-report=xml -m "not integration"
 

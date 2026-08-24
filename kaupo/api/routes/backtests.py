@@ -49,6 +49,17 @@ async def submit_backtest(
     _: Annotated[Principal, Depends(require_admin)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> BacktestAccepted:
+    from kaupo.sdk.lint import lint_directory
+
+    violations = lint_directory(settings.strategies_dir)
+    if violations:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "strategies have determinism violations",
+                "violations": [str(v) for v in violations],
+            },
+        )
     strategies = load_strategies(settings.strategies_dir)
     if body.strategy not in strategies:
         raise HTTPException(

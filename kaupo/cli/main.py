@@ -57,6 +57,17 @@ def _range(days: int, start: str | None, end: str | None) -> tuple[datetime, dat
     return start_dt, end_dt
 
 
+def _ensure_strategies_clean(directory: Path) -> None:
+    """Refuse to run strategies with determinism violations."""
+    from kaupo.sdk.lint import lint_directory
+
+    violations = lint_directory(directory)
+    if violations:
+        for v in violations:
+            err_console.print(f"[red]{v}[/red]")
+        raise typer.Exit(1)
+
+
 @app.command()
 def ingest(
     pair: PairOpt,
@@ -108,6 +119,7 @@ def backtest(
 
     settings = get_settings()
     directory = strategies_dir or settings.strategies_dir
+    _ensure_strategies_clean(directory)
     strategies = load_strategies(directory)
     if strategy not in strategies:
         err_console.print(
@@ -185,6 +197,7 @@ def run_shadow_cmd(
     from kaupo.sdk.loader import load_strategies
 
     directory = strategies_dir or get_settings().strategies_dir
+    _ensure_strategies_clean(directory)
     strategies = load_strategies(directory)
     if strategy not in strategies:
         err_console.print(

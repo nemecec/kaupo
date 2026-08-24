@@ -91,9 +91,7 @@ class ScriptedClient:
         return []
 
 
-async def test_backtest_shadow_parity_in_production_config(
-    session: AsyncSession, tmp_path: Path
-) -> None:
+async def test_backtest_shadow_parity_in_production_config(session: AsyncSession, tmp_path: Path) -> None:
     candles = make_candles()
     warmup_candles = candles[:N_WARMUP]
     trade_candles = candles[N_WARMUP:]
@@ -139,9 +137,7 @@ async def test_backtest_shadow_parity_in_production_config(
     # find the shadow run id (the only shadow run in the DB)
     from kaupo.db.models import RunRow
 
-    shadow_run = (
-        (await session.execute(select(RunRow).where(RunRow.mode == "shadow"))).scalars().one()
-    )
+    shadow_run = (await session.execute(select(RunRow).where(RunRow.mode == "shadow"))).scalars().one()
 
     def key(row) -> tuple:  # type: ignore[no-untyped-def]
         return (row.ts, row.side, round(row.price, 8), round(row.size, 8), round(row.fee, 8))

@@ -176,8 +176,13 @@ async def test_oversized_buy_is_resized_and_fills_without_crashing() -> None:
         ledger=Ledger("EUR", 1_000.0, BASE),
         recorder=recorder,
         config=EngineConfig(pair=PAIR, timeframe=Timeframe.H1),
-        run_info=RunInfo(mode=RunMode.BACKTEST, strategy_id="all-in",
-                         strategy_version="v1", strategy_source_hash="x", config={}),
+        run_info=RunInfo(
+            mode=RunMode.BACKTEST,
+            strategy_id="all-in",
+            strategy_version="v1",
+            strategy_source_hash="x",
+            config={},
+        ),
     )
     result = await engine.run(aiter([candle(i) for i in range(10)]))
     assert result.status is RunStatus.COMPLETED
