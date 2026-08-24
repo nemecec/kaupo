@@ -145,3 +145,74 @@ async def test_cross_flush_order_upsert(session: AsyncSession, tmp_path: Path) -
     assert len(orders) == 2  # upsert merged, not duplicated
     assert all(o.status == "filled" for o in orders)
     assert all(o.filled_price is not None for o in orders)
+
+
+async def test_flush_failure_retains_buffers(session: AsyncSession) -> None:
+    """A failed commit must not lose buffered rows; the next flush writes them."""
+    from kaupo.core.recorder import DbRecorder, RunInfo
+    from kaupo.db.models import RunRow
+    from kaupo.domain import RunMode, new_id, utc_now
+
+    sessionmaker = get_sessionmaker()
+
+    # wrap sessions so the first flush's commit fails once
+    class FailingOnceSession:
+        def __init__(self, inner):  # type: ignore[no-untyped-def]
+            self._inner = inner
+            self.failed = False
+
+        async def __aenter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        async def __aexit__(self, *exc):  # type: ignore[no-untyped-def]
+            await self._inner.close()
+
+        async def execute(self, *a, **kw):  # type: ignore[no-untyped-def]
+            return await self._inner.execute(*a, **kw)
+
+        def add(self, obj):  # type: ignore[no-untyped-def]
+            self._inner.add(obj)
+
+        def add_all(self, objs):  # type: ignore[no-untyped-def]
+            self._inner.add_all(objs)
+
+        async def commit(self) -> None:
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError("simulated commit failure")
+            await self._inner.commit()
+
+        async def rollback(self) -> None:
+            await self._inner.rollback()
+
+    state = {"fail": True}
+
+    class WrappedMaker:
+        def __call__(self):  # type: ignore[no-untyped-def]
+            inner = sessionmaker()
+            if state["fail"]:
+                state["fail"] = False
+                return FailingOnceSession(inner)
+            return inner
+
+    recorder = DbRecorder(sessionmaker)
+    await recorder.start(
+        RunInfo(
+            mode=RunMode.BACKTEST, strategy_id="s", strategy_version="v", strategy_source_hash="x", config={}
+        )
+    )
+    recorder._sessionmaker = WrappedMaker()  # type: ignore[assignment]  # fail next flush only
+
+    from kaupo.domain import Order, OrderType, Side
+
+    order = Order(pair=PAIR, side=Side.BUY, order_type=OrderType.MARKET, size=1.0)
+    await recorder.record_order(order)
+    with pytest.raises(RuntimeError):
+        await recorder.flush()
+    assert len(recorder._orders) == 1  # retained, not cleared
+
+    await recorder.flush()  # second attempt succeeds
+    assert recorder._orders == []
+
+    row = (await session.execute(select(OrderRow).where(OrderRow.id == order.id))).scalar_one()
+    assert row.run_id == recorder.run_id

@@ -87,6 +87,8 @@ addopts = "-q"
 [tool.coverage.run]
 source = ["kaupo"]
 branch = true
+# required for correct measurement of async (greenlet) SQLAlchemy code
+concurrency = ["thread", "greenlet"]
 
 [tool.coverage.report]
 fail_under = 85

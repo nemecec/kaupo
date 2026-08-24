@@ -52,21 +52,13 @@ async def session(migrated_url: str) -> AsyncIterator[AsyncSession]:
     os.environ["KAUPO_DATABASE_URL"] = migrated_url
     get_settings.cache_clear()
     await dispose_engine()
+    from kaupo.db.models import Base
+
+    tables = [t.name for t in Base.metadata.sorted_tables if t.name != "alembic_version"]
     async with session_scope() as s:
-        # isolate tests: wipe mutable tables (committed so the TRUNCATE locks
+        # isolate tests: wipe all tables (committed so the TRUNCATE locks
         # don't block the code under test writing from other connections)
-        for table in (
-            "equity_snapshots",
-            "ledger_entries",
-            "fills",
-            "orders",
-            "runs",
-            "strategies",
-            "candles",
-            "events",
-            "reports",
-        ):
-            await s.execute(text(f"TRUNCATE {table} CASCADE"))
+        await s.execute(text(f"TRUNCATE {', '.join(tables)} CASCADE"))
         await s.commit()
         yield s
     await dispose_engine()

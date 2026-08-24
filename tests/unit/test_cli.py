@@ -34,14 +34,17 @@ class TestHelpers:
         assert end.tzinfo is UTC
 
 
+EXAMPLES_DIR = Path(__file__).resolve().parents[2] / "examples" / "strategies"
+
+
 def test_strategies_command() -> None:
-    result = runner.invoke(cli.app, ["strategies", "--strategies-dir", "examples/strategies"])
+    result = runner.invoke(cli.app, ["strategies", "--strategies-dir", str(EXAMPLES_DIR)])
     assert result.exit_code == 0
     assert "regime-switch" in result.output
 
 
 def test_lint_strategies_clean() -> None:
-    result = runner.invoke(cli.app, ["lint-strategies"])
+    result = runner.invoke(cli.app, ["lint-strategies", "--strategies-dir", str(EXAMPLES_DIR)])
     assert result.exit_code == 0
     assert "No violations" in result.output
 
@@ -103,6 +106,8 @@ def test_backtest_command(monkeypatch: pytest.MonkeyPatch) -> None:
             "30",
             "--param",
             "adx_threshold=30",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -111,7 +116,10 @@ def test_backtest_command(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_backtest_unknown_strategy() -> None:
-    result = runner.invoke(cli.app, ["backtest", "--strategy", "nope", "--pair", "BTC/EUR"])
+    result = runner.invoke(
+        cli.app,
+        ["backtest", "--strategy", "nope", "--pair", "BTC/EUR", "--strategies-dir", str(EXAMPLES_DIR)],
+    )
     assert result.exit_code == 1
     assert "Unknown strategy" in result.output
 
@@ -140,6 +148,33 @@ def test_run_shadow_command(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kraken_mod, "KrakenClient", FakeClient)
     monkeypatch.setattr(runner_mod, "run_shadow", fake_run_shadow)
 
-    result = runner.invoke(cli.app, ["run", "shadow", "--strategy", "regime-switch", "--pair", "BTC/EUR"])
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "shadow",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
     assert result.exit_code == 0, result.output
     assert "Shadow run ended" in result.output
+
+
+def test_backtest_lint_enforced_cli(tmp_path: Path) -> None:
+    (tmp_path / "bad.py").write_text("from time import time\nx = time()\n")
+    result = runner.invoke(
+        cli.app,
+        ["backtest", "--strategy", "bad", "--pair", "BTC/EUR", "--strategies-dir", str(tmp_path)],
+    )
+    assert result.exit_code == 1
+    assert "wall-clock" in result.output
+
+
+def test_strategies_missing_dir() -> None:
+    result = runner.invoke(cli.app, ["lint-strategies", "--strategies-dir", "/nope/nada"])
+    assert result.exit_code != 0

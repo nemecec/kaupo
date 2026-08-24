@@ -58,27 +58,26 @@ def candle(i: int, price: float) -> Candle:
 def test_rejected_exit_does_not_desync_state() -> None:
     strategy = load_strategies(STRATEGIES_DIR)["regime-switch"].create({})
 
-    # put the strategy in a ranging entry state
+    # ranging entry state with an open position
     strategy._entry_regime = "ranging"
     strategy._highest_since_entry = 100.0
 
-    # choppy market where close >= mid band triggers "mr exit: mean reached"
-    prices = [100 + (i % 7) - 3 for i in range(80)]
+    # choppy market whose final candle closes above the moving average:
+    # the "mr exit: mean reached" exit MUST fire on this data
+    prices = [100 + 2 * ((i % 8) / 8 - 0.5) for i in range(79)] + [101.5]
     candles = [candle(i, p) for i, p in enumerate(prices)]
 
     first = strategy.on_candle(FakeCtx(candles, position_size=1.0))
-    if first:  # an exit was proposed
-        assert first[0].side is Side.SELL
-        # simulate risk rejection: position STILL open next candle
-        second = strategy.on_candle(FakeCtx(candles, position_size=1.0))
-        # the strategy must still know it holds a ranging entry and keep
-        # managing the exit — not fall into the momentum/unknown branch
-        assert strategy._entry_regime == "ranging"
-        if second:
-            assert second[0].reason.startswith("mr exit")
-    else:
-        # no exit triggered on this data; state must still be intact
-        assert strategy._entry_regime == "ranging"
+    assert first, "expected an exit intent on this data"
+    assert first[0].side is Side.SELL
+    assert first[0].reason.startswith("mr exit")
+
+    # simulate risk rejection: position STILL open next candle — the strategy
+    # must keep managing the ranging exit, not fall into the momentum branch
+    second = strategy.on_candle(FakeCtx(candles, position_size=1.0))
+    assert strategy._entry_regime == "ranging"
+    assert second, "expected the exit to be re-proposed"
+    assert second[0].reason.startswith("mr exit")
 
 
 def test_state_resets_once_position_is_flat() -> None:

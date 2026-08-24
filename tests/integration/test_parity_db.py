@@ -33,13 +33,14 @@ from kaupo.domain import OrderIntent, Side
 
 class ZScoreMr(StrategyBase):
     id = "zscore-mr"
+    # memory == warm-up: any warm-up divergence changes fills and fails parity
     def on_candle(self, ctx):
-        hist = ctx.history(30)
-        if len(hist) < 30:
+        hist = ctx.history(100)
+        if len(hist) < 100:
             return []
         closes = ind.closes(hist)
-        mid = ind.sma(closes, 20)
-        std = ind.rolling_std(closes, 20)
+        mid = ind.sma(closes, 100)
+        std = ind.rolling_std(closes, 100)
         z = (closes[-1] - mid[-1]) / std[-1]
         pos = ctx.position()
         if pos.size == 0 and z <= -1.0:

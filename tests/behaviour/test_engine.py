@@ -277,3 +277,78 @@ class TestControlAndFailureWiring:
         assert seen == []  # strategy never called while paused
         assert len(engine.history) == 5  # history still advanced
         assert len(recorder.equity) == 5  # equity still recorded
+
+
+async def test_ledger_rejection_beyond_cushion_keeps_everything_consistent() -> None:
+    """Next open gaps >1% above the decision close: the fee-aware size still
+    doesn't cover it; the ledger rejects, venue rolls back, run completes."""
+    from kaupo.domain import OrderIntent
+
+    class AllIn(StrategyBase):
+        id = "all-in-gap"
+
+        def on_candle(self, ctx):  # type: ignore[no-untyped-def]
+            if len(ctx.history(1000)) == 2:
+                return [OrderIntent(pair=PAIR, side=Side.BUY, size=10_000.0)]
+            return []
+
+    def gap_candle(i: int) -> Candle:
+        p = 100 if i < 2 else 104  # 4% gap at candle 2, where the buy fills
+        return Candle(
+            pair=PAIR,
+            timeframe=Timeframe.H1,
+            ts=BASE + timedelta(hours=i),
+            open=p,
+            high=p + 1,
+            low=p - 1,
+            close=p,
+            volume=1.0,
+        )
+
+    risk = RiskManager(RiskConfig(max_position_quote=1_000_000, max_gross_exposure_quote=1_000_000))
+    recorder = InMemoryRecorder()
+    engine = Engine(
+        strategy=AllIn(AllIn.params_schema()),
+        venue=PaperVenue(taker_fee_bps=26, maker_fee_bps=16, slippage_bps=5),
+        risk=risk,
+        ledger=Ledger("EUR", 1_000.0, BASE),
+        recorder=recorder,
+        config=EngineConfig(pair=PAIR, timeframe=Timeframe.H1),
+        run_info=RunInfo(
+            mode=RunMode.BACKTEST,
+            strategy_id="all-in-gap",
+            strategy_version="v1",
+            strategy_source_hash="x",
+            config={},
+        ),
+    )
+    result = await engine.run(aiter([gap_candle(i) for i in range(8)]))
+    assert result.status is RunStatus.COMPLETED
+    assert result.num_fills == 0
+    assert any("ledger rejected" in r for r in risk.rejections)
+    assert engine.venue._positions.get(PAIR, 0.0) == 0.0  # rolled back
+    rejected_orders = [o for o in recorder.orders if o.status.value == "rejected"]
+    assert len({o.id for o in rejected_orders}) == 1  # recorded at submit + after void
+
+
+async def test_liquidate_end_records_no_duplicate_snapshot() -> None:
+    """Open position + liquidate_end: exactly one snapshot per candle ts."""
+    recorder = InMemoryRecorder()
+    engine = build_engine(recorder)
+    engine.config = EngineConfig(pair=PAIR, timeframe=Timeframe.H1, liquidate_end=True)
+    await engine.run(aiter([candle(i) for i in range(5)]))
+    assert len(recorder.equity) == 5
+    assert len({ts for ts, *_ in recorder.equity}) == 5
+
+
+async def test_stop_event_halts_before_any_processing() -> None:
+    import asyncio
+
+    stop = asyncio.Event()
+    stop.set()
+    recorder = InMemoryRecorder()
+    engine = build_engine(recorder)
+    result = await engine.run(aiter([candle(i) for i in range(5)]), stop=stop)
+    assert result.status is RunStatus.HALTED
+    assert result.halt_reason == "stopped externally"
+    assert recorder.equity == []

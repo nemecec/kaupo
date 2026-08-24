@@ -25,7 +25,8 @@ BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
 @pytest.fixture
 async def client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
-    # auth disabled for these tests
+    # auth disabled for these tests (restore afterwards)
+    saved = {k: os.environ.get(k) for k in ("KAUPO_ADMIN_TOKEN", "KAUPO_READONLY_TOKEN")}
     os.environ.pop("KAUPO_ADMIN_TOKEN", None)
     os.environ.pop("KAUPO_READONLY_TOKEN", None)
     get_settings.cache_clear()
@@ -35,6 +36,13 @@ async def client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
+
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    get_settings.cache_clear()
 
 
 async def _seed_run(session: AsyncSession) -> RunId:
@@ -431,3 +439,43 @@ async def test_daily_report_overnight_round_trip_and_ended_runs(
     run = body["runs"][0]
     assert run["round_trips"] == 1  # buy yesterday, sell today — counts
     assert run["winning_trips"] == 1
+
+
+async def test_zombie_run_reported_inactive(client: AsyncClient, session: AsyncSession) -> None:
+    from kaupo.db.models import RunRow
+    from kaupo.domain import new_id, utc_now
+
+    today = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    # status=running but no activity today (e.g. container-killed)
+    session.add(
+        RunRow(
+            id=new_id(),
+            mode="shadow",
+            strategy_id="s",
+            strategy_version="v",
+            started_at=today - timedelta(days=1),
+            status="running",
+            config={"pair": "BTC/EUR", "timeframe": "1h"},
+        )
+    )
+    await session.commit()
+
+    r = await client.get("/api/v1/reports/daily", params={"day": today.date().isoformat()})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["totals"]["num_runs"] == 1
+    assert body["totals"]["active_runs"] == 0
+    assert body["runs"][0]["active"] is False
+
+
+async def test_backtest_lint_enforced(client: AsyncClient, session: AsyncSession, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    (tmp_path / "bad.py").write_text("import requests\n")
+    os.environ["KAUPO_STRATEGIES_DIR"] = str(tmp_path)
+    get_settings.cache_clear()
+    try:
+        r = await client.post("/api/v1/backtests", json={"strategy": "bad", "pair": "BTC/EUR"})
+        assert r.status_code == 422
+        assert "violations" in r.json()["detail"]["error"]
+    finally:
+        os.environ.pop("KAUPO_STRATEGIES_DIR", None)
+        get_settings.cache_clear()
