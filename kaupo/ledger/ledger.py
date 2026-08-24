@@ -63,7 +63,9 @@ class Ledger:
         return self._cash
 
     def position(self, pair: Pair) -> Position:
-        return self._positions.get(pair, Position(pair=pair))
+        # a copy: the SDK contract promises strategies a read-only view
+        pos = self._positions.get(pair, Position(pair=pair))
+        return Position(pair=pos.pair, size=pos.size, avg_entry=pos.avg_entry)
 
     def position_for(self, base_asset: str) -> Position:
         for pair, pos in self._positions.items():

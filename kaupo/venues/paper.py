@@ -17,6 +17,7 @@ strategy exit), and clamps protection exits to the remaining position.
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 
 from kaupo.domain import (
     Candle,
@@ -47,9 +48,11 @@ class PaperVenue:
         # armed this candle; evaluated from the NEXT candle onward (the entry
         # candle's low may precede the fill — intracandle order is unknowable)
         self._newly_armed: list[tuple[Order, _Protection]] = []
+        # exit order id -> (entry order, protection), for void re-arming
+        self._prot_by_exit: dict[OrderId, tuple[Order, _Protection]] = {}
         self._orders: dict[OrderId, Order] = {}
         self._new_orders: list[Order] = []
-        self._positions: dict[Pair, float] = {}
+        self._positions: dict[Pair, Decimal] = {}
 
     def submit(self, order: Order) -> None:
         self._orders[order.id] = order
@@ -81,16 +84,24 @@ class PaperVenue:
         return fill
 
     def void_fill(self, fill: Fill) -> None:
-        """Roll back a fill the ledger rejected: untrack the position change
-        and mark the order rejected so venue, ledger, and audit agree."""
-        delta = fill.size if fill.side is Side.BUY else -fill.size
-        self._positions[fill.pair] = self._positions.get(fill.pair, 0.0) - delta
+        """Roll back a fill the ledger rejected: untrack the position change,
+        mark the order rejected, and reconcile protections so venue, ledger,
+        and audit agree."""
+        delta = Decimal(str(fill.size)) if fill.side is Side.BUY else -Decimal(str(fill.size))
+        self._positions[fill.pair] = self._positions.get(fill.pair, Decimal(0)) - delta
         order = self._orders.get(fill.order_id)
         if order is not None:
             order.status = OrderStatus.REJECTED
             order.filled_price = None
             order.filled_ts = None
             order.fee = 0.0
+            # a voided entry must not leave its stop/take-profit armed
+            self._protections = [(o, p) for o, p in self._protections if o.id != order.id]
+            self._newly_armed = [(o, p) for o, p in self._newly_armed if o.id != order.id]
+        # a voided protection EXIT must re-arm the entry's protection
+        protected = self._prot_by_exit.pop(fill.order_id, None)
+        if protected is not None:
+            self._protections.append(protected)
 
     def cancel_all(self) -> list[Order]:
         cancelled = self._market_queue + self._limit_open
@@ -132,7 +143,7 @@ class PaperVenue:
 
         remaining_protections: list[tuple[Order, _Protection]] = []
         for order, prot in self._protections:
-            if self._positions.get(order.pair, 0.0) <= 0:
+            if self._positions.get(order.pair, Decimal(0)) <= 0:
                 continue  # disarm: position closed elsewhere (e.g. strategy exit)
             prot_fill = self._check_protection(order, prot, candle)
             if prot_fill is None:
@@ -140,6 +151,10 @@ class PaperVenue:
             else:
                 fills.append(prot_fill)
                 self._track_position(prot_fill)
+                # successful fire: map entry kept until the ledger accepts the
+                # fill (void_fill pops it); pruned here once it's redundant
+                if prot_fill.side is Side.SELL and self._positions.get(order.pair, Decimal(0)) > 0:
+                    pass  # partial exit — entry's protection was consumed by design
         self._protections = remaining_protections
         # protections armed by this candle's fills go live next candle
         self._protections.extend(self._newly_armed)
@@ -150,9 +165,17 @@ class PaperVenue:
     # -- internals ---------------------------------------------------------
 
     def _track_position(self, fill: Fill) -> None:
-        """Net position per pair from this venue's own fills."""
-        delta = fill.size if fill.side is Side.BUY else -fill.size
-        self._positions[fill.pair] = self._positions.get(fill.pair, 0.0) + delta
+        """Net position per pair from this venue's own fills.
+
+        Decimal(str()) arithmetic, exactly like the ledger, so the two
+        never drift apart on fractional sizes (0.1 + 0.2 + 0.3 ...)."""
+        delta = Decimal(str(fill.size)) if fill.side is Side.BUY else -Decimal(str(fill.size))
+        self._positions[fill.pair] = self._positions.get(fill.pair, Decimal(0)) + delta
+        if self._positions[fill.pair] <= 0:
+            # flat at any point -> stale protections for this pair are dropped,
+            # even if a same-candle re-entry brings the position back up
+            self._protections = [(o, p) for o, p in self._protections if o.pair != fill.pair]
+            self._newly_armed = [(o, p) for o, p in self._newly_armed if o.pair != fill.pair]
 
     def _prune_orders(self) -> None:
         """Drop closed orders to bound memory in long-lived runs."""
@@ -209,8 +232,8 @@ class PaperVenue:
         The caller drops protections when the net position is gone; exits
         are clamped to the remaining position.
         """
-        remaining = self._positions.get(order.pair, 0.0)
-        exit_size = min(order.size, remaining)
+        remaining = self._positions.get(order.pair, Decimal(0))
+        exit_size = float(min(Decimal(str(order.size)), remaining))
         exit_order = Order(
             pair=order.pair,
             side=Side.SELL if order.side is Side.BUY else Side.BUY,
@@ -225,6 +248,7 @@ class PaperVenue:
             if hit:
                 self._orders[exit_order.id] = exit_order
                 self._new_orders.append(exit_order)
+                self._prot_by_exit[exit_order.id] = (order, prot)
                 price = self._slipped(min(prot.stop_loss, candle.open), exit_order.side)
                 return self._make_fill(exit_order, candle.ts, price, self._taker)
         if prot.take_profit is not None:
@@ -234,6 +258,7 @@ class PaperVenue:
             if hit:
                 self._orders[exit_order.id] = exit_order
                 self._new_orders.append(exit_order)
+                self._prot_by_exit[exit_order.id] = (order, prot)
                 price = max(prot.take_profit, candle.open)
                 return self._make_fill(exit_order, candle.ts, price, self._maker)
         return None  # still armed

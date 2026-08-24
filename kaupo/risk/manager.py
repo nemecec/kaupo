@@ -141,7 +141,8 @@ class RiskManager:
         if price is None or price <= 0:
             return self._reject(intent, "no price available")
 
-        if self._cooldown_remaining > 0:
+        # cooldown gates new risk (BUYs); exits are always allowed through
+        if self._cooldown_remaining > 0 and intent.side is Side.BUY:
             return self._reject(
                 intent, f"cooldown after consecutive losses ({self._cooldown_remaining} left)"
             )

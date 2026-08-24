@@ -3,6 +3,11 @@
 Strategies must be pure functions of their inputs: no wall-clock, no I/O,
 no unseeded randomness. This linter walks the AST and reports violations
 with line numbers. It complements (not replaces) the SDK design.
+
+Known limits of AST linting (documented, accepted): value-level aliasing
+(``f = open; f(...)``), PYTHONHASHSEED-dependent hash/set ordering, and
+side effects inside imported-but-allowed third-party modules. The linter is
+a tripwire for plausible mistakes, not a security boundary.
 """
 
 import ast
@@ -34,6 +39,7 @@ FORBIDDEN_IMPORTS = {
     "importlib": "dynamic import bypasses linting",
     "builtins": "dynamic builtins access bypasses linting",
     "sys": "system access (exit, argv, ...) is forbidden in strategies",
+    "os": "OS access (files, env, processes) is forbidden in strategies",
 }
 
 # (module, attribute) -> why forbidden
@@ -50,7 +56,9 @@ FORBIDDEN_CALLS = {
     ("time", "process_time"): "process clock",
     ("time", "thread_time"): "process clock",
     ("time", "localtime"): "wall-clock",
+    ("time", "gmtime"): "wall-clock",
     ("time", "ctime"): "wall-clock",
+    ("time", "strftime"): "wall-clock",
     ("time", "sleep"): "blocking sleep",
 }
 
@@ -94,8 +102,47 @@ FORBIDDEN_OS_ATTRS = {
     "spawnv",
 }
 
-# np.random.* (unseeded randomness) and numpy file I/O
-FORBIDDEN_NUMPY_ATTRS = {"random", "load", "fromregex", "fromfile", "savetxt", "save", "memmap"}
+# np.random.* (unseeded randomness), numpy file I/O, wall-clock datetime64
+FORBIDDEN_NUMPY_ATTRS = {
+    "random",
+    "load",
+    "loadtxt",
+    "genfromtxt",
+    "fromregex",
+    "fromfile",
+    "savetxt",
+    "save",
+    "memmap",
+    "datetime64",
+}
+
+# introspection dunders: traversal paths that bypass every name-based rule
+# (normal dunders like __init__/__repr__ are fine and allowed)
+FORBIDDEN_DUNDERS = {
+    "__globals__",
+    "__dict__",
+    "__class__",
+    "__subclasses__",
+    "__bases__",
+    "__mro__",
+    "__builtins__",
+    "__import__",
+    "__code__",
+    "__closure__",
+    "__getattribute__",
+    "__func__",
+    "__self__",
+    "__module__",
+    "__init_subclass__",
+    "__subclasshook__",
+    "__getattr__",
+    "__get__",
+    "__set__",
+    "__reduce__",
+    "__reduce_ex__",
+    "__getstate__",
+    "__setstate__",
+}
 
 
 @dataclass(frozen=True)
@@ -162,6 +209,10 @@ class _Visitor(ast.NodeVisitor):
                 self._add(node, f"forbidden from-import {node.module}.{alias.name}")
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
+        # dunder traversal (__globals__, __subclasses__, ...) bypasses every
+        # name-based rule — reject introspection dunders (allow __init__ etc.)
+        if node.attr in FORBIDDEN_DUNDERS:
+            self._add(node, f"forbidden dunder attribute access {node.attr!r}")
         root_name = _root_name(node.value)
         if root_name is not None:
             root = self._aliases.get(root_name, root_name)

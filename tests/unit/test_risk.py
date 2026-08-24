@@ -183,3 +183,14 @@ class TestZeroPnl:
         a = rm.assess([buy()], state())[0]
         assert a.decision is Decision.REJECTED
         assert "cooldown" in a.reason
+
+
+def test_cooldown_does_not_block_exits() -> None:
+    rm = RiskManager(RiskConfig(max_consecutive_losses=2, cooldown_candles=5))
+    rm.notify_trade_result(-10)
+    rm.notify_trade_result(-10)
+    # cooldown active: buys rejected...
+    assert rm.assess([buy()], state())[0].decision is Decision.REJECTED
+    # ...but exits pass (risk-reducing orders are never gated)
+    a = rm.assess([sell(1.0)], state(position=1.0))[0]
+    assert a.decision is Decision.APPROVED

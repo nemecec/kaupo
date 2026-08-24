@@ -86,6 +86,8 @@ class _Context:
         return self._engine.history[-1]
 
     def history(self, n: int) -> Sequence[Candle]:
+        if n <= 0:
+            return []
         engine = self._engine
         maxlen = engine.history.maxlen
         if maxlen is not None and n > maxlen and not engine._warned_history_cap:

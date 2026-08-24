@@ -59,16 +59,49 @@ def test_duplicate_ids_rejected(tmp_path: Path) -> None:
         load_strategies(tmp_path)
 
 
-def test_missing_id_rejected(tmp_path: Path) -> None:
+def test_missing_id_file_skipped_with_error(tmp_path: Path) -> None:
     (tmp_path / "bad.py").write_text(
         "from kaupo.sdk.protocol import StrategyBase\n"
         "class NoId(StrategyBase):\n"
         "    def on_candle(self, ctx): return []\n"
     )
-    with pytest.raises(ValueError, match="no 'id'"):
-        load_strategies(tmp_path)
+    (tmp_path / "ok.py").write_text(VALID)
+    loaded = load_strategies(tmp_path)
+    # the broken file is skipped (logged), healthy strategies still load
+    assert "my-strat" in loaded
+    assert len(loaded) == 1
 
 
 def test_missing_directory() -> None:
     with pytest.raises(FileNotFoundError):
         load_strategies(Path("/nonexistent/dir"))
+
+
+def test_import_time_crash_isolated(tmp_path: Path) -> None:
+    (tmp_path / "boom.py").write_text("X = 1 / 0\n")
+    (tmp_path / "ok.py").write_text(VALID)
+    loaded = load_strategies(tmp_path)
+    assert list(loaded) == ["my-strat"]
+
+
+def test_unknown_param_rejected(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text(VALID)
+    strat = load_strategies(tmp_path)["my-strat"]
+    with pytest.raises(ValueError, match="Unknown params"):
+        strat.create({"threshhold": 0.5})  # typo
+
+
+def test_alias_params_accepted(tmp_path: Path) -> None:
+    (tmp_path / "alias.py").write_text(
+        "from pydantic import BaseModel, Field\n"
+        "from kaupo.sdk.protocol import StrategyBase\n\n"
+        "class P(BaseModel):\n"
+        "    threshold: float = Field(default=0.5, alias='th')\n\n"
+        "class S(StrategyBase):\n"
+        "    id = 'alias-strat'\n"
+        "    params_schema = P\n"
+        "    def on_candle(self, ctx): return []\n"
+    )
+    strat = load_strategies(tmp_path)["alias-strat"]
+    instance = strat.create({"th": 0.9})
+    assert instance.params.threshold == 0.9  # type: ignore[attr-defined]

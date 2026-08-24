@@ -163,7 +163,7 @@ def test_dynamic_import_detected() -> None:
 
 
 def test_no_duplicate_violations() -> None:
-    violations = lint_source('import os\nos.system("id")')
+    violations = lint_source("import time\ntime.sleep(1)")
     assert len(violations) == 1
 
 
@@ -172,3 +172,32 @@ def test_missing_directory_raises(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError):
         lint_directory(tmp_path / "nope")
+
+
+def test_os_import_banned_outright() -> None:
+    assert len(lint_source("import os")) >= 1
+    assert len(lint_source("import os.path")) >= 1
+    assert len(lint_source("from os import path")) >= 1
+
+
+def test_dunder_access_detected() -> None:
+    assert len(lint_source("x = f.__globals__")) >= 1
+    assert len(lint_source("x = obj.__dict__")) >= 1
+    assert len(lint_source("x = obj.__class__.__subclasses__()")) >= 1
+
+
+def test_dunder_definitions_allowed() -> None:
+    source = """
+class S:
+    def __init__(self):
+        self.x = 1
+    def __repr__(self):
+        return "S"
+"""
+    assert lint_source(source) == []
+
+
+def test_time_and_numpy_gaps_closed() -> None:
+    assert len(lint_source("import time\ntime.gmtime()")) == 1
+    assert len(lint_source("import numpy as np\nnp.datetime64('now')")) >= 1
+    assert len(lint_source("import numpy as np\nnp.loadtxt('/etc/passwd')")) >= 1

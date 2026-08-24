@@ -132,6 +132,7 @@ def true_range(highs_: list[float] | F64, lows_: list[float] | F64, closes_: lis
 def atr(
     highs_: list[float] | F64, lows_: list[float] | F64, closes_: list[float] | F64, period: int = 14
 ) -> F64:
+    _check_period(period)
     return _wilder(true_range(highs_, lows_, closes_), period)
 
 
@@ -142,6 +143,7 @@ def adx(
     period: int = 14,
 ) -> tuple[F64, F64, F64]:
     """(adx, +DI, -DI)."""
+    _check_period(period)
     h, low, c = _arr(highs_), _arr(lows_), _arr(closes_)
     n = len(h)
     out_nan = np.full(h.shape, np.nan)

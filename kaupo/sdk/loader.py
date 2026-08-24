@@ -11,10 +11,13 @@ re-executed on repeated loads (the API calls this per request).
 import hashlib
 import importlib.util
 import inspect
+import logging
 import sys
 from pathlib import Path
 
 from kaupo.sdk.protocol import LoadedStrategy, StrategyBase
+
+log = logging.getLogger(__name__)
 
 # (path, content_hash) -> strategies defined in that file version
 _cache: dict[tuple[str, str], list[LoadedStrategy]] = {}
@@ -37,7 +40,11 @@ def load_strategies(directory: Path) -> dict[str, LoadedStrategy]:
         cache_key = (str(path), content_hash)
         strategies = _cache.get(cache_key)
         if strategies is None:
-            strategies = _load_file(path, content_hash)
+            try:
+                strategies = _load_file(path, content_hash)
+            except Exception:
+                log.exception("Skipping broken strategy file %s", path)
+                continue
             # keep only the latest version of each path: evict older hashes
             for key in [k for k in _cache if k[0] == str(path)]:
                 del _cache[key]

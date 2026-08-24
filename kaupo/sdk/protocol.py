@@ -92,11 +92,21 @@ class LoadedStrategy:
 
     def create(self, params: dict[str, Any]) -> StrategyBase:
         params = params or {}
-        allowed = set(self.cls.params_schema.model_fields)
+        # allowed keys = field names plus aliases (honoring populate_by_name)
+        schema = self.cls.params_schema
+        allowed: set[str] = set()
+        populate_by_name = schema.model_config.get("populate_by_name", False)
+        for name, field_info in schema.model_fields.items():
+            if field_info.alias is not None:
+                allowed.add(field_info.alias)
+                if populate_by_name:
+                    allowed.add(name)
+            else:
+                allowed.add(name)
         unknown = sorted(set(params) - allowed)
         if unknown:
             raise ValueError(
                 f"Unknown params for strategy {self.id!r}: {unknown} (allowed: {sorted(allowed)})"
             )
-        validated = self.cls.params_schema.model_validate(params)
+        validated = schema.model_validate(params)
         return self.cls(validated)

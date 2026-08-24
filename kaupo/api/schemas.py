@@ -1,9 +1,11 @@
 """API request/response schemas."""
 
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class StatusOut(BaseModel):
@@ -81,9 +83,15 @@ class BacktestIn(BaseModel):
     timeframe: str = "1h"
     start: datetime | None = None
     end: datetime | None = None
-    days: int = 365
+    days: int = Field(default=365, ge=1)
     params: dict[str, Any] = {}
     starting_cash: float = Field(default=10_000.0, gt=0)
+
+    @model_validator(mode="after")
+    def _check_range(self) -> BacktestIn:
+        if self.start is not None and self.end is not None and self.start >= self.end:
+            raise ValueError("start must be before end")
+        return self
 
 
 class BacktestAccepted(BaseModel):

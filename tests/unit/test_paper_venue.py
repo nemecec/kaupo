@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from kaupo.domain import Candle, Order, OrderStatus, OrderType, Pair, Side, Timeframe
 from kaupo.venues.paper import PaperVenue
@@ -232,3 +233,50 @@ class TestChronologicalOrdering:
         assert v._positions[PAIR] == 0.0
         assert order.status is OrderStatus.REJECTED
         assert order.filled_price is None
+
+
+class TestVoidProtectionLifecycle:
+    def test_voided_entry_drops_its_protection(self) -> None:
+        v = venue()
+        v.submit(market(stop_loss=90.0))
+        fills = v.on_candle(candle(0, o=100))
+        assert len(v._protections) == 1
+        v.void_fill(fills[0])
+        assert v._protections == []
+        # nothing fires later
+        assert v.on_candle(candle(1, low=50)) == []
+
+    def test_voided_protection_exit_re_arms(self) -> None:
+        v = venue()
+        v.submit(market(stop_loss=90.0))
+        v.on_candle(candle(0, o=100))  # buy fills, protection armed
+        fills = v.on_candle(candle(1, low=85))  # stop fires
+        assert len(fills) == 1
+        assert v._protections == []  # consumed
+        v.void_fill(fills[0])  # ledger rejected the exit
+        assert len(v._protections) == 1  # re-armed
+        # and it can fire again
+        fills = v.on_candle(candle(2, low=85))
+        assert len(fills) == 1
+        assert fills[0].side is Side.SELL
+
+    def test_fractional_sizes_no_drift(self) -> None:
+        v = venue()
+        for _ in range(3):
+            v.submit(market(size=0.1))
+            v.on_candle(candle(0, o=100))
+        assert v._positions[PAIR] == Decimal("0.3")  # not 0.30000000000000004
+        v.submit(market(Side.SELL, size=0.3))
+        v.on_candle(candle(1, o=100))
+        assert v._positions[PAIR] == Decimal("0")
+
+    def test_same_candle_round_trip_disarms_old_protection(self) -> None:
+        v = venue()
+        v.submit(market(stop_loss=90.0))
+        v.on_candle(candle(0, o=100))  # buy with stop 90
+        # strategy exits AND re-enters in one batch (both fill at next open)
+        v.submit(market(Side.SELL))
+        v.submit(market(size=1.0))  # re-entry WITHOUT stop
+        v.on_candle(candle(1, o=110))
+        # old stop must not fire against the new position
+        assert v.on_candle(candle(2, low=85)) == []

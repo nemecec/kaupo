@@ -181,8 +181,21 @@ async def run_positions(
             positions[f.pair] = (qty - closed, cost - closed * avg)
 
     timeframe = (run.config or {}).get("timeframe", "1h")
-    # don't mark a finished run at prices past its end
-    price_cutoff = run.ended_at
+    # mark at the run's own timeline (equity-snapshot based: correct for
+    # backtests whose candles are simulated-time, unlike wall-clock ended_at)
+    last_snap_ts = (
+        (
+            await session.execute(
+                select(EquitySnapshotRow.ts)
+                .where(EquitySnapshotRow.run_id == run_id)
+                .order_by(EquitySnapshotRow.ts.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    price_cutoff = last_snap_ts or run.ended_at
     out = []
     for pair, (qty, cost) in positions.items():
         if qty <= 0:
