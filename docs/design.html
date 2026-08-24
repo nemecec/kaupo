@@ -92,7 +92,7 @@
 <div class="flagbar"></div>
 <header class="hero">
   <div class="wrap">
-    <span class="badge">Design document</span>
+    <span class="badge">Design document</span> <span class="badge" style="background:#57606a">v1 plan — implementation matches it in spirit; where they differ, the code wins</span>
     <h1>Kaupo<span class="accent">.</span></h1>
     <p class="sub">Autonomous algorithmic crypto-trading system — architecture &amp; roadmap</p>
   </div>
@@ -148,13 +148,13 @@
 <pre><code>                 ┌──────────────────────────────────────────────────┐
                  │               KAUPO (modular monolith)           │
                  │                                                  │
-  Kraken ──WS──► │  Market Data ──► Candle Store (Postgres)         │
+  Kraken ──poll─► │  Market Data ──► Candle Store (Postgres)         │
   (ccxt)         │       │                                          │
                  │       ▼                                          │
                  │  Engine Core (event loop: candle-close driven)   │
                  │   ┌───────────────┬───────────────┬────────────┐ │
                  │   │ Backtest mode │ Shadow mode   │ Live mode  │ │
-                 │   │ hist. candles │ live candles  │ live candle│ │
+                 │   │ hist. candles │ live polling  │ live pollin│ │
                  │   │ paper venue   │ paper venue   │ Kraken     │ │
                  │   └──────┬────────┴───────┬───────┴─────┬──────┘ │
                  │          ▼                ▼             ▼        │
@@ -175,25 +175,24 @@
 <h2 id="repos"><span class="num">4.</span>Repositories &amp; layout</h2>
 <p><strong>Public GitHub repo <code>kaupo</code></strong> (monorepo):</p>
 <pre><code>kaupo/
-├── docker-compose.yml            # local stack: postgres + engine + ui
-├── Dockerfile.engine
-├── engine/                       # Python package
-│   ├── core/                     # event loop, engine, run lifecycle
-│   ├── data/                     # candle ingestion (ccxt REST + WS), storage
-│   ├── sdk/                      # strategy SDK: protocol, context, intents
-│   ├── backtest/                 # backtesting engine + metrics
-│   ├── venues/                   # paper venue, kraken venue (ccxt)
+├── docker-compose.yml            # local stack: postgres + api + ui (+ shadow)
+├── Dockerfile                    # engine image (api/migrate/shadow commands)
+├── kaupo/                        # the Python package
+│   ├── core/                     # engine loop, runner, recorder
+│   ├── data/                     # candle ingestion (ccxt REST polling), storage
+│   ├── sdk/                      # strategy SDK: protocol, indicators, loader, lint
+│   ├── backtest/                 # backtest runner + metrics
+│   ├── venues/                   # paper venue (kraken venue: phase 3)
 │   ├── risk/                     # risk manager (hard guardrails)
-│   ├── ledger/                   # portfolio, positions, P&amp;L accounting
-│   ├── report/                   # daily/periodic report generation
-│   └── notify/                   # alerts (Telegram/email) — phase 2
-├── api/                          # FastAPI app (REST + WebSocket)
-├── cli/                          # `kaupo` CLI (backtest, ingest, run control)
+│   ├── ledger/                   # portfolio, positions, P&amp;L accounting (Decimal)
+│   ├── report/                   # daily report generation
+│   ├── api/                      # FastAPI app (REST + WebSocket)
+│   ├── cli/                      # `kaupo` CLI (ingest, backtest, run shadow)
+│   └── db/                       # models, session, Alembic migrations
 ├── ui/                           # React + TypeScript (Vite)
 ├── examples/strategies/          # open-source sample strategies
 ├── tests/{unit,behaviour,integration}/
-├── deploy/                       # AWS: server compose, SSM deploy scripts
-└── .github/workflows/ci.yml      # lint, typecheck, tests, docker build</code></pre>
+└── .github/workflows/ci.yml      # lint, typecheck, tests, coverage, docker build+smoke</code></pre>
 <p><strong>Private repo <code>kaupo-strategies</code></strong> (never open-sourced):</p>
 <pre><code>kaupo-strategies/
 ├── strategies/                   # deterministic strategy plugins (Python)
@@ -223,7 +222,7 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
 <h2 id="modes"><span class="num">6.</span>Execution modes</h2>
 <table>
   <tr><th></th><th>Backtest</th><th>Shadow</th><th>Live</th></tr>
-  <tr><td>Candle source</td><td>historical (DB)</td><td>live WebSocket</td><td>live WebSocket</td></tr>
+  <tr><td>Candle source</td><td>historical (DB)</td><td>live polling</td><td>live polling</td></tr>
   <tr><td>Venue</td><td>paper (fees + slippage modeled)</td><td>paper (same model)</td><td>Kraken via ccxt</td></tr>
   <tr><td>Money</td><td>virtual ledger</td><td>virtual ledger</td><td>real ledger</td></tr>
   <tr><td>Purpose</td><td>agent feedback loop</td><td>forward validation</td><td>real trading</td></tr>
@@ -271,7 +270,7 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
 <h2 id="api"><span class="num">9.</span>API surface (FastAPI)</h2>
 <ul>
   <li><code>GET /health</code>, <code>GET /api/v1/status</code> — engine status, active runs, mode</li>
-  <li><code>GET /api/v1/candles?pair=&amp;timeframe=&amp;from=&amp;to=</code></li>
+  <li><code>GET /api/v1/candles?pair=&amp;timeframe=&amp;start=&amp;end=</code></li>
   <li><code>POST /api/v1/backtests</code> / <code>GET /api/v1/backtests/{id}</code> (+ equity curve, trades)</li>
   <li><code>GET /api/v1/runs?mode=…</code>, <code>GET /api/v1/runs/{id}/equity|orders|trades|positions</code></li>
   <li><code>GET /api/v1/reports/daily?date=…</code></li>
@@ -297,7 +296,7 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
   <li><strong>Unit (pytest)</strong>: indicators (validated against <code>ta</code> reference values), ledger math, risk rules, regime detector, metrics calculations.</li>
   <li><strong>Behaviour (pytest scenario tests)</strong>: canned candle sequences → expected order traces, run identically through all three modes to prove backtest/shadow/live parity; kill-switch and daily-loss-halt scenarios; golden-file metrics.</li>
   <li><strong>Integration</strong>: <code>testcontainers</code> Postgres (migrations + repositories), fake venue with recorded fixtures (no network in CI), API contract tests (httpx), end-to-end backtest via CLI.</li>
-  <li><strong>UI</strong>: Vitest + React Testing Library; Playwright smoke test against the compose stack.</li>
+  <li><strong>UI</strong>: Vitest + React Testing Library.</li>
   <li><strong>CI (GitHub Actions)</strong>: ruff, mypy, pytest with coverage gate, UI tests, docker build. Same shape in <code>kaupo-strategies</code> so every agent PR is tested before merge.</li>
 </ul>
 

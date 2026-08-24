@@ -479,3 +479,174 @@ async def test_backtest_lint_enforced(client: AsyncClient, session: AsyncSession
     finally:
         os.environ.pop("KAUPO_STRATEGIES_DIR", None)
         get_settings.cache_clear()
+
+
+async def test_equity_endpoint_returns_latest_n(client: AsyncClient, session: AsyncSession) -> None:
+    from kaupo.db.models import EquitySnapshotRow, RunRow
+    from kaupo.domain import new_id, utc_now
+
+    today = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    run_id = new_id()
+    session.add(
+        RunRow(
+            id=run_id,
+            mode="backtest",
+            strategy_id="s",
+            strategy_version="v",
+            started_at=today,
+            status="completed",
+            config={},
+        )
+    )
+    await session.flush()
+    for i in range(10):
+        session.add(
+            EquitySnapshotRow(
+                id=new_id(),
+                run_id=run_id,
+                ts=today + timedelta(hours=i),
+                equity=1000 + i,
+                cash=1000 + i,
+                unrealized_pnl=0,
+            )
+        )
+    await session.commit()
+
+    r = await client.get(f"/api/v1/runs/{run_id}/equity", params={"limit": 3})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 3
+    assert [p["equity"] for p in body] == [1007.0, 1008.0, 1009.0]  # latest 3, ascending
+
+
+async def test_report_first_day_baseline_uses_starting_cash(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    from kaupo.db.models import EquitySnapshotRow, RunRow
+    from kaupo.domain import new_id, utc_now
+
+    today = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    run_id = new_id()
+    session.add(
+        RunRow(
+            id=run_id,
+            mode="shadow",
+            strategy_id="s",
+            strategy_version="v",
+            started_at=today,
+            status="running",
+            config={"pair": "BTC/EUR", "timeframe": "1h", "starting_cash": 5000.0},
+        )
+    )
+    await session.flush()
+    # first in-day snapshot is already post-trade (equity 5050)
+    session.add(
+        EquitySnapshotRow(
+            id=new_id(),
+            run_id=run_id,
+            ts=today + timedelta(hours=1),
+            equity=5050.0,
+            cash=5050.0,
+            unrealized_pnl=0,
+        )
+    )
+    await session.commit()
+
+    r = await client.get("/api/v1/reports/daily", params={"day": today.date().isoformat()})
+    run = r.json()["runs"][0]
+    assert run["start_equity"] == 5000.0  # starting_cash, not the first snapshot
+    assert run["pnl"] == 50.0
+
+
+async def test_positions_marks_at_run_timeline(client: AsyncClient, session: AsyncSession) -> None:
+    from kaupo.db.models import CandleRow, EquitySnapshotRow, FillRow, OrderRow, RunRow
+    from kaupo.domain import new_id
+
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    run_id = new_id()
+    session.add(
+        RunRow(
+            id=run_id,
+            mode="backtest",
+            strategy_id="s",
+            strategy_version="v",
+            started_at=base,
+            ended_at=base + timedelta(hours=10),
+            status="completed",
+            config={"pair": "BTC/EUR", "timeframe": "1h"},
+        )
+    )
+    await session.flush()
+    session.add(
+        OrderRow(
+            id="o1",
+            run_id=run_id,
+            ts=base,
+            pair="BTC/EUR",
+            side="buy",
+            type="market",
+            size=1.0,
+            status="filled",
+        )
+    )
+    await session.flush()
+    session.add(
+        FillRow(
+            id=new_id(),
+            order_id="o1",
+            run_id=run_id,
+            ts=base,
+            pair="BTC/EUR",
+            side="buy",
+            price=100.0,
+            size=1.0,
+            fee=0.0,
+        )
+    )
+    session.add(
+        EquitySnapshotRow(
+            id=new_id(),
+            run_id=run_id,
+            ts=base + timedelta(hours=10),
+            equity=10_100,
+            cash=9_000,
+            unrealized_pnl=100,
+        )
+    )
+    await session.commit()
+
+    # candles AFTER the run's timeline (simulated period) at a very different price
+    for i in range(5):
+        session.add(
+            CandleRow(
+                pair="BTC/EUR",
+                timeframe="1h",
+                ts=base + timedelta(days=30, hours=i),
+                open=5000,
+                high=5100,
+                low=4900,
+                close=5050,
+                volume=1,
+            )
+        )
+    # and one within the period
+    session.add(
+        CandleRow(
+            pair="BTC/EUR",
+            timeframe="1h",
+            ts=base + timedelta(hours=9),
+            open=110,
+            high=112,
+            low=109,
+            close=111,
+            volume=1,
+        )
+    )
+    await session.commit()
+
+    r = await client.get(f"/api/v1/runs/{run_id}/positions")
+    assert r.status_code == 200
+    positions = r.json()
+    assert len(positions) == 1
+    assert positions[0]["last_price"] == 111.0  # not 5050 from after the run
+    assert positions[0]["avg_entry"] == 100.0

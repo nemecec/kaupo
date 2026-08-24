@@ -41,6 +41,9 @@ class RunRecorder(Protocol):
         self, ts: datetime, equity: Decimal, cash: Decimal, unrealized: Decimal
     ) -> None: ...
     async def finish(self, status: RunStatus, metrics: dict[str, Any] | None) -> None: ...
+    async def flush_stale(self) -> None:
+        """Flush buffered rows if the last flush is older than the interval."""
+        ...
 
 
 class DbRecorder:
@@ -171,6 +174,10 @@ class DbRecorder:
         if buffered >= self._flush_every or (buffered > 0 and stale):
             await self.flush()
 
+    async def flush_stale(self) -> None:
+        if time.monotonic() - self._last_flush >= self._flush_interval:
+            await self.flush()
+
     async def flush(self) -> None:
         if not (self._orders or self._fills or self._ledger or self._equity):
             return
@@ -198,12 +205,16 @@ class DbRecorder:
                     },
                 )
                 await session.execute(stmt)
-            if fills:
-                session.add_all(fills)
-            if ledger:
-                session.add_all(ledger)
-            if equity:
-                session.add_all(equity)
+            # conflict-tolerant: ids are pre-generated, so a retry after an
+            # ambiguous commit failure must not PK-conflict
+            for model, rows in ((FillRow, fills), (LedgerEntryRow, ledger), (EquitySnapshotRow, equity)):
+                if rows:
+                    stmt = (
+                        pg_insert(model)
+                        .values([{c.name: getattr(r, c.name) for c in model.__table__.columns} for r in rows])
+                        .on_conflict_do_nothing()
+                    )
+                    await session.execute(stmt)
             await session.commit()
         self._orders = []
         self._fills = []
@@ -246,6 +257,10 @@ class CompositeRecorder:
         for child in self.children:
             await child.finish(status, metrics)
 
+    async def flush_stale(self) -> None:
+        for child in self.children:
+            await child.flush_stale()
+
 
 @dataclass
 class InMemoryRecorder:
@@ -278,3 +293,6 @@ class InMemoryRecorder:
     async def finish(self, status: RunStatus, metrics: dict[str, Any] | None) -> None:
         self.final_status = status
         self.metrics = metrics
+
+    async def flush_stale(self) -> None:
+        pass

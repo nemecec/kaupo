@@ -96,3 +96,20 @@ async def test_control_probe(session: AsyncSession) -> None:
     # global (run_id null) applies
     await _add_command(session, "kill", None)
     assert await probe() == "kill"
+
+
+async def test_control_probe_ignores_commands_older_than_run(session: AsyncSession) -> None:
+    await _add_command(session, "kill", None, age_s=3600)  # stale global kill
+    probe = DbControlProbe(get_sessionmaker(), "run-new")
+    assert await probe() is None  # ignored: issued before the run started
+
+    await _add_command(session, "pause", "run-new")  # fresh
+    assert await probe() == "pause"
+
+
+async def test_control_probe_kill_is_terminal(session: AsyncSession) -> None:
+    probe = DbControlProbe(get_sessionmaker(), "run-x")
+    await _add_command(session, "kill", "run-x")
+    assert await probe() == "kill"
+    await _add_command(session, "resume", "run-x")
+    assert await probe() == "kill"  # resume cannot un-kill

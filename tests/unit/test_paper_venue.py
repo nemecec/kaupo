@@ -280,3 +280,18 @@ class TestVoidProtectionLifecycle:
         v.on_candle(candle(1, o=110))
         # old stop must not fire against the new position
         assert v.on_candle(candle(2, low=85)) == []
+
+
+def test_protections_clamp_incrementally_against_partial_exit() -> None:
+    """Two protected entries + same-candle partial strategy exit: protections
+    must sell only what remains after each prior fill."""
+    v = venue()
+    v.submit(market(size=2.0, stop_loss=90.0))
+    v.on_candle(candle(0, o=100))
+    v.submit(market(size=2.0, stop_loss=90.0))
+    v.on_candle(candle(1, o=100))  # 4.0 total, two protections
+    v.submit(market(Side.SELL, size=3.0))  # strategy scale-out
+    fills = v.on_candle(candle(2, o=100, low=85))  # open exit, then both stops
+    sells = [f for f in fills if f.side is Side.SELL]
+    assert sum(f.size for f in sells) == 4.0  # never more than the position
+    assert v._positions[PAIR] == 0

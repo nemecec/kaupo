@@ -87,8 +87,9 @@ class LiveCandlePoller:
         if not candles:
             return []
         if self._baseline is None:
+            # cold start: the whole fetched window is new (max 4 candles)
             self._baseline = candles[-1].ts
-            return [candles[-1]]
+            return candles
         new = [c for c in candles if c.ts > self._baseline]
         if new:
             self._baseline = new[-1].ts

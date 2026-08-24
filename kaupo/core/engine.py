@@ -213,6 +213,7 @@ class Engine:
         for order in self._orders_touched(fills):
             await self.recorder.record_order(order)  # upsert final state
         await self.recorder.record_ledger(self.ledger.drain_entries())
+        await self.recorder.flush_stale()  # rows land at least per candle end
 
         # 3. equity snapshot at close
         price = candle.close

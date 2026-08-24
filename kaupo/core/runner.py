@@ -63,6 +63,8 @@ async def _chain_persist(
         if last_ts is not None and candle.ts <= last_ts:
             continue  # already covered by warm-up or duplicate
         last_ts = candle.ts
+        # deliberate: a persist failure fails the run (restart policy retries)
+        # rather than trading on a store that can't record the audit trail
         async with sm_scope(sessionmaker) as session:
             await upsert_candles(session, [candle])
         yield candle

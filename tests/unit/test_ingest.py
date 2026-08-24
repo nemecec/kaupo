@@ -129,11 +129,11 @@ class TestBackfill:
 
 
 class TestLiveCandlePoller:
-    async def test_first_poll_returns_only_latest(self) -> None:
+    async def test_first_poll_returns_full_window_on_cold_start(self) -> None:
         client = FakeClient([[candle(0), candle(1), candle(2)]])
         poller = LiveCandlePoller(client, PAIR, TF, poll_interval_seconds=0)  # type: ignore[arg-type]
         first = await poller.poll_once()
-        assert [c.ts for c in first] == [BASE + timedelta(hours=2)]
+        assert [c.ts for c in first] == [BASE + timedelta(hours=i) for i in range(3)]
 
     async def test_subsequent_polls_return_new_only(self) -> None:
         client = FakeClient(
@@ -146,7 +146,10 @@ class TestLiveCandlePoller:
         )
         poller = LiveCandlePoller(client, PAIR, TF, poll_interval_seconds=0)  # type: ignore[arg-type]
 
-        assert [c.ts for c in await poller.poll_once()] == [BASE + timedelta(hours=1)]
+        assert [c.ts for c in await poller.poll_once()] == [
+            BASE + timedelta(hours=0),
+            BASE + timedelta(hours=1),
+        ]  # cold start yields the whole window
         assert [c.ts for c in await poller.poll_once()] == [BASE + timedelta(hours=2)]
         assert await poller.poll_once() == []
         assert [c.ts for c in await poller.poll_once()] == [
