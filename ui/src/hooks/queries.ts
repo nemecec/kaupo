@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type { CandlesQuery, RunsFilter } from '../lib/api'
 
@@ -34,24 +34,27 @@ export function useRunEquity(id: string, live: boolean) {
   })
 }
 
-export function useRunOrders(id: string) {
+export function useRunOrders(id: string, live: boolean) {
   return useQuery({
     queryKey: ['runs', id, 'orders'],
     queryFn: () => api.runOrders(id),
+    refetchInterval: live ? 15_000 : false,
   })
 }
 
-export function useRunTrades(id: string) {
+export function useRunTrades(id: string, live: boolean) {
   return useQuery({
     queryKey: ['runs', id, 'trades'],
     queryFn: () => api.runTrades(id),
+    refetchInterval: live ? 15_000 : false,
   })
 }
 
-export function useRunPositions(id: string) {
+export function useRunPositions(id: string, live: boolean) {
   return useQuery({
     queryKey: ['runs', id, 'positions'],
     queryFn: () => api.runPositions(id),
+    refetchInterval: live ? 15_000 : false,
   })
 }
 
@@ -70,12 +73,17 @@ export function useDailyReport(day: string) {
   })
 }
 
-/** Pass null to disable the query (e.g. run config has no pair yet). */
+/**
+ * Pass null to disable the query (e.g. run config has no pair yet).
+ * keepPreviousData: for live runs the range end moves with each new equity
+ * snapshot; keeping the previous page avoids unmounting the chart on every refetch.
+ */
 export function useCandles(query: CandlesQuery | null) {
   return useQuery({
     queryKey: ['candles', query],
     queryFn: () => api.candles(query as CandlesQuery),
     enabled: query !== null,
+    placeholderData: keepPreviousData,
   })
 }
 

@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { CandlestickSeries, createSeriesMarkers } from 'lightweight-charts'
 import type { Candle, Trade } from '../../lib/types'
 import { useChart } from './useChart'
@@ -13,6 +13,8 @@ interface Props {
 /** OHLC candle chart with buy/sell markers snapped to bar times. */
 export function CandleChart({ candles, trades = [], height = 340 }: Props) {
   const { containerRef, chartRef } = useChart(height)
+  // fit the time scale only on first data load so live updates keep the user's zoom
+  const fittedRef = useRef(false)
 
   useEffect(() => {
     const chart = chartRef.current
@@ -33,7 +35,10 @@ export function CandleChart({ candles, trades = [], height = 340 }: Props) {
         tradeMarkers(trades, bars.map((b) => b.time as number)),
       )
     }
-    chart.timeScale().fitContent()
+    if (!fittedRef.current && bars.length > 0) {
+      chart.timeScale().fitContent()
+      fittedRef.current = true
+    }
     return () => {
       chart.removeSeries(series)
     }

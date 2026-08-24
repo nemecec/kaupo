@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { AreaSeries, createSeriesMarkers, type SeriesMarker, type UTCTimestamp } from 'lightweight-charts'
 import type { EquityPoint } from '../../lib/types'
 import { useChart } from './useChart'
@@ -13,6 +13,8 @@ interface Props {
 /** Single equity-curve area chart, optionally with trade markers. */
 export function EquityChart({ points, markers, height = 280 }: Props) {
   const { containerRef, chartRef } = useChart(height)
+  // fit the time scale only on first data load so live updates keep the user's zoom
+  const fittedRef = useRef(false)
 
   useEffect(() => {
     const chart = chartRef.current
@@ -25,11 +27,15 @@ export function EquityChart({ points, markers, height = 280 }: Props) {
       priceLineVisible: false,
       crosshairMarkerRadius: 3,
     })
-    series.setData(equityToLine(points))
+    const data = equityToLine(points)
+    series.setData(data)
     if (markers && markers.length > 0) {
       createSeriesMarkers(series, markers)
     }
-    chart.timeScale().fitContent()
+    if (!fittedRef.current && data.length > 0) {
+      chart.timeScale().fitContent()
+      fittedRef.current = true
+    }
     return () => {
       chart.removeSeries(series)
     }

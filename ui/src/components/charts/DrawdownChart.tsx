@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { AreaSeries } from 'lightweight-charts'
 import type { EquityPoint } from '../../lib/types'
 import { useChart } from './useChart'
@@ -7,6 +7,8 @@ import { CHART_COLORS, drawdownLine } from './utils'
 /** Underwater equity (drawdown %) chart, always <= 0. */
 export function DrawdownChart({ points, height = 160 }: { points: EquityPoint[]; height?: number }) {
   const { containerRef, chartRef } = useChart(height)
+  // fit the time scale only on first data load so live updates keep the user's zoom
+  const fittedRef = useRef(false)
 
   useEffect(() => {
     const chart = chartRef.current
@@ -19,8 +21,12 @@ export function DrawdownChart({ points, height = 160 }: { points: EquityPoint[];
       priceLineVisible: false,
       priceFormat: { type: 'percent' },
     })
-    series.setData(drawdownLine(points))
-    chart.timeScale().fitContent()
+    const data = drawdownLine(points)
+    series.setData(data)
+    if (!fittedRef.current && data.length > 0) {
+      chart.timeScale().fitContent()
+      fittedRef.current = true
+    }
     return () => {
       chart.removeSeries(series)
     }

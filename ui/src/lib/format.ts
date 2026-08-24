@@ -23,7 +23,10 @@ export function formatDateTime(iso: string | null | undefined): string {
 
 export function formatNumber(v: number): string {
   if (!Number.isFinite(v)) return String(v)
+  if (v === 0) return '0' // also normalizes -0
   const abs = Math.abs(v)
+  // dust values would round to "0" with fixed fraction digits — use significant digits
+  if (abs < 1e-6) return v.toPrecision(2)
   const maxDigits = abs >= 1000 ? 2 : abs >= 1 ? 4 : 6
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: maxDigits }).format(v)
 }

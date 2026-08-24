@@ -20,6 +20,9 @@ import { CandleChart } from '../components/charts/CandleChart'
 import { equityToLine, tradeMarkers } from '../components/charts/utils'
 import type { Order, Trade } from '../lib/types'
 
+/** Candle fetch limit for the run detail chart (backend returns the latest N). */
+const CANDLES_LIMIT = 2000
+
 function SideCell({ side }: { side: 'buy' | 'sell' }) {
   return (
     <span className={side === 'buy' ? 'text-emerald-400' : 'text-rose-400'}>{side}</span>
@@ -111,9 +114,9 @@ export default function RunDetailPage() {
   const live = run?.status === 'running'
 
   const equityQ = useRunEquity(id, live)
-  const ordersQ = useRunOrders(id)
-  const tradesQ = useRunTrades(id)
-  const positionsQ = useRunPositions(id)
+  const ordersQ = useRunOrders(id, live)
+  const tradesQ = useRunTrades(id, live)
+  const positionsQ = useRunPositions(id, live)
 
   const config = run?.config ?? {}
   const pair = typeof config.pair === 'string' && config.pair !== '' ? config.pair : null
@@ -131,7 +134,7 @@ export default function RunDetailPage() {
           // candles are filtered ts < end; the last equity snapshot carries the
           // final candle's own ts, so extend by one interval to include it
           end: candleQueryEnd(equity[equity.length - 1].ts, timeframe),
-          limit: 2000,
+          limit: CANDLES_LIMIT,
         }
       : null,
   )
@@ -148,7 +151,8 @@ export default function RunDetailPage() {
   if (!run) return <EmptyState text="Run not found" />
 
   return (
-    <div className="space-y-6">
+    // key by run id: navigating between runs remounts charts so each run fits fresh
+    <div key={run.id} className="space-y-6">
       <div>
         <Link to="/runs" className="text-xs text-accent hover:underline">
           ← All runs
@@ -190,7 +194,10 @@ export default function RunDetailPage() {
       )}
 
       {showCandleChart && (
-        <Panel title={`${pair} · ${timeframe}`}>
+        <Panel
+          title={`${pair} · ${timeframe}`}
+          action={<CappedNotice length={candles.length} limit={CANDLES_LIMIT} noun="candles" />}
+        >
           <CandleChart candles={candles} trades={trades} />
         </Panel>
       )}

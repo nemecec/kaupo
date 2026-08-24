@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { LineSeries } from 'lightweight-charts'
 import { useChart } from './useChart'
 import type { LinePoint } from './utils'
@@ -12,6 +12,8 @@ export interface NamedSeries {
 /** Overlaid equity lines for several runs (dashboard). */
 export function MultiEquityChart({ seriesList, height = 300 }: { seriesList: NamedSeries[]; height?: number }) {
   const { containerRef, chartRef } = useChart(height)
+  // fit the time scale only on first data load so live updates keep the user's zoom
+  const fittedRef = useRef(false)
 
   useEffect(() => {
     const chart = chartRef.current
@@ -26,8 +28,9 @@ export function MultiEquityChart({ seriesList, height = 300 }: { seriesList: Nam
       series.setData(s.points)
       return series
     })
-    if (added.length > 0) {
+    if (!fittedRef.current && added.length > 0) {
       chart.timeScale().fitContent()
+      fittedRef.current = true
     }
     return () => {
       for (const series of added) chart.removeSeries(series)

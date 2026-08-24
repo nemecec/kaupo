@@ -88,11 +88,11 @@ export default function ReportsPage() {
           type="date"
           value={day}
           max={todayUtc()}
-        onChange={(e) => {
-          // ignore a cleared input — keep the last valid day instead of
-          // silently refetching today's report while the input sits blank
-          if (e.target.value) setDay(e.target.value)
-        }}
+          onChange={(e) => {
+            // ignore a cleared input (keep the last valid day) and reject typed
+            // future dates — the max attribute only constrains the picker (Safari)
+            if (e.target.value && e.target.value <= todayUtc()) setDay(e.target.value)
+          }}
           className="rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-200 focus:border-accent focus:outline-none"
         />
       </div>
