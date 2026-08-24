@@ -137,6 +137,7 @@ class Engine:
         self._halt_reason = ""
         self._control_probe = control_probe
         self._killed = False
+        self._kill_reason = ""
         self._last_snapshot_ts: datetime | None = None
         self._warned_history_cap = False
 
@@ -166,8 +167,8 @@ class Engine:
                 seen += 1
                 if self._killed:
                     status = RunStatus.HALTED
-                    self._halt_reason = "killed via control API"
-                    log.warning("Run killed via control API")
+                    self._halt_reason = self._kill_reason
+                    log.warning("Run halted via control: %s", self._kill_reason)
                     break
                 if self.risk.halted:
                     status = RunStatus.HALTED
@@ -226,11 +227,16 @@ class Engine:
         if not self.risk.on_candle(self._risk_state(candle)):
             return
 
-        # external control: kill halts, pause skips strategy actions
+        # external control: kill/switch halt, pause skips strategy actions
         if self._control_probe is not None:
             command = await self._control_probe()
-            if command == "kill":
+            if command in ("kill", "switch"):
+                # a switch is a graceful kill: the container restart policy
+                # brings the run back up on the new settings
                 self._killed = True
+                self._kill_reason = (
+                    "strategy switch requested" if command == "switch" else "killed via control API"
+                )
                 return
             if command == "pause":
                 log.info("Run paused; skipping strategy for %s", candle.ts)

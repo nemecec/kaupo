@@ -264,6 +264,7 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
   <li><code>equity_snapshots(run_id, ts, equity, cash, unrealized_pnl)</code></li>
   <li><code>reports(id, ts, period, run_id, body jsonb)</code></li>
   <li><code>events(id, ts, level, source, message, data jsonb)</code> — alerts and audit log</li>
+  <li><code>settings(key, value jsonb, updated_at)</code> — instance settings, for example the shadow run configuration</li>
 </ul>
 <p>Kraken serves only the 720 newest candles of a timeframe, so deep history comes from the Binance backfill path (public API, no key). Prices differ slightly across exchanges, so each backtest reads one exchange's candles.</p>
 <p>Backups: a nightly <code>pg_dump</code> goes to S3 with lifecycle expiry. This costs pennies per month.</p>
@@ -276,8 +277,10 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
   <li><code>GET /api/v1/runs?mode=…</code>, <code>GET /api/v1/runs/{id}/equity|orders|trades|positions</code></li>
   <li><code>GET /api/v1/reports/daily?date=…</code></li>
   <li><code>POST /api/v1/control/pause | resume | kill</code> — kill switch (authenticated)</li>
+  <li><code>GET /api/v1/settings</code>, <code>PUT /api/v1/settings</code> — instance settings (shadow strategy, pair, timeframe)</li>
   <li><code>WS /ws/live</code> — live status updates for the dashboard (token in the query string)</li>
 </ul>
+<p>A <code>PUT /api/v1/settings</code> change to the shadow configuration writes a <code>switch</code> command on the control channel. The shadow engine halts after the current candle. Docker restarts the container, and the new process reads the new settings from the <code>settings</code> table. No redeploy is necessary.</p>
 <p>Auth uses two bearer tokens. The admin token gives full access. The read-only token is for agents. There is no user management. The OpenAPI schema generates the TypeScript client for the UI.</p>
 
 <h2 id="ui"><span class="num">10.</span>UI (React + TypeScript)</h2>

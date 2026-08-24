@@ -121,6 +121,14 @@ class ReportRow(Base):
     body: Mapped[dict[str, Any]] = mapped_column(JSON)
 
 
+class SettingRow(Base):
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[Any] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class EventRow(Base):
     __tablename__ = "events"
 

@@ -111,6 +111,19 @@ class ControlIn(BaseModel):
     run_id: str | None = None  # null = all runs
 
 
+class SettingsIn(BaseModel):
+    shadow_strategy: str | None = None
+    shadow_pair: str | None = None
+    shadow_timeframe: str | None = None
+
+
+class SettingsOut(BaseModel):
+    shadow_strategy: str
+    shadow_pair: str
+    shadow_timeframe: str
+    updated_at: dict[str, datetime]  # per stored key; absent keys use defaults
+
+
 class ControlOut(BaseModel):
     command: str
     run_id: str | None

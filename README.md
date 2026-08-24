@@ -82,6 +82,10 @@ KAUPO_STRATEGIES_DIR=../kaupo-strategies/strategies docker compose --profile tra
 
 The shadow strategy comes from `KAUPO_SHADOW_STRATEGY` (default `regime-switch`). Set it to a strategy id from your private repository.
 
+### Switching the shadow strategy at runtime
+
+`GET /api/v1/settings` shows the effective shadow configuration. `PUT /api/v1/settings` changes it. The current shadow run stops through the control channel, and the restarted container reads the new values from the database. No redeploy is necessary. The `KAUPO_SHADOW_STRATEGY` variable only seeds a fresh database; it does not overwrite an API change.
+
 To stop the stack:
 
 ```bash

@@ -258,6 +258,19 @@ class TestControlAndFailureWiring:
         assert result.status is RunStatus.HALTED
         assert result.halt_reason == "killed via control API"
 
+    async def test_switch_halts_like_kill_with_switch_reason(self) -> None:
+        commands = iter([None, None, "switch"])
+
+        async def probe() -> str | None:
+            return next(commands, "switch")
+
+        recorder = InMemoryRecorder()
+        engine = build_engine(recorder, control_probe=probe)
+        result = await engine.run(aiter([candle(i) for i in range(10)]))
+        assert result.status is RunStatus.HALTED
+        assert result.halt_reason == "strategy switch requested"
+        assert recorder.final_status is RunStatus.HALTED
+
     async def test_pause_skips_strategy_but_keeps_history(self) -> None:
         seen: list[int] = []
 

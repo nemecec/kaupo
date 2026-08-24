@@ -208,9 +208,13 @@ def lint_strategies(strategies_dir: StrategiesDirOpt = None) -> None:
 
 @run_app.command(name="shadow")
 def run_shadow_cmd(
-    strategy: StrategyOpt,
-    pair: PairOpt,
-    timeframe: TimeframeOpt = "1h",
+    strategy: Annotated[
+        str | None, typer.Option(help="strategy id (seeds the DB; stored setting wins)")
+    ] = None,
+    pair: Annotated[str | None, typer.Option(help="e.g. BTC/EUR (seeds the DB; stored setting wins)")] = None,
+    timeframe: Annotated[
+        str | None, typer.Option(help="1m 5m 15m 30m 1h 4h 1d (seeds the DB; stored setting wins)")
+    ] = None,
     param: ParamOpt = [],
     cash: Annotated[float, typer.Option(help="virtual starting cash", min=0.01)] = 10_000.0,
     warmup: Annotated[
@@ -219,31 +223,21 @@ def run_shadow_cmd(
     strategies_dir: StrategiesDirOpt = None,
     verbose: VerboseOpt = False,
 ) -> None:
-    """Start shadow trading: live market data, virtual money. Ctrl-C to stop."""
+    """Start shadow trading: live market data, virtual money. Ctrl-C to stop.
+
+    Strategy, pair, and timeframe resolve from the settings table; the flags
+    only seed a fresh database. Change them at runtime with PUT /api/v1/settings.
+    """
     _setup_logging(verbose)
     from kaupo.core.runner import ShadowRequest, run_shadow
     from kaupo.data.kraken import KrakenClient
-    from kaupo.db.session import get_sessionmaker
+    from kaupo.data.settings import resolve_shadow_config
+    from kaupo.db.session import get_sessionmaker, sm_scope
     from kaupo.sdk.loader import load_strategies
 
     directory = strategies_dir or get_settings().strategies_dir
     _ensure_strategies_clean(directory)
     strategies = load_strategies(directory)
-    if strategy not in strategies:
-        err_console.print(
-            f"[red]Unknown strategy {strategy!r}[/red]. Available: {', '.join(sorted(strategies))}"
-        )
-        raise typer.Exit(1)
-
-    request = ShadowRequest(
-        strategy=strategies[strategy],
-        params=_parse_params(param),
-        pair=Pair.parse(pair),
-        timeframe=Timeframe.parse(timeframe),
-        starting_cash=cash,
-        warmup=warmup,
-        poll_interval_seconds=get_settings().poll_interval_seconds,
-    )
 
     async def _run() -> Any:
         stop = asyncio.Event()
@@ -252,8 +246,27 @@ def run_shadow_cmd(
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
+        sessionmaker = get_sessionmaker()
+        async with sm_scope(sessionmaker) as session:
+            resolved = await resolve_shadow_config(session, strategy, pair, timeframe)
+        if resolved.strategy not in strategies:
+            err_console.print(
+                f"[red]Unknown strategy {resolved.strategy!r}[/red]. "
+                f"Available: {', '.join(sorted(strategies))}"
+            )
+            raise typer.Exit(1)
+        request = ShadowRequest(
+            strategy=strategies[resolved.strategy],
+            params=_parse_params(param),
+            pair=Pair.parse(resolved.pair),
+            timeframe=Timeframe.parse(resolved.timeframe),
+            starting_cash=cash,
+            warmup=warmup,
+            poll_interval_seconds=get_settings().poll_interval_seconds,
+        )
+        console.print(f"Starting shadow run: {resolved.strategy} on {resolved.pair} {resolved.timeframe}")
         async with KrakenClient() as client:
-            return await run_shadow(request, get_sessionmaker(), client, stop=stop)
+            return await run_shadow(request, sessionmaker, client, stop=stop)
 
     result = asyncio.run(_run())
     console.print(

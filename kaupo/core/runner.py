@@ -71,12 +71,13 @@ async def _chain_persist(
 
 
 class DbControlProbe:
-    """Latest control command (kill/pause/resume) from the events table.
+    """Latest control command (kill/pause/resume/switch) from the events table.
 
     Commands may target this run specifically or all runs (run_id null).
     "resume" clears a pause; state sticks until a newer command arrives.
     Commands issued before the run started are ignored (a stale global kill
-    must not assassinate a fresh run), and a kill, once seen, is terminal.
+    must not assassinate a fresh run), and a kill or switch, once seen, is
+    terminal.
     """
 
     def __init__(
@@ -91,8 +92,8 @@ class DbControlProbe:
         self._command: str | None = None
 
     async def __call__(self) -> str | None:
-        if self._command == "kill":
-            return "kill"  # terminal
+        if self._command in ("kill", "switch"):
+            return self._command  # terminal
         # latest command addressed to this run or to all runs (run_id null),
         # issued after this run started
         async with sm_scope(self._sessionmaker) as session:
@@ -110,7 +111,7 @@ class DbControlProbe:
             row = rows.scalars().first()
             if row is not None:
                 command = (row.data or {}).get("command")
-                if command in ("kill", "pause", "resume"):
+                if command in ("kill", "pause", "resume", "switch"):
                     self._command = None if command == "resume" else command
         return self._command
 

@@ -256,6 +256,7 @@ def test_backtest_unknown_strategy() -> None:
 def test_run_shadow_command(monkeypatch: pytest.MonkeyPatch) -> None:
     import kaupo.core.runner as runner_mod
     import kaupo.data.kraken as kraken_mod
+    import kaupo.data.settings as settings_mod
 
     class FakeClient:
         async def __aenter__(self) -> "FakeClient":
@@ -270,12 +271,20 @@ def test_run_shadow_command(monkeypatch: pytest.MonkeyPatch) -> None:
         final_equity = 10_000
         halt_reason = "stopped externally"
 
+    async def fake_resolve(session: Any, strategy: Any, pair: Any, timeframe: Any) -> Any:
+        return settings_mod.ShadowSettings(
+            strategy=strategy or "regime-switch",
+            pair=pair or "BTC/EUR",
+            timeframe=timeframe or "1h",
+        )
+
     async def fake_run_shadow(request: Any, sm: Any, client: Any, stop: Any = None) -> Any:
         assert request.pair == "BTC/EUR" or str(request.pair) == "BTC/EUR"
         return FakeResult()
 
     monkeypatch.setattr(kraken_mod, "KrakenClient", FakeClient)
     monkeypatch.setattr(runner_mod, "run_shadow", fake_run_shadow)
+    monkeypatch.setattr(settings_mod, "resolve_shadow_config", fake_resolve)
 
     result = runner.invoke(
         cli.app,
@@ -292,6 +301,59 @@ def test_run_shadow_command(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "Shadow run ended" in result.output
+
+
+def test_run_shadow_no_flags_uses_resolved_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flags are optional: with none given, the resolved DB/default config is used."""
+    import kaupo.core.runner as runner_mod
+    import kaupo.data.kraken as kraken_mod
+    import kaupo.data.settings as settings_mod
+
+    class FakeClient:
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            pass
+
+    class FakeResult:
+        status = type("S", (), {"value": "halted"})()
+        num_fills = 0
+        final_equity = 10_000
+        halt_reason = "strategy switch requested"
+
+    captured: dict[str, Any] = {}
+
+    async def fake_resolve(session: Any, strategy: Any, pair: Any, timeframe: Any) -> Any:
+        captured["resolve_args"] = (strategy, pair, timeframe)
+        return settings_mod.ShadowSettings(strategy="regime-switch", pair="BTC/EUR", timeframe="1h")
+
+    async def fake_run_shadow(request: Any, sm: Any, client: Any, stop: Any = None) -> Any:
+        captured["strategy_id"] = request.strategy.id
+        return FakeResult()
+
+    monkeypatch.setattr(kraken_mod, "KrakenClient", FakeClient)
+    monkeypatch.setattr(runner_mod, "run_shadow", fake_run_shadow)
+    monkeypatch.setattr(settings_mod, "resolve_shadow_config", fake_resolve)
+
+    result = runner.invoke(cli.app, ["run", "shadow", "--strategies-dir", str(EXAMPLES_DIR)])
+    assert result.exit_code == 0, result.output
+    assert captured["resolve_args"] == (None, None, None)
+    assert captured["strategy_id"] == "regime-switch"
+
+
+def test_run_shadow_unknown_resolved_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stored strategy id that is not in the strategies dir fails fast."""
+    import kaupo.data.settings as settings_mod
+
+    async def fake_resolve(session: Any, strategy: Any, pair: Any, timeframe: Any) -> Any:
+        return settings_mod.ShadowSettings(strategy="nope", pair="BTC/EUR", timeframe="1h")
+
+    monkeypatch.setattr(settings_mod, "resolve_shadow_config", fake_resolve)
+
+    result = runner.invoke(cli.app, ["run", "shadow", "--strategies-dir", str(EXAMPLES_DIR)])
+    assert result.exit_code == 1
+    assert "Unknown strategy" in result.output
 
 
 def test_backtest_lint_enforced_cli(tmp_path: Path) -> None:

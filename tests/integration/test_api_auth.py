@@ -56,6 +56,20 @@ async def test_readonly_can_get_not_post(authed_client: AsyncClient) -> None:
     assert r.status_code == 403
 
 
+async def test_settings_readonly_get_admin_put(authed_client: AsyncClient) -> None:
+    readonly = {"Authorization": "Bearer readonly-secret"}
+    r = await authed_client.get("/api/v1/settings", headers=readonly)
+    assert r.status_code == 200
+
+    r = await authed_client.put("/api/v1/settings", json={"shadow_timeframe": "4h"}, headers=readonly)
+    assert r.status_code == 403
+
+    admin = {"Authorization": "Bearer admin-secret"}
+    r = await authed_client.put("/api/v1/settings", json={"shadow_timeframe": "4h"}, headers=admin)
+    assert r.status_code == 200
+    assert r.json()["shadow_timeframe"] == "4h"
+
+
 async def test_admin_full_access(authed_client: AsyncClient) -> None:
     headers = {"Authorization": "Bearer admin-secret"}
     r = await authed_client.get("/api/v1/runs", headers=headers)
@@ -113,3 +127,20 @@ async def test_control_probe_kill_is_terminal(session: AsyncSession) -> None:
     assert await probe() == "kill"
     await _add_command(session, "resume", "run-x")
     assert await probe() == "kill"  # resume cannot un-kill
+
+
+async def test_control_probe_switch_is_recognized_and_terminal(session: AsyncSession) -> None:
+    probe = DbControlProbe(get_sessionmaker(), "run-s")
+    assert await probe() is None
+
+    await _add_command(session, "switch", "run-s")
+    assert await probe() == "switch"
+
+    await _add_command(session, "resume", "run-s")
+    assert await probe() == "switch"  # terminal, like kill
+
+
+async def test_control_probe_ignores_stale_switch(session: AsyncSession) -> None:
+    await _add_command(session, "switch", None, age_s=3600)  # stale global switch
+    probe = DbControlProbe(get_sessionmaker(), "run-new")
+    assert await probe() is None  # ignored: issued before the run started
