@@ -90,6 +90,15 @@ export interface CandlesQuery {
   limit?: number
 }
 
+/**
+ * Row limits requested from run detail endpoints. The backend returns the LATEST
+ * N rows (ascending), so a response whose length equals the limit may be capped —
+ * see CappedNotice.
+ */
+export const EQUITY_LIMIT = 50_000
+export const ORDERS_LIMIT = 10_000
+export const TRADES_LIMIT = 10_000
+
 export const api = {
   status: () => request<StatusResponse>('/api/v1/status'),
 
@@ -105,11 +114,14 @@ export const api = {
 
   run: (id: string) => request<Run>(`/api/v1/runs/${id}`),
 
-  runEquity: (id: string) => request<EquityPoint[]>(`/api/v1/runs/${id}/equity`),
+  runEquity: (id: string) =>
+    request<EquityPoint[]>(`/api/v1/runs/${id}/equity${qs({ limit: EQUITY_LIMIT })}`),
 
-  runOrders: (id: string) => request<Order[]>(`/api/v1/runs/${id}/orders`),
+  runOrders: (id: string) =>
+    request<Order[]>(`/api/v1/runs/${id}/orders${qs({ limit: ORDERS_LIMIT })}`),
 
-  runTrades: (id: string) => request<Trade[]>(`/api/v1/runs/${id}/trades`),
+  runTrades: (id: string) =>
+    request<Trade[]>(`/api/v1/runs/${id}/trades${qs({ limit: TRADES_LIMIT })}`),
 
   runPositions: (id: string) => request<Position[]>(`/api/v1/runs/${id}/positions`),
 

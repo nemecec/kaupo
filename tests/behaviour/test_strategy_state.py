@@ -43,8 +43,16 @@ class FakeCtx:
 
 
 def candle(i: int, price: float) -> Candle:
-    return Candle(pair=PAIR, timeframe=Timeframe.H1, ts=BASE + timedelta(hours=i),
-                  open=price, high=price * 1.005, low=price * 0.995, close=price, volume=1.0)
+    return Candle(
+        pair=PAIR,
+        timeframe=Timeframe.H1,
+        ts=BASE + timedelta(hours=i),
+        open=price,
+        high=price * 1.005,
+        low=price * 0.995,
+        close=price,
+        volume=1.0,
+    )
 
 
 def test_rejected_exit_does_not_desync_state() -> None:

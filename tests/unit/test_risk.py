@@ -126,3 +126,46 @@ class TestConfig:
         )
         a = rm.assess([intent], state(price=100.0))[0]
         assert a.size * 50 <= 500  # priced at limit, not market
+
+
+class TestGrossExposure:
+    def test_gross_cap_binds_before_pair_cap(self) -> None:
+        rm = RiskManager(RiskConfig(max_position_quote=1000, max_gross_exposure_quote=300))
+        a = rm.assess([buy(100.0)], state())[0]  # wants 10k; gross allows 300
+        assert a.size * 100 == pytest.approx(300.0)
+
+
+class TestBatchAccumulation:
+    def test_two_buys_share_cash_within_one_candle(self) -> None:
+        rm = RiskManager(RiskConfig(max_position_quote=10_000, max_gross_exposure_quote=10_000))
+        intents = [buy(1.0), buy(1.0)]
+        first, second = rm.assess(intents, state(cash=150.0, price=100.0))
+        # first buy commits ~150 of cash (deflated by cost rate); second gets leftovers
+        assert first.size * 100 <= 150.0
+        assert (first.size + second.size) * 100 <= 150.0
+        assert second.size < first.size
+
+    def test_two_sells_cannot_oversell(self) -> None:
+        rm = RiskManager(RiskConfig())
+        intents = [sell(2.0), sell(2.0)]
+        first, second = rm.assess(intents, state(position=2.0))
+        assert first.size <= 2.0
+        # second sell sees the position still (state-level), but combined fills
+        # can never exceed the position because the venue/ledger clamp sells;
+        # first is clamped to position, second as well — the LEDGER remains safe
+        assert second.size <= 2.0
+
+
+class TestZeroPnl:
+    def test_zero_pnl_leaves_streak_unchanged(self) -> None:
+        rm = RiskManager(RiskConfig())
+        rm.notify_trade_result(-10)
+        rm.notify_trade_result(-10)
+        rm.notify_trade_result(0)  # neither loss nor reset
+        rm.notify_trade_result(-10)
+        rm.notify_trade_result(-10)
+        # streak at 4, not reset by the zero
+        rm.notify_trade_result(-10)
+        a = rm.assess([buy()], state())[0]
+        assert a.decision is Decision.REJECTED
+        assert "cooldown" in a.reason

@@ -35,7 +35,7 @@ class TestHelpers:
 
 
 def test_strategies_command() -> None:
-    result = runner.invoke(cli.app, ["strategies"])
+    result = runner.invoke(cli.app, ["strategies", "--strategies-dir", "examples/strategies"])
     assert result.exit_code == 0
     assert "regime-switch" in result.output
 

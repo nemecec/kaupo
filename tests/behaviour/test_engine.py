@@ -66,7 +66,11 @@ async def aiter(candles: list[Candle]) -> AsyncIterator[Candle]:
         yield c
 
 
-def build_engine(recorder: InMemoryRecorder, risk: RiskManager | None = None) -> Engine:
+def build_engine(
+    recorder: InMemoryRecorder,
+    risk: RiskManager | None = None,
+    control_probe=None,  # type: ignore[no-untyped-def]
+) -> Engine:
     return Engine(
         strategy=BuyAt3SellAt7(BuyAt3SellAt7.params_schema()),
         venue=PaperVenue(taker_fee_bps=0, maker_fee_bps=0, slippage_bps=0),  # zero-cost for exact math
@@ -81,6 +85,7 @@ def build_engine(recorder: InMemoryRecorder, risk: RiskManager | None = None) ->
             strategy_source_hash="x",
             config={},
         ),
+        control_probe=control_probe,
     )
 
 
@@ -191,3 +196,84 @@ async def test_oversized_buy_is_resized_and_fills_without_crashing() -> None:
     fill = recorder.fills[0]
     assert fill.size * fill.price * (1 + 0.0026) <= 1_000.0
     assert 0 < float(result.final_equity) < 1_100
+
+
+class TestControlAndFailureWiring:
+    async def test_rejected_intent_reaches_no_venue(self) -> None:
+        class DustBuyer(StrategyBase):
+            id = "dust"
+
+            def on_candle(self, ctx):  # type: ignore[no-untyped-def]
+                return [OrderIntent(pair=PAIR, side=Side.BUY, size=0.00001)]
+
+        recorder = InMemoryRecorder()
+        engine = Engine(
+            strategy=DustBuyer(DustBuyer.params_schema()),
+            venue=PaperVenue(26, 16, 5),
+            risk=RiskManager(RiskConfig()),
+            ledger=Ledger("EUR", 10_000.0, BASE),
+            recorder=recorder,
+            config=EngineConfig(pair=PAIR, timeframe=Timeframe.H1),
+            run_info=RunInfo(
+                mode=RunMode.BACKTEST,
+                strategy_id="dust",
+                strategy_version="v1",
+                strategy_source_hash="x",
+                config={},
+            ),
+        )
+        result = await engine.run(aiter([candle(i) for i in range(5)]))
+        assert result.status is RunStatus.COMPLETED
+        assert recorder.orders == []
+        assert recorder.fills == []
+
+    async def test_strategy_exception_fails_run_and_finishes(self) -> None:
+        class Boom(StrategyBase):
+            id = "boom"
+
+            def on_candle(self, ctx):  # type: ignore[no-untyped-def]
+                raise RuntimeError("strategy exploded")
+
+        recorder = InMemoryRecorder()
+        engine = build_engine(recorder)
+        engine.strategy = Boom(Boom.params_schema())
+        try:
+            result = await engine.run(aiter([candle(i) for i in range(3)]))
+            assert result.status is RunStatus.FAILED
+        except RuntimeError:
+            pass  # engine re-raises after finishing
+        assert recorder.final_status is RunStatus.FAILED
+
+    async def test_kill_stops_at_next_candle(self) -> None:
+        from kaupo.core.runner import DbControlProbe  # noqa: F401
+
+        commands = iter([None, None, "kill"])
+
+        async def probe() -> str | None:
+            return next(commands, "kill")
+
+        recorder = InMemoryRecorder()
+        engine = build_engine(recorder, control_probe=probe)
+        result = await engine.run(aiter([candle(i) for i in range(10)]))
+        assert result.status is RunStatus.HALTED
+        assert result.halt_reason == "killed via control API"
+
+    async def test_pause_skips_strategy_but_keeps_history(self) -> None:
+        seen: list[int] = []
+
+        class Observer(BuyAt3SellAt7):
+            def on_candle(self, ctx):  # type: ignore[no-untyped-def]
+                seen.append(len(ctx.history(10_000)))
+                return []
+
+        async def probe() -> str | None:
+            return "pause"
+
+        recorder = InMemoryRecorder()
+        engine = build_engine(recorder, control_probe=probe)
+        engine.strategy = Observer(Observer.params_schema())
+        result = await engine.run(aiter([candle(i) for i in range(5)]))
+        assert result.status is RunStatus.COMPLETED
+        assert seen == []  # strategy never called while paused
+        assert len(engine.history) == 5  # history still advanced
+        assert len(recorder.equity) == 5  # equity still recorded

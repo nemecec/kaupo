@@ -11,6 +11,8 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from kaupo.core.engine import Engine, EngineConfig
 from kaupo.core.recorder import InMemoryRecorder, RunInfo
 from kaupo.domain import Candle, Pair, RunMode, Side, Timeframe
@@ -113,3 +115,11 @@ async def test_flat_market_stays_out() -> None:
     candles = [market_candle(i, 100.0, spread=0.001) for i in range(200)]
     recorder = await run_strategy(candles)
     assert recorder.fills == []
+
+
+async def test_golden_fill_prices() -> None:
+    """Pin exact numbers so any change in indicator/fill math is caught."""
+    recorder = await run_strategy(choppy_market())
+    first_buy = next(f for f in recorder.fills if f.side is Side.BUY)
+    assert first_buy.price == pytest.approx(97.77933252774072, abs=1e-9)
+    assert float(recorder.equity[-1][1]) == pytest.approx(11_858.594256558772, abs=1e-9)

@@ -7,8 +7,11 @@ import {
   useRunPositions,
   useRunTrades,
 } from '../hooks/queries'
+import { EQUITY_LIMIT, ORDERS_LIMIT, TRADES_LIMIT } from '../lib/api'
+import { candleQueryEnd } from '../lib/timeframes'
 import { formatDateTime, formatNumber, shortId } from '../lib/format'
 import { EmptyState, ErrorState, Loading, Panel } from '../components/common'
+import { CappedNotice } from '../components/CappedNotice'
 import { ModeBadge, StatusBadge } from '../components/StatusBadge'
 import { MetricCards } from '../components/MetricCards'
 import { EquityChart } from '../components/charts/EquityChart'
@@ -125,7 +128,9 @@ export default function RunDetailPage() {
           pair,
           timeframe,
           start: equity[0].ts,
-          end: equity[equity.length - 1].ts,
+          // candles are filtered ts < end; the last equity snapshot carries the
+          // final candle's own ts, so extend by one interval to include it
+          end: candleQueryEnd(equity[equity.length - 1].ts, timeframe),
           limit: 2000,
         }
       : null,
@@ -163,7 +168,10 @@ export default function RunDetailPage() {
 
       <MetricCards metrics={run.metrics} />
 
-      <Panel title="Equity">
+      <Panel
+        title="Equity"
+        action={<CappedNotice length={equity.length} limit={EQUITY_LIMIT} noun="points" />}
+      >
         {equityQ.isLoading ? (
           <Loading />
         ) : equityQ.isError ? (
@@ -218,7 +226,10 @@ export default function RunDetailPage() {
         </Panel>
       )}
 
-      <Panel title={`Orders${ordersQ.data ? ` (${ordersQ.data.length})` : ''}`}>
+      <Panel
+        title={`Orders${ordersQ.data ? ` (${ordersQ.data.length})` : ''}`}
+        action={<CappedNotice length={ordersQ.data?.length ?? 0} limit={ORDERS_LIMIT} noun="orders" />}
+      >
         {ordersQ.isLoading ? (
           <Loading />
         ) : ordersQ.isError ? (
@@ -228,7 +239,10 @@ export default function RunDetailPage() {
         )}
       </Panel>
 
-      <Panel title={`Trades${tradesQ.data ? ` (${tradesQ.data.length})` : ''}`}>
+      <Panel
+        title={`Trades${tradesQ.data ? ` (${tradesQ.data.length})` : ''}`}
+        action={<CappedNotice length={tradesQ.data?.length ?? 0} limit={TRADES_LIMIT} noun="trades" />}
+      >
         {tradesQ.isLoading ? (
           <Loading />
         ) : tradesQ.isError ? (

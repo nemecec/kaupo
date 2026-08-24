@@ -108,16 +108,23 @@ function snapToNearest(times: readonly number[], target: number): number | null 
 
 /**
  * Trade markers for a chart series. When `seriesTimes` (ascending) is given, each marker
- * is snapped to the nearest bar time so it actually renders on that series.
+ * is snapped to the nearest bar time so it actually renders on that series. Trades whose
+ * ts falls outside the loaded bar range are SKIPPED — the backend returns the latest N
+ * bars, so older/newer trades may simply not be covered by the chart.
  */
 export function tradeMarkers(
   trades: Trade[],
   seriesTimes?: readonly number[],
 ): SeriesMarker<UTCTimestamp>[] {
   const sorted = [...trades].sort((a, b) => a.ts.localeCompare(b.ts))
+  const first = seriesTimes?.[0]
+  const last = seriesTimes?.[seriesTimes.length - 1]
   const markers: SeriesMarker<UTCTimestamp>[] = []
   for (const t of sorted) {
     const raw = isoToTs(t.ts) as number
+    if (seriesTimes && (first === undefined || last === undefined || raw < first || raw > last)) {
+      continue
+    }
     const snapped = seriesTimes ? snapToNearest(seriesTimes, raw) : raw
     if (snapped === null) continue
     markers.push({

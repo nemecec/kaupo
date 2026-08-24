@@ -69,3 +69,26 @@ class TestComputeMetrics:
     def test_too_little_data(self) -> None:
         m = compute_metrics(self.equity_curve([100]), [], Timeframe.H1, 100)
         assert "error" in m
+
+
+def test_metrics_with_zero_in_curve() -> None:
+    # a zero in the curve: division produces inf/nan — metrics must not crash
+    m = compute_metrics(
+        [(BASE + timedelta(hours=i), v) for i, v in enumerate([100, 0, 50, 100])],
+        [],
+        Timeframe.H1,
+        100,
+    )
+    assert "sharpe" in m
+    assert m["max_drawdown_pct"] == -100.0
+
+
+def test_metrics_remaining_keys() -> None:
+    fills = [fill(Side.BUY, 100, 1, fee=1), fill(Side.SELL, 110, 1, fee=1, i=1)]
+    curve = [(BASE + timedelta(hours=i), v) for i, v in enumerate([100, 105, 108])]
+    m = compute_metrics(curve, fills, Timeframe.H1, 100)
+    assert m["total_fees"] == 2.0
+    assert m["days"] > 0
+    assert "cagr_pct" in m
+    assert "sortino" in m
+    assert m["risk_rejections"] == 0

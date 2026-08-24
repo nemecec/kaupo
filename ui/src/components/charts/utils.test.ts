@@ -38,16 +38,32 @@ describe('tradeMarkers', () => {
     fee: 0.1,
   }
 
+  const toSec = (iso: string) => Math.floor(new Date(iso).getTime() / 1000)
+  const bars = [toSec('2026-08-24T10:00:00Z'), toSec('2026-08-24T11:00:00Z')]
+
   it('maps sides to arrow markers', () => {
     const markers = tradeMarkers([buy, { ...buy, id: 't2', side: 'sell' }])
     expect(markers[0]).toMatchObject({ shape: 'arrowUp', position: 'belowBar' })
     expect(markers[1]).toMatchObject({ shape: 'arrowDown', position: 'aboveBar' })
   })
 
-  it('snaps markers to the nearest bar time', () => {
-    const barTime = Math.floor(new Date('2026-08-24T10:00:00Z').getTime() / 1000)
-    const markers = tradeMarkers([buy], [barTime])
+  it('snaps in-range markers to the nearest bar time', () => {
+    const markers = tradeMarkers([buy], bars) // 10:03 -> nearest bar is 10:00
     expect(markers).toHaveLength(1)
-    expect(markers[0].time).toBe(barTime)
+    expect(markers[0].time).toBe(bars[0])
+  })
+
+  it('skips markers outside the loaded bar range', () => {
+    const early = { ...buy, id: 't0', ts: '2026-08-24T09:00:00Z' }
+    const late = { ...buy, id: 't3', ts: '2026-08-24T12:00:00Z' }
+    const markers = tradeMarkers([early, buy, late], bars)
+    expect(markers).toHaveLength(1)
+    expect(markers[0].time).toBe(bars[0])
+    expect(tradeMarkers([early], bars)).toHaveLength(0)
+    expect(tradeMarkers([late], bars)).toHaveLength(0)
+  })
+
+  it('returns no markers when no bars are loaded', () => {
+    expect(tradeMarkers([buy], [])).toHaveLength(0)
   })
 })

@@ -3,6 +3,7 @@
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -18,6 +19,7 @@ from kaupo.sdk.loader import load_strategies
 pytestmark = pytest.mark.integration
 
 PAIR = Pair.parse("BTC/EUR")
+EXAMPLES_DIR = Path(__file__).resolve().parents[2] / "examples" / "strategies"
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
 
@@ -53,7 +55,7 @@ async def _seed_run(session: AsyncSession) -> RunId:
     await upsert_candles(session, candles)
     await session.commit()
 
-    strategy = load_strategies("examples/strategies")["regime-switch"]
+    strategy = load_strategies(EXAMPLES_DIR)["regime-switch"]
     run_id, _, _ = await run_backtest(
         BacktestRequest(
             strategy=strategy,

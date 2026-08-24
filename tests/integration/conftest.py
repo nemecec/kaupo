@@ -48,6 +48,7 @@ def migrated_url(pg_url: str) -> str:
 
 @pytest.fixture
 async def session(migrated_url: str) -> AsyncIterator[AsyncSession]:
+    previous_url = os.environ.get("KAUPO_DATABASE_URL")
     os.environ["KAUPO_DATABASE_URL"] = migrated_url
     get_settings.cache_clear()
     await dispose_engine()
@@ -69,4 +70,8 @@ async def session(migrated_url: str) -> AsyncIterator[AsyncSession]:
         await s.commit()
         yield s
     await dispose_engine()
+    if previous_url is None:
+        os.environ.pop("KAUPO_DATABASE_URL", None)
+    else:
+        os.environ["KAUPO_DATABASE_URL"] = previous_url
     get_settings.cache_clear()

@@ -14,6 +14,7 @@ export function useRuns(filter: RunsFilter) {
   return useQuery({
     queryKey: ['runs', 'list', filter],
     queryFn: () => api.runs(filter),
+    refetchInterval: 15_000,
   })
 }
 
