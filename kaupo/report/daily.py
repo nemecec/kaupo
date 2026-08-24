@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from kaupo.backtest.metrics import round_trips
+from kaupo.backtest.metrics import open_position, round_trips
 from kaupo.db.models import EquitySnapshotRow, FillRow, ReportRow, RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Fill, OrderId, Pair, Side, new_id, utc_now
@@ -71,8 +71,8 @@ async def _run_report(session: AsyncSession, run: RunRow, start: datetime, end: 
     end_equity = snapshots[-1].equity if snapshots else start_equity
     pnl = (end_equity - start_equity) if start_equity is not None and end_equity is not None else None
 
-    domain_fills = [
-        Fill(
+    def to_domain(f: FillRow) -> Fill:
+        return Fill(
             order_id=OrderId(f.order_id),
             pair=Pair.parse(f.pair),
             side=Side(f.side),
@@ -81,9 +81,19 @@ async def _run_report(session: AsyncSession, run: RunRow, start: datetime, end: 
             size=f.size,
             fee=f.fee,
         )
-        for f in fills
-    ]
-    trips = round_trips(domain_fills)
+
+    # seed with the position carried into the day so overnight round trips count
+    pre_fills = (
+        (
+            await session.execute(
+                select(FillRow).where(FillRow.run_id == run.id, FillRow.ts < start).order_by(FillRow.ts)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    initial = open_position([to_domain(f) for f in pre_fills]) if pre_fills else (0.0, 0.0)
+    trips = round_trips([to_domain(f) for f in fills], initial=initial)
 
     return {
         "run_id": run.id,
@@ -116,7 +126,11 @@ async def build_daily_report(
             (
                 await session.execute(
                     select(RunRow)
-                    .where(RunRow.started_at < end, RunRow.mode.in_(("shadow", "live")))
+                    .where(
+                        RunRow.started_at < end,
+                        RunRow.mode.in_(("shadow", "live")),
+                        (RunRow.ended_at.is_(None)) | (RunRow.ended_at >= start),
+                    )
                     .order_by(RunRow.started_at)
                 )
             )
@@ -141,13 +155,15 @@ async def build_daily_report(
     }
 
     if persist:
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
         async with sm_scope(sessionmaker) as session:
-            existing = (
-                (await session.execute(select(ReportRow).where(ReportRow.period == day.isoformat())))
-                .scalars()
-                .all()
+            stmt = pg_insert(ReportRow).values(
+                id=new_id(), ts=utc_now(), period=day.isoformat(), run_id=None, body=body
             )
-            for row in existing:
-                await session.delete(row)
-            session.add(ReportRow(id=new_id(), ts=utc_now(), period=day.isoformat(), run_id=None, body=body))
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["period"],
+                set_={"ts": stmt.excluded.ts, "body": stmt.excluded.body},
+            )
+            await session.execute(stmt)
     return body

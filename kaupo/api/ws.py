@@ -12,6 +12,8 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
+from kaupo.api.deps import check_token
+from kaupo.config import get_settings
 from kaupo.db.models import EquitySnapshotRow, RunRow
 from kaupo.db.session import get_sessionmaker
 
@@ -60,6 +62,11 @@ async def _snapshot() -> dict[str, Any]:
 
 
 async def live_ws(websocket: WebSocket) -> None:
+    """Clients pass the token as ?token=... (browsers can't set WS headers)."""
+    settings = get_settings()
+    if check_token(websocket.query_params.get("token", ""), settings) is None:
+        await websocket.close(code=4401)
+        return
     await websocket.accept()
     log.debug("WS client connected")
     try:

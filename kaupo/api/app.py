@@ -29,7 +29,7 @@ app = FastAPI(title="Kaupo", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # single-user dashboard; tighten if exposed
+    allow_origins=get_settings().cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

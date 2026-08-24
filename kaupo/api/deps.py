@@ -4,6 +4,7 @@ Two bearer tokens: admin (full access) and read-only (GETs, used by agents).
 When neither is configured, auth is disabled (local dev) with a startup warning.
 """
 
+import hmac
 import logging
 from typing import Annotated
 
@@ -22,23 +23,33 @@ class Principal:
         self.admin = admin
 
 
+def check_token(token: str, settings: Settings) -> Principal | None:
+    """Validate a token against the configured ones (constant-time).
+
+    Returns a Principal or None. When auth is disabled, returns admin.
+    """
+    if settings.auth_disabled:
+        return Principal(admin=True)
+    if settings.admin_token and hmac.compare_digest(token, settings.admin_token):
+        return Principal(admin=True)
+    if settings.readonly_token and hmac.compare_digest(token, settings.readonly_token):
+        return Principal(admin=False)
+    return None
+
+
 def get_principal(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Security(_bearer)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> Principal:
-    if settings.auth_disabled:
-        return Principal(admin=True)
     token = credentials.credentials if credentials else ""
-    if settings.admin_token and token == settings.admin_token:
-        return Principal(admin=True)
-    if settings.readonly_token and token == settings.readonly_token:
-        return Principal(admin=False)
-        # avoid timing oracle on empty/unknown tokens: fall through to 401
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="invalid or missing token",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    principal = check_token(token, settings)
+    if principal is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid or missing token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return principal
 
 
 def require_admin(principal: Annotated[Principal, Depends(get_principal)]) -> Principal:

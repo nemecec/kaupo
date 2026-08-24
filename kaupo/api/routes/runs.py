@@ -93,15 +93,16 @@ async def run_orders(
     limit: int = Query(1000, le=10_000),
 ) -> list[OrderOut]:
     await _get_run(session, run_id)
-    rows = (
+    rows = list(
         (
             await session.execute(
-                select(OrderRow).where(OrderRow.run_id == run_id).order_by(OrderRow.ts).limit(limit)
+                select(OrderRow).where(OrderRow.run_id == run_id).order_by(OrderRow.ts.desc()).limit(limit)
             )
         )
         .scalars()
         .all()
     )
+    rows.reverse()  # latest N, ascending
     return [
         OrderOut(
             id=r.id,
@@ -129,15 +130,16 @@ async def run_trades(
     limit: int = Query(1000, le=10_000),
 ) -> list[FillOut]:
     await _get_run(session, run_id)
-    rows = (
+    rows = list(
         (
             await session.execute(
-                select(FillRow).where(FillRow.run_id == run_id).order_by(FillRow.ts).limit(limit)
+                select(FillRow).where(FillRow.run_id == run_id).order_by(FillRow.ts.desc()).limit(limit)
             )
         )
         .scalars()
         .all()
     )
+    rows.reverse()  # latest N, ascending
     return [
         FillOut(
             id=r.id,

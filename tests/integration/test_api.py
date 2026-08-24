@@ -193,16 +193,20 @@ async def test_control_writes_command_events(client: AsyncClient, session: Async
 
     from kaupo.db.models import EventRow
 
-    r = await client.post("/api/v1/control/kill", json={"run_id": "abc"})
+    r = await client.post("/api/v1/control/kill", json={"run_id": None})
     assert r.status_code == 200
     assert r.json()["command"] == "kill"
 
     rows = (await session.execute(select(EventRow).where(EventRow.source == "control"))).scalars().all()
     assert len(rows) == 1
-    assert rows[0].data == {"command": "kill", "run_id": "abc"}
+    assert rows[0].data == {"command": "kill", "run_id": None}
 
     r = await client.post("/api/v1/control/nonsense", json={})
     assert r.status_code == 400
+
+    # nonexistent run id -> 404 (was a silent no-op)
+    r = await client.post("/api/v1/control/kill", json={"run_id": "does-not-exist"})
+    assert r.status_code == 404
 
     r = await client.get("/api/v1/events")
     assert r.status_code == 200
@@ -325,3 +329,103 @@ async def test_strategies_endpoint(client: AsyncClient) -> None:
     assert len(body) == 1
     assert body[0]["id"] == "regime-switch"
     assert body[0]["params_schema"]["type"] == "object"
+
+
+async def test_daily_report_overnight_round_trip_and_ended_runs(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    from kaupo.db.models import EquitySnapshotRow, FillRow, OrderRow, RunRow
+    from kaupo.domain import new_id, utc_now
+
+    today = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday = today - timedelta(days=1)
+
+    # run that bought yesterday and sells today -> trip must count today
+    run_id = new_id()
+    session.add(
+        RunRow(
+            id=run_id,
+            mode="shadow",
+            strategy_id="s",
+            strategy_version="v",
+            started_at=yesterday,
+            status="running",
+            config={"pair": "BTC/EUR", "timeframe": "1h"},
+        )
+    )
+    session.add(
+        RunRow(
+            id=new_id(),
+            mode="shadow",
+            strategy_id="s",
+            strategy_version="v",
+            started_at=today - timedelta(days=10),
+            ended_at=today - timedelta(days=5),
+            status="completed",
+            config={"pair": "BTC/EUR", "timeframe": "1h"},
+        )
+    )
+    await session.flush()
+    for oid, side, ts, price in (
+        ("o1", "buy", yesterday + timedelta(hours=23), 100.0),
+        ("o2", "sell", today + timedelta(hours=1), 110.0),
+    ):
+        session.add(
+            OrderRow(
+                id=oid,
+                run_id=run_id,
+                ts=ts,
+                pair="BTC/EUR",
+                side=side,
+                type="market",
+                size=1.0,
+                status="filled",
+            )
+        )
+    await session.flush()
+    session.add(
+        FillRow(
+            id=new_id(),
+            order_id="o1",
+            run_id=run_id,
+            ts=yesterday + timedelta(hours=23),
+            pair="BTC/EUR",
+            side="buy",
+            price=100.0,
+            size=1.0,
+            fee=0.0,
+        )
+    )
+    session.add(
+        FillRow(
+            id=new_id(),
+            order_id="o2",
+            run_id=run_id,
+            ts=today + timedelta(hours=1),
+            pair="BTC/EUR",
+            side="sell",
+            price=110.0,
+            size=1.0,
+            fee=0.0,
+        )
+    )
+    session.add(
+        EquitySnapshotRow(
+            id=new_id(),
+            run_id=run_id,
+            ts=today + timedelta(hours=2),
+            equity=10_010,
+            cash=10_010,
+            unrealized_pnl=0,
+        )
+    )
+    await session.commit()
+
+    day_str = today.date().isoformat()
+    r = await client.get("/api/v1/reports/daily", params={"day": day_str})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["totals"]["num_runs"] == 1  # the long-dead run is excluded
+    run = body["runs"][0]
+    assert run["round_trips"] == 1  # buy yesterday, sell today — counts
+    assert run["winning_trips"] == 1

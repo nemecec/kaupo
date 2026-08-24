@@ -25,12 +25,23 @@ router = APIRouter(prefix="/api/v1/backtests", tags=["backtests"])
 class BacktestJob:
     def __init__(self, task: asyncio.Task[Any]) -> None:
         self.task = task
+        self.created_at = datetime.now(UTC)
         self.run_id: RunId | None = None
         self.error: str | None = None
 
 
-# in-memory job registry (single-process API)
+# in-memory job registry (single-process API); evicted after 24h
 _jobs: dict[str, BacktestJob] = {}
+_JOB_TTL = timedelta(hours=24)
+
+
+def _evict_old_jobs() -> None:
+    cutoff = datetime.now(UTC) - _JOB_TTL
+    stale = [jid for jid, job in _jobs.items() if job.created_at < cutoff]
+    for jid in stale:
+        job = _jobs.pop(jid)
+        if not job.task.done():
+            job.task.cancel()
 
 
 async def _execute(job_id: str, request: BacktestRequest) -> None:
@@ -40,7 +51,7 @@ async def _execute(job_id: str, request: BacktestRequest) -> None:
         job.run_id = run_id
     except Exception as exc:
         log.exception("Backtest job %s failed", job_id)
-        job.error = str(exc)
+        job.error = f"{type(exc).__name__} (details in server logs)"
 
 
 @router.post("", status_code=202)
@@ -66,19 +77,29 @@ async def submit_backtest(
             status_code=404,
             detail=f"unknown strategy {body.strategy!r}; available: {sorted(strategies)}",
         )
-    end = body.end or datetime.now(UTC)
-    start = body.start or end - timedelta(days=body.days)
+    try:
+        pair = Pair.parse(body.pair)
+        timeframe = Timeframe.parse(body.timeframe)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def aware(dt: datetime) -> datetime:
+        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
+    end = aware(body.end) if body.end else datetime.now(UTC)
+    start = aware(body.start) if body.start else end - timedelta(days=body.days)
     request = BacktestRequest(
         strategy=strategies[body.strategy],
         params=body.params,
-        pair=Pair.parse(body.pair),
-        timeframe=Timeframe.parse(body.timeframe),
+        pair=pair,
+        timeframe=timeframe,
         start=start,
         end=end,
         starting_cash=body.starting_cash,
     )
     from kaupo.domain import new_id
 
+    _evict_old_jobs()
     job_id = new_id()
     task = asyncio.create_task(_execute(job_id, request))
     _jobs[job_id] = BacktestJob(task)
@@ -91,8 +112,27 @@ async def get_backtest(
     session: Annotated[AsyncSession, Depends(get_session)],
     job_id: str,
 ) -> dict[str, Any]:
+    _evict_old_jobs()
     job = _jobs.get(job_id)
     if job is None:
+        # maybe it's a run id from a finished/older job (e.g. after restart)
+        row = await session.get(RunRow, job_id)
+        if row is not None and row.mode == "backtest":
+            return {
+                "job_id": job_id,
+                "status": "completed",
+                "run": RunOut(
+                    id=row.id,
+                    mode=row.mode,
+                    strategy_id=row.strategy_id,
+                    strategy_version=row.strategy_version,
+                    started_at=row.started_at,
+                    ended_at=row.ended_at,
+                    status=row.status,
+                    config=row.config,
+                    metrics=row.metrics,
+                ).model_dump(mode="json"),
+            }
         raise HTTPException(status_code=404, detail=f"backtest job {job_id} not found")
     if not job.task.done():
         return {"job_id": job_id, "status": "running"}

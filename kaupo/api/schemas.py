@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class StatusOut(BaseModel):
@@ -83,7 +83,7 @@ class BacktestIn(BaseModel):
     end: datetime | None = None
     days: int = 365
     params: dict[str, Any] = {}
-    starting_cash: float = 10_000.0
+    starting_cash: float = Field(default=10_000.0, gt=0)
 
 
 class BacktestAccepted(BaseModel):

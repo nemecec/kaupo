@@ -1,6 +1,6 @@
 """Daily reports, candles, control commands, events."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -40,23 +40,31 @@ async def candles(
     session: Annotated[AsyncSession, Depends(get_session)],
     pair: str = Query(...),
     timeframe: str = Query("1h"),
-    start: str = Query(...),
-    end: str = Query(...),
+    start: datetime = Query(...),
+    end: datetime = Query(...),
     limit: int = Query(5000, le=50_000),
 ) -> list[CandleOut]:
-    from datetime import datetime
-
+    try:
+        parsed_pair = Pair.parse(pair)
+        parsed_tf = Timeframe.parse(timeframe)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     rows = await get_candles(
         session,
-        Pair.parse(pair),
-        Timeframe.parse(timeframe),
-        datetime.fromisoformat(start),
-        datetime.fromisoformat(end),
+        parsed_pair,
+        parsed_tf,
+        _aware(start),
+        _aware(end),
+        limit=limit,
     )
     return [
-        CandleOut(ts=c.ts, open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume)
-        for c in rows[:limit]
+        CandleOut(ts=c.ts, open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume) for c in rows
     ]
+
+
+def _aware(dt: datetime) -> datetime:
+    """Naive datetimes are treated as UTC (never host-local)."""
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
 
 @router.post("/control/{command}")
@@ -68,6 +76,11 @@ async def control(
 ) -> ControlOut:
     if command not in ("pause", "resume", "kill"):
         raise HTTPException(status_code=400, detail="command must be pause|resume|kill")
+    if body.run_id is not None:
+        from kaupo.db.models import RunRow
+
+        if await session.get(RunRow, body.run_id) is None:
+            raise HTTPException(status_code=404, detail=f"run {body.run_id} not found")
     ts = utc_now()
     session.add(
         EventRow(

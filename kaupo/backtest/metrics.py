@@ -16,14 +16,30 @@ class RoundTrip:
     fees: float
 
 
-def round_trips(fills: list[Fill]) -> list[RoundTrip]:
+def open_position(fills: list[Fill]) -> tuple[float, float]:
+    """(qty, total cost incl. buy fees) remaining after replaying fills FIFO."""
+    open_qty = 0.0
+    open_cost = 0.0
+    for fill in fills:
+        if fill.side is Side.BUY:
+            open_qty += fill.size
+            open_cost += fill.quote_amount + fill.fee
+        elif open_qty > 0:
+            avg = open_cost / open_qty
+            closed = min(fill.size, open_qty)
+            open_qty -= closed
+            open_cost -= closed * avg
+    return open_qty, open_cost
+
+
+def round_trips(fills: list[Fill], initial: tuple[float, float] = (0.0, 0.0)) -> list[RoundTrip]:
     """FIFO pairing: each sell closes open quantity at average cost.
 
     PnL per trip = closed_qty * (sell_price - avg_buy_price) - allocated fees.
+    ``initial`` seeds an already-open position (e.g. carried over midnight).
     """
     trips: list[RoundTrip] = []
-    open_qty = 0.0
-    open_cost = 0.0  # total quote spent on open_qty (incl. buy fees)
+    open_qty, open_cost = initial
     for fill in fills:
         if fill.side is Side.BUY:
             open_qty += fill.size
