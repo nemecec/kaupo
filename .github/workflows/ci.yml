@@ -32,10 +32,10 @@ jobs:
         run: uv run kaupo lint-strategies
 
       - name: Tests (unit + behaviour)
-        run: uv run pytest tests/unit tests/behaviour --cov --cov-report=xml -m "not integration"
+        run: uv run pytest tests/unit tests/behaviour --cov --cov-report=xml --cov-fail-under=0 -m "not integration"
 
       - name: Tests (integration)
-        run: uv run pytest tests/integration --cov --cov-append --cov-report=xml
+        run: uv run pytest tests/integration --cov --cov-append --cov-report=xml --cov-fail-under=0
 
       - name: Coverage gate
         run: uv run coverage report --fail-under=85
