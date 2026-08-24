@@ -21,6 +21,11 @@ from kaupo.domain import Candle
 F64 = npt.NDArray[np.float64]
 
 
+def _check_period(period: int) -> None:
+    if period < 1:
+        raise ValueError(f"period must be >= 1, got {period}")
+
+
 def _arr(values: list[float] | F64) -> F64:
     return np.asarray(values, dtype=np.float64)
 
@@ -38,6 +43,7 @@ def lows(candles: Sequence[Candle]) -> F64:
 
 
 def sma(values: list[float] | F64, period: int) -> F64:
+    _check_period(period)
     v = _arr(values)
     out = np.full(v.shape, np.nan)
     if len(v) < period:
@@ -48,6 +54,7 @@ def sma(values: list[float] | F64, period: int) -> F64:
 
 
 def ema(values: list[float] | F64, period: int) -> F64:
+    _check_period(period)
     v = _arr(values)
     if len(v) == 0:
         return np.array([], dtype=np.float64)
@@ -60,6 +67,7 @@ def ema(values: list[float] | F64, period: int) -> F64:
 
 
 def rolling_std(values: list[float] | F64, period: int, ddof: int = 1) -> F64:
+    _check_period(period)
     v = _arr(values)
     out = np.full(v.shape, np.nan)
     for i in range(period - 1, len(v)):
@@ -89,6 +97,7 @@ def _wilder(values: F64, period: int) -> F64:
 
 
 def rsi(closes_: list[float] | F64, period: int = 14) -> F64:
+    _check_period(period)
     c = _arr(closes_)
     out = np.full(c.shape, np.nan)
     if len(c) < 2:
@@ -165,6 +174,7 @@ def adx(
 
 
 def rolling_max(values: list[float] | F64, period: int) -> F64:
+    _check_period(period)
     v = _arr(values)
     out = np.full(v.shape, np.nan)
     for i in range(period - 1, len(v)):
@@ -173,6 +183,7 @@ def rolling_max(values: list[float] | F64, period: int) -> F64:
 
 
 def rolling_min(values: list[float] | F64, period: int) -> F64:
+    _check_period(period)
     v = _arr(values)
     out = np.full(v.shape, np.nan)
     for i in range(period - 1, len(v)):

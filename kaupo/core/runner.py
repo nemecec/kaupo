@@ -43,7 +43,9 @@ class ShadowRequest:
     slippage_bps: float = 5.0
     risk: RiskConfig = field(default_factory=RiskConfig)
     lookback: int = 300
-    warmup: int = 100  # candles of history preloaded from DB
+    # candles of history preloaded from DB; defaults to lookback so shadow
+    # and backtest (prefill = lookback) see identical context (parity)
+    warmup: int | None = None
     poll_interval_seconds: float = 20.0
 
 
@@ -71,21 +73,33 @@ class DbControlProbe:
 
     Commands may target this run specifically or all runs (run_id null).
     "resume" clears a pause; state sticks until a newer command arrives.
+    Commands issued before the run started are ignored (a stale global kill
+    must not assassinate a fresh run), and a kill, once seen, is terminal.
     """
 
-    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession], run_id: str) -> None:
+    def __init__(
+        self,
+        sessionmaker: async_sessionmaker[AsyncSession],
+        run_id: str,
+        not_before: datetime | None = None,
+    ) -> None:
         self._sessionmaker = sessionmaker
         self._run_id = run_id
+        self._not_before = not_before or datetime.now(UTC)
         self._command: str | None = None
 
     async def __call__(self) -> str | None:
-        # latest command addressed to this run or to all runs (run_id null)
+        if self._command == "kill":
+            return "kill"  # terminal
+        # latest command addressed to this run or to all runs (run_id null),
+        # issued after this run started
         async with sm_scope(self._sessionmaker) as session:
             run_id_col = EventRow.data["run_id"].as_string()
             rows = await session.execute(
                 select(EventRow)
                 .where(
                     EventRow.source == "control",
+                    EventRow.ts >= self._not_before,
                     (run_id_col.is_(None)) | (run_id_col == self._run_id),
                 )
                 .order_by(EventRow.ts.desc())
@@ -106,20 +120,29 @@ async def run_shadow(
     stop: asyncio.Event | None = None,
 ) -> RunResult:
     stop = stop or asyncio.Event()
+    warmup = request.warmup if request.warmup is not None else request.lookback
 
     # freshen the store so warm-up reaches the latest closed candle
-    freshen_since = datetime.now(UTC) - timedelta(seconds=request.timeframe.seconds * (request.warmup + 5))
+    freshen_since = datetime.now(UTC) - timedelta(seconds=request.timeframe.seconds * (warmup + 5))
     try:
         await backfill(client, sessionmaker, request.pair, request.timeframe, freshen_since)
     except Exception:
         log.warning("Store freshening failed; continuing with existing data", exc_info=True)
 
     async with sm_scope(sessionmaker) as session:
-        warmup_candles = await get_latest_candles(session, request.pair, request.timeframe, request.warmup)
-    if len(warmup_candles) < request.warmup // 2:
+        warmup_candles = await get_latest_candles(session, request.pair, request.timeframe, warmup)
+    if warmup_candles:
+        tail_age = datetime.now(UTC) - warmup_candles[-1].ts
+        if tail_age > timedelta(seconds=2 * request.timeframe.seconds):
+            log.warning(
+                "Warm-up tail is %s old — the store has a data hole; the poller will refill it",
+                tail_age,
+            )
+    if len(warmup_candles) < warmup // 2:
         log.warning(
-            "Only %d warm-up candles for %s %s — run `kaupo ingest` for full context",
+            "Only %d of %d warm-up candles for %s %s — run `kaupo ingest` for full context",
             len(warmup_candles),
+            warmup,
             request.pair,
             request.timeframe.value,
         )
@@ -160,14 +183,18 @@ async def run_shadow(
                 },
                 "risk": asdict(request.risk),
                 "lookback": request.lookback,
-                "warmup": request.warmup,
+                "warmup": warmup,
             },
         ),
         control_probe=DbControlProbe(sessionmaker, recorder.run_id),
     )
 
     poller = LiveCandlePoller(
-        client, request.pair, request.timeframe, poll_interval_seconds=request.poll_interval_seconds
+        client,
+        request.pair,
+        request.timeframe,
+        poll_interval_seconds=request.poll_interval_seconds,
+        baseline=warmup_candles[-1].ts if warmup_candles else None,
     )
     log.info(
         "Starting shadow run %s: %s on %s %s (%d warm-up candles)",

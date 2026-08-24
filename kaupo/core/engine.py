@@ -172,7 +172,9 @@ class Engine:
                     self._halt_reason = self.risk.halt_reason
                     log.warning("Run halted by risk manager: %s", self._halt_reason)
                     break
-        except Exception:
+        except BaseException:
+            # Exception *and* SystemExit/KeyboardInterrupt: the run failed.
+            # (wind_down only liquidates on COMPLETED, so no phantom trades.)
             status = RunStatus.FAILED
             log.exception("Run failed")
             raise
@@ -196,9 +198,10 @@ class Engine:
             try:
                 realized = self.ledger.apply_fill(fill)
             except (InsufficientFunds, InsufficientPosition) as exc:
-                # the risk manager should prevent this; treat as a rejected
-                # order rather than killing the run
+                # the risk manager should prevent this; demote to a rejected
+                # order and keep venue/ledger/audit consistent
                 log.error("Ledger rejected fill %s %s: %s", fill.side.value, fill.pair, exc)
+                self.venue.void_fill(fill)
                 self.risk.rejections.append(f"ledger rejected {fill.side.value}: {exc}")
                 continue
             if fill.side is Side.SELL:

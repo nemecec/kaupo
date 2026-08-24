@@ -91,5 +91,12 @@ class LoadedStrategy:
         return self.source_hash[:12]
 
     def create(self, params: dict[str, Any]) -> StrategyBase:
-        validated = self.cls.params_schema.model_validate(params or {})
+        params = params or {}
+        allowed = set(self.cls.params_schema.model_fields)
+        unknown = sorted(set(params) - allowed)
+        if unknown:
+            raise ValueError(
+                f"Unknown params for strategy {self.id!r}: {unknown} (allowed: {sorted(allowed)})"
+            )
+        validated = self.cls.params_schema.model_validate(params)
         return self.cls(validated)

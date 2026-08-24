@@ -38,6 +38,9 @@ def load_strategies(directory: Path) -> dict[str, LoadedStrategy]:
         strategies = _cache.get(cache_key)
         if strategies is None:
             strategies = _load_file(path, content_hash)
+            # keep only the latest version of each path: evict older hashes
+            for key in [k for k in _cache if k[0] == str(path)]:
+                del _cache[key]
             _cache[cache_key] = strategies
         for strat in strategies:
             if strat.id in loaded:

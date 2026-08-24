@@ -65,12 +65,15 @@ class LiveCandlePoller:
         pair: Pair,
         timeframe: Timeframe,
         poll_interval_seconds: float = 20.0,
+        baseline: datetime | None = None,
     ) -> None:
         self._client = client
         self._pair = pair
         self._timeframe = timeframe
         self._poll_interval = poll_interval_seconds
-        self._baseline: datetime | None = None
+        # seeding the baseline (e.g. from the warm-up tail) makes the gap
+        # refill path pick up anything closed between warm-up and first poll
+        self._baseline: datetime | None = baseline
 
     async def poll_once(self) -> list[Candle]:
         window = timedelta(seconds=4 * self._timeframe.seconds)

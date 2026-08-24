@@ -42,7 +42,7 @@ async def candles(
     timeframe: str = Query("1h"),
     start: datetime = Query(...),
     end: datetime = Query(...),
-    limit: int = Query(5000, le=50_000),
+    limit: int = Query(5000, ge=1, le=50_000),
 ) -> list[CandleOut]:
     try:
         parsed_pair = Pair.parse(pair)
@@ -99,7 +99,7 @@ async def control(
 async def events(
     _: Annotated[Principal, Depends(get_principal)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    limit: int = Query(100, le=1000),
+    limit: int = Query(100, ge=1, le=1000),
     level: str | None = Query(None),
 ) -> list[EventOut]:
     stmt = select(EventRow).order_by(EventRow.ts.desc()).limit(limit)

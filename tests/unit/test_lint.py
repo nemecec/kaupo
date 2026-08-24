@@ -115,3 +115,60 @@ def test_lint_directory_unreadable_file(tmp_path: Path) -> None:
     violations = lint_directory(tmp_path)
     assert len(violations) == 1
     assert "unreadable" in violations[0].message
+
+
+def test_os_from_imports_detected() -> None:
+    assert len(lint_source("from os import environ\nx = environ")) >= 1
+    assert len(lint_source("from os import getenv\nx = getenv('HOME')")) >= 1
+    assert len(lint_source("from os import system as run\nrun('id')")) >= 1
+
+
+def test_numpy_random_paths_detected() -> None:
+    assert len(lint_source("from numpy import random\nx = random.rand()")) >= 1
+    assert len(lint_source("from numpy.random import default_rng\nx = default_rng().random()")) >= 1
+    assert len(lint_source("import numpy.random as npr\nx = npr.rand()")) >= 1
+
+
+def test_numpy_file_io_detected() -> None:
+    assert len(lint_source("import numpy as np\nx = np.load('/tmp/x.npy')")) >= 1
+
+
+def test_pandas_detected() -> None:
+    assert len(lint_source("import pandas as pd")) >= 1
+
+
+def test_extended_time_functions() -> None:
+    assert len(lint_source("import time\nx = time.time_ns()")) == 1
+    assert len(lint_source("import time\nx = time.perf_counter()")) == 1
+    assert len(lint_source("from time import time_ns\nx = time_ns()")) == 1
+
+
+def test_process_termination_detected() -> None:
+    assert len(lint_source("import sys\nsys.exit(1)")) >= 1
+    assert len(lint_source("exit(1)")) >= 1
+    assert len(lint_source("import os\nos._exit(0)")) >= 1
+
+
+def test_concurrency_detected() -> None:
+    for module in ("threading", "multiprocessing", "concurrent.futures", "asyncio"):
+        assert len(lint_source(f"import {module}")) >= 1, module
+
+
+def test_dynamic_import_detected() -> None:
+    assert len(lint_source("import importlib")) >= 1
+    assert len(lint_source("import builtins")) >= 1
+    assert len(lint_source("import sys")) >= 1
+    assert len(lint_source("locals()")) >= 1
+    assert len(lint_source("setattr(x, 'y', 1)")) >= 1
+
+
+def test_no_duplicate_violations() -> None:
+    violations = lint_source('import os\nos.system("id")')
+    assert len(violations) == 1
+
+
+def test_missing_directory_raises(tmp_path: Path) -> None:
+    import pytest
+
+    with pytest.raises(FileNotFoundError):
+        lint_directory(tmp_path / "nope")

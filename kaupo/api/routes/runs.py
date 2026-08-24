@@ -34,7 +34,7 @@ async def list_runs(
     session: Annotated[AsyncSession, Depends(get_session)],
     mode: str | None = Query(None),
     status: str | None = Query(None),
-    limit: int = Query(50, le=500),
+    limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ) -> list[RunOut]:
     stmt = select(RunRow).order_by(RunRow.started_at.desc()).limit(limit).offset(offset)
@@ -67,21 +67,22 @@ async def run_equity(
     _: Annotated[Principal, Depends(get_principal)],
     session: Annotated[AsyncSession, Depends(get_session)],
     run_id: str,
-    limit: int = Query(5000, le=50_000),
+    limit: int = Query(5000, ge=1, le=50_000),
 ) -> list[EquityPoint]:
     await _get_run(session, run_id)
-    rows = (
+    rows = list(
         (
             await session.execute(
                 select(EquitySnapshotRow)
                 .where(EquitySnapshotRow.run_id == run_id)
-                .order_by(EquitySnapshotRow.ts)
+                .order_by(EquitySnapshotRow.ts.desc())
                 .limit(limit)
             )
         )
         .scalars()
         .all()
     )
+    rows.reverse()  # latest N, ascending for charting
     return [EquityPoint(ts=r.ts, equity=r.equity, cash=r.cash, unrealized_pnl=r.unrealized_pnl) for r in rows]
 
 
@@ -90,7 +91,7 @@ async def run_orders(
     _: Annotated[Principal, Depends(get_principal)],
     session: Annotated[AsyncSession, Depends(get_session)],
     run_id: str,
-    limit: int = Query(1000, le=10_000),
+    limit: int = Query(1000, ge=1, le=10_000),
 ) -> list[OrderOut]:
     await _get_run(session, run_id)
     rows = list(
@@ -127,7 +128,7 @@ async def run_trades(
     _: Annotated[Principal, Depends(get_principal)],
     session: Annotated[AsyncSession, Depends(get_session)],
     run_id: str,
-    limit: int = Query(1000, le=10_000),
+    limit: int = Query(1000, ge=1, le=10_000),
 ) -> list[FillOut]:
     await _get_run(session, run_id)
     rows = list(

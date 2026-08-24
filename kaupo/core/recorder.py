@@ -1,5 +1,6 @@
 """Run persistence: what happened during a run, stored for review and reports."""
 
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -45,9 +46,16 @@ class RunRecorder(Protocol):
 class DbRecorder:
     """Buffers rows and flushes in batches to Postgres."""
 
-    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession], flush_every: int = 500) -> None:
+    def __init__(
+        self,
+        sessionmaker: async_sessionmaker[AsyncSession],
+        flush_every: int = 500,
+        flush_interval_seconds: float = 60.0,
+    ) -> None:
         self._sessionmaker = sessionmaker
         self._flush_every = flush_every
+        self._flush_interval = flush_interval_seconds
+        self._last_flush = time.monotonic()
         self.run_id = RunId(new_id())
         self._orders: list[OrderRow] = []
         self._fills: list[FillRow] = []
@@ -158,7 +166,9 @@ class DbRecorder:
             await session.commit()
 
     async def _maybe_flush(self) -> None:
-        if len(self._orders) + len(self._fills) + len(self._ledger) + len(self._equity) >= self._flush_every:
+        buffered = len(self._orders) + len(self._fills) + len(self._ledger) + len(self._equity)
+        stale = time.monotonic() - self._last_flush >= self._flush_interval
+        if buffered >= self._flush_every or (buffered > 0 and stale):
             await self.flush()
 
     async def flush(self) -> None:
@@ -199,6 +209,7 @@ class DbRecorder:
         self._fills = []
         self._ledger = []
         self._equity = []
+        self._last_flush = time.monotonic()
 
 
 @dataclass

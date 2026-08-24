@@ -115,13 +115,16 @@ class RiskManager:
         assessments: list[Assessment] = []
         cash_left = state.cash
         exposure_added: dict[Pair, float] = {}
+        sold: dict[Pair, float] = {}
         for intent in intents:
-            a = self._assess_one(intent, state, cash_left, exposure_added)
+            a = self._assess_one(intent, state, cash_left, exposure_added, sold)
             if a.decision is not Decision.REJECTED:
                 price = intent.limit_price or state.prices.get(intent.pair, 0.0)
                 if intent.side is Side.BUY:
                     cash_left -= a.size * price
                     exposure_added[intent.pair] = exposure_added.get(intent.pair, 0.0) + a.size * price
+                else:
+                    sold[intent.pair] = sold.get(intent.pair, 0.0) + a.size
             assessments.append(a)
         return assessments
 
@@ -131,6 +134,7 @@ class RiskManager:
         state: RiskState,
         cash_left: float,
         exposure_added: dict[Pair, float],
+        sold: dict[Pair, float],
     ) -> Assessment:
         cfg = self.config
         price = intent.limit_price or state.prices.get(intent.pair)
@@ -145,10 +149,13 @@ class RiskManager:
         position = state.positions.get(intent.pair, Position(pair=intent.pair))
 
         if intent.side is Side.SELL:
-            size = min(intent.size, position.size)
+            remaining = position.size - sold.get(intent.pair, 0.0)
+            size = min(intent.size, remaining)
             if size <= 0:
                 return self._reject(intent, "no position to sell")
-            if size * price < cfg.min_order_quote:
+            # dust exits are allowed when they close the position entirely
+            full_exit = size >= position.size
+            if not full_exit and size * price < cfg.min_order_quote:
                 return self._reject(intent, f"order value {size * price:.2f} below minimum")
             decision = Decision.RESIZED if size < intent.size else Decision.APPROVED
             return Assessment(

@@ -23,6 +23,17 @@ FORBIDDEN_IMPORTS = {
     "io": "file I/O",
     "shutil": "file I/O",
     "glob": "file I/O",
+    "sqlite3": "file-backed state breaks determinism",
+    "linecache": "file I/O",
+    "fileinput": "file I/O",
+    "pandas": "pandas gives wall-clock/file/network access; use kaupo.sdk.indicators",
+    "threading": "concurrency breaks determinism",
+    "multiprocessing": "concurrency breaks determinism",
+    "concurrent": "concurrency breaks determinism",
+    "asyncio": "concurrency breaks determinism",
+    "importlib": "dynamic import bypasses linting",
+    "builtins": "dynamic builtins access bypasses linting",
+    "sys": "system access (exit, argv, ...) is forbidden in strategies",
 }
 
 # (module, attribute) -> why forbidden
@@ -31,7 +42,15 @@ FORBIDDEN_CALLS = {
     ("datetime", "utcnow"): "wall-clock; use ctx.clock.now()",
     ("datetime", "today"): "wall-clock; use ctx.clock.now()",
     ("time", "time"): "wall-clock; use ctx.clock.now()",
+    ("time", "time_ns"): "wall-clock",
     ("time", "monotonic"): "wall-clock",
+    ("time", "monotonic_ns"): "wall-clock",
+    ("time", "perf_counter"): "wall-clock",
+    ("time", "perf_counter_ns"): "wall-clock",
+    ("time", "process_time"): "process clock",
+    ("time", "thread_time"): "process clock",
+    ("time", "localtime"): "wall-clock",
+    ("time", "ctime"): "wall-clock",
     ("time", "sleep"): "blocking sleep",
 }
 
@@ -44,7 +63,12 @@ FORBIDDEN_BUILTINS = {
     "__import__": "dynamic import bypasses linting",
     "compile": "dynamic compile",
     "globals": "global state access",
+    "locals": "dynamic scope access",
     "vars": "dynamic attribute access",
+    "setattr": "dynamic attribute access",
+    "delattr": "dynamic attribute access",
+    "exit": "process termination",
+    "quit": "process termination",
     "breakpoint": "debugger",
 }
 
@@ -56,13 +80,22 @@ FORBIDDEN_OS_ATTRS = {
     "unlink",
     "rmdir",
     "environ",
+    "environb",
     "getenv",
     "listdir",
     "makedirs",
     "walk",
+    "_exit",
+    "kill",
+    "fork",
+    "execv",
+    "execl",
+    "spawnl",
+    "spawnv",
 }
 
-FORBIDDEN_NUMPY_ATTRS = {"random"}  # np.random.* — unseeded randomness
+# np.random.* (unseeded randomness) and numpy file I/O
+FORBIDDEN_NUMPY_ATTRS = {"random", "load", "fromregex", "fromfile", "savetxt", "save", "memmap"}
 
 
 @dataclass(frozen=True)
@@ -92,9 +125,14 @@ class _Visitor(ast.NodeVisitor):
         self._aliases: dict[str, str] = {}
         # from-imports: local name -> (module root, imported name)
         self._from_imports: dict[str, tuple[str, str]] = {}
+        self._seen: set[tuple[int, str]] = set()
 
     def _add(self, node: ast.AST, message: str) -> None:
         lineno = getattr(node, "lineno", 0)
+        key = (lineno, message)
+        if key in self._seen:
+            return
+        self._seen.add(key)
         self.violations.append(Violation(self.path, lineno, message))
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -104,6 +142,8 @@ class _Visitor(ast.NodeVisitor):
             self._aliases[local] = root
             if root in FORBIDDEN_IMPORTS:
                 self._add(node, f"forbidden import {alias.name!r}: {FORBIDDEN_IMPORTS[root]}")
+            if alias.name.split(".")[:2] == ["numpy", "random"]:
+                self._add(node, f"forbidden import {alias.name!r}: unseeded randomness")
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         root = (node.module or "").split(".")[0]
@@ -116,6 +156,10 @@ class _Visitor(ast.NodeVisitor):
             local = alias.asname or alias.name
             self._aliases[local] = root
             self._from_imports[local] = (root, alias.name)
+            if root == "os" and alias.name in FORBIDDEN_OS_ATTRS:
+                self._add(node, f"forbidden from-import os.{alias.name}")
+            if root == "numpy" and (alias.name in FORBIDDEN_NUMPY_ATTRS or node.module == "numpy.random"):
+                self._add(node, f"forbidden from-import {node.module}.{alias.name}")
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         root_name = _root_name(node.value)
@@ -124,7 +168,7 @@ class _Visitor(ast.NodeVisitor):
             if root == "os" and node.attr in FORBIDDEN_OS_ATTRS:
                 self._add(node, f"forbidden os.{node.attr}")
             if root == "numpy" and node.attr in FORBIDDEN_NUMPY_ATTRS:
-                self._add(node, f"forbidden numpy.{node.attr}: unseeded randomness")
+                self._add(node, f"forbidden numpy.{node.attr}")
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -149,7 +193,7 @@ class _Visitor(ast.NodeVisitor):
                         f"forbidden call {root}.{func.attr}(): {FORBIDDEN_CALLS[(root, func.attr)]}",
                     )
                 if root == "os" and func.attr in FORBIDDEN_OS_ATTRS:
-                    self._add(node, f"forbidden os.{func.attr}()")
+                    self._add(node, f"forbidden os.{func.attr}")
         self.generic_visit(node)
 
 
@@ -164,6 +208,9 @@ def lint_source(source: str, path: str = "<string>") -> list[Violation]:
 
 
 def lint_directory(directory: Path) -> list[Violation]:
+    directory = Path(directory)
+    if not directory.is_dir():
+        raise FileNotFoundError(f"Strategies directory not found: {directory}")
     violations: list[Violation] = []
     for path in sorted(Path(directory).glob("*.py")):
         if path.name.startswith("_"):

@@ -193,3 +193,42 @@ class TestProtectionPositionAwareness:
         assert v.get_order(order.id) is not None
         v.on_candle(candle(1))  # next candle prunes closed orders
         assert v.get_order(order.id) is None
+
+
+class TestChronologicalOrdering:
+    def test_open_fill_lands_before_intracandle_protection(self) -> None:
+        """Strategy exit at the open wins over a stop that triggers later in
+        the candle; the protection is disarmed and no double-sell happens."""
+        v = venue()
+        v.submit(market(stop_loss=95.0))
+        v.on_candle(candle(0, o=100))  # buy fills at 101
+        # strategy exit queued; next candle opens 100, dips through the stop
+        v.submit(market(Side.SELL))
+        fills = v.on_candle(candle(1, o=100, low=94))
+        assert len(fills) == 1  # only the open exit; protection saw flat position
+        assert fills[0].price == 99.0  # open slipped 1%, NOT the stop's 95-ish
+        assert fills[0].side is Side.SELL
+
+    def test_multiple_protections_track_incrementally(self) -> None:
+        """Two armed positions; both stops hit in one candle — second clamps
+        to what the first left over."""
+        v = venue()
+        v.submit(market(size=1.0, stop_loss=95.0))
+        v.on_candle(candle(0, o=100))
+        v.submit(market(size=1.0, stop_loss=95.0))
+        v.on_candle(candle(1, o=100))  # two longs of 1.0, both protected
+        fills = v.on_candle(candle(2, low=90))  # both stops trigger
+        assert len(fills) == 2
+        assert sum(f.size for f in fills) == 2.0  # exactly the position, no oversell
+        assert v._positions[PAIR] == 0.0
+
+    def test_void_fill_rolls_back(self) -> None:
+        v = venue()
+        order = market()
+        v.submit(order)
+        fills = v.on_candle(candle(0, o=100))
+        assert v._positions[PAIR] == 1.0
+        v.void_fill(fills[0])
+        assert v._positions[PAIR] == 0.0
+        assert order.status is OrderStatus.REJECTED
+        assert order.filled_price is None

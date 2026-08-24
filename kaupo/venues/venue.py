@@ -18,6 +18,10 @@ class Venue(Protocol):
         """Orders created internally since the last drain (e.g. protective exits)."""
         ...
 
+    def void_fill(self, fill: Fill) -> None:
+        """Roll back a fill the ledger rejected (position tracking + order state)."""
+        ...
+
     def get_order(self, order_id: OrderId) -> Order | None: ...
 
     def liquidate(self, pair: Pair, size: float, candle: Candle) -> Fill:

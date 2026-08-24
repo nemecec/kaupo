@@ -44,6 +44,9 @@ class PaperVenue:
         self._market_queue: list[Order] = []
         self._limit_open: list[Order] = []
         self._protections: list[tuple[Order, _Protection]] = []
+        # armed this candle; evaluated from the NEXT candle onward (the entry
+        # candle's low may precede the fill — intracandle order is unknowable)
+        self._newly_armed: list[tuple[Order, _Protection]] = []
         self._orders: dict[OrderId, Order] = {}
         self._new_orders: list[Order] = []
         self._positions: dict[Pair, float] = {}
@@ -77,6 +80,18 @@ class PaperVenue:
         self._track_position(fill)
         return fill
 
+    def void_fill(self, fill: Fill) -> None:
+        """Roll back a fill the ledger rejected: untrack the position change
+        and mark the order rejected so venue, ledger, and audit agree."""
+        delta = fill.size if fill.side is Side.BUY else -fill.size
+        self._positions[fill.pair] = self._positions.get(fill.pair, 0.0) - delta
+        order = self._orders.get(fill.order_id)
+        if order is not None:
+            order.status = OrderStatus.REJECTED
+            order.filled_price = None
+            order.filled_ts = None
+            order.fee = 0.0
+
     def cancel_all(self) -> list[Order]:
         cancelled = self._market_queue + self._limit_open
         for order in cancelled:
@@ -90,38 +105,46 @@ class PaperVenue:
         self._prune_orders()
         fills: list[Fill] = []
 
-        # 1. protective stops/take-profits from earlier fills (stop wins ties)
+        # Chronological order within the candle:
+        # 1. market orders fill at the OPEN (they were submitted last candle)
+        # 2. limit orders fill when the candle's range touches their price
+        # 3. protections (SL/TP) trigger intracandle, AFTER positions are known
+        # Positions are tracked incrementally so later fills see earlier fills.
+
+        market = self._market_queue
+        self._market_queue = []
+        for order in market:
+            fill = self._fill_market(order, candle)
+            fills.append(fill)
+            self._track_position(fill)
+            self._arm_protection(order)
+
+        still_open: list[Order] = []
+        for order in self._limit_open:
+            limit_fill = self._try_limit(order, candle)
+            if limit_fill is None:
+                still_open.append(order)
+            else:
+                fills.append(limit_fill)
+                self._track_position(limit_fill)
+                self._arm_protection(order)
+        self._limit_open = still_open
+
         remaining_protections: list[tuple[Order, _Protection]] = []
         for order, prot in self._protections:
             if self._positions.get(order.pair, 0.0) <= 0:
                 continue  # disarm: position closed elsewhere (e.g. strategy exit)
-            fill = self._check_protection(order, prot, candle)
-            if fill is None:
+            prot_fill = self._check_protection(order, prot, candle)
+            if prot_fill is None:
                 remaining_protections.append((order, prot))
             else:
-                fills.append(fill)
+                fills.append(prot_fill)
+                self._track_position(prot_fill)
         self._protections = remaining_protections
+        # protections armed by this candle's fills go live next candle
+        self._protections.extend(self._newly_armed)
+        self._newly_armed = []
 
-        # 2. resting limit orders
-        still_open: list[Order] = []
-        for order in self._limit_open:
-            fill = self._try_limit(order, candle)
-            if fill is None:
-                still_open.append(order)
-            else:
-                fills.append(fill)
-                self._arm_protection(order)
-        self._limit_open = still_open
-
-        # 3. market orders at this candle's open
-        market = self._market_queue
-        self._market_queue = []
-        for order in market:
-            fills.append(self._fill_market(order, candle))
-            self._arm_protection(order)
-
-        for fill in fills:
-            self._track_position(fill)
         return fills
 
     # -- internals ---------------------------------------------------------
@@ -140,8 +163,13 @@ class PaperVenue:
         }
 
     def _arm_protection(self, order: Order) -> None:
-        if order.status is OrderStatus.FILLED and (order.stop_loss or order.take_profit):
-            self._protections.append((order, _Protection(order.stop_loss, order.take_profit)))
+        # protections only make sense on entries (BUYs in a long-only spot system)
+        if (
+            order.side is Side.BUY
+            and order.status is OrderStatus.FILLED
+            and (order.stop_loss or order.take_profit)
+        ):
+            self._newly_armed.append((order, _Protection(order.stop_loss, order.take_profit)))
 
     def _slipped(self, price: float, side: Side) -> float:
         return price * (1 + self._slip) if side is Side.BUY else price * (1 - self._slip)

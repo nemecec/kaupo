@@ -145,15 +145,29 @@ class TestBatchAccumulation:
         assert (first.size + second.size) * 100 <= 150.0
         assert second.size < first.size
 
-    def test_two_sells_cannot_oversell(self) -> None:
+    def test_two_sells_share_position_within_one_candle(self) -> None:
         rm = RiskManager(RiskConfig())
         intents = [sell(2.0), sell(2.0)]
         first, second = rm.assess(intents, state(position=2.0))
-        assert first.size <= 2.0
-        # second sell sees the position still (state-level), but combined fills
-        # can never exceed the position because the venue/ledger clamp sells;
-        # first is clamped to position, second as well — the LEDGER remains safe
-        assert second.size <= 2.0
+        assert first.size == 2.0
+        # the first approval consumes the position; nothing left for the second
+        assert second.decision is Decision.REJECTED
+        assert "no position" in second.reason
+
+    def test_scale_out_sells_split_the_position(self) -> None:
+        rm = RiskManager(RiskConfig())
+        intents = [sell(1.0), sell(1.0), sell(1.0)]
+        sizes = [a.size for a in rm.assess(intents, state(position=2.0))]
+        assert sizes == [1.0, 1.0, 0.0]
+
+    def test_dust_full_exit_allowed(self) -> None:
+        rm = RiskManager(RiskConfig(min_order_quote=10.0))
+        # position worth 5 EUR — below min order — but it's a full exit
+        a = rm.assess([sell(0.05)], state(position=0.05, price=100.0))[0]
+        assert a.decision is Decision.APPROVED
+        # partial dust exit still rejected
+        b = rm.assess([sell(0.02)], state(position=0.05, price=100.0))[0]
+        assert b.decision is Decision.REJECTED
 
 
 class TestZeroPnl:
