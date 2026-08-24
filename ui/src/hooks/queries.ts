@@ -1,6 +1,8 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { useEffect, useRef } from 'react'
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type { CandlesQuery, RunsFilter } from '../lib/api'
+import type { RunStatus } from '../lib/types'
 
 export function useStatus() {
   return useQuery({
@@ -70,6 +72,7 @@ export function useDailyReport(day: string) {
   return useQuery({
     queryKey: ['reports', 'daily', day],
     queryFn: () => api.dailyReport(day),
+    refetchInterval: 60_000,
   })
 }
 
@@ -93,4 +96,23 @@ export function useEvents(filter: { limit?: number; level?: string }) {
     queryFn: () => api.events(filter),
     refetchInterval: 10_000,
   })
+}
+
+
+/**
+ * One-shot terminal refetch: when a run flips from running to a terminal status,
+ * invalidate its queries once so the final equity/orders/fills get fetched —
+ * polling stops the moment the status flips and would otherwise miss the tail.
+ */
+export function useInvalidateRunQueriesOnStop(id: string, status: RunStatus | undefined) {
+  const queryClient = useQueryClient()
+  const prevStatusRef = useRef<RunStatus | undefined>(undefined)
+
+  useEffect(() => {
+    const prev = prevStatusRef.current
+    prevStatusRef.current = status
+    if (prev === 'running' && status !== undefined && status !== 'running') {
+      void queryClient.invalidateQueries({ queryKey: ['runs', id] })
+    }
+  }, [id, status, queryClient])
 }

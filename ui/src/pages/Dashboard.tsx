@@ -84,10 +84,10 @@ export default function Dashboard() {
         <StatCard
           label="Today P&L"
           sub={
-            totals
-              ? `${totals.total_fills} fills · fees ${formatNumber(totals.total_fees)}`
-              : reportQ.isError
-                ? 'no report yet'
+            reportQ.isError
+              ? 'report unavailable'
+              : totals
+                ? `${totals.total_fills} fills · fees ${formatNumber(totals.total_fees)}`
                 : undefined
           }
         >

@@ -1,6 +1,7 @@
 import { Link, useParams } from 'react-router-dom'
 import {
   useCandles,
+  useInvalidateRunQueriesOnStop,
   useRun,
   useRunEquity,
   useRunOrders,
@@ -112,6 +113,7 @@ export default function RunDetailPage() {
   const runQ = useRun(id)
   const run = runQ.data
   const live = run?.status === 'running'
+  useInvalidateRunQueriesOnStop(id, run?.status)
 
   const equityQ = useRunEquity(id, live)
   const ordersQ = useRunOrders(id, live)
@@ -193,16 +195,24 @@ export default function RunDetailPage() {
         </Panel>
       )}
 
-      {showCandleChart && (
+      {pair !== null && candlesQ.isError ? (
+        <Panel title={`${pair} · ${timeframe}`}>
+          <ErrorState error={candlesQ.error} />
+        </Panel>
+      ) : showCandleChart ? (
         <Panel
           title={`${pair} · ${timeframe}`}
           action={<CappedNotice length={candles.length} limit={CANDLES_LIMIT} noun="candles" />}
         >
           <CandleChart candles={candles} trades={trades} />
         </Panel>
-      )}
+      ) : null}
 
-      {positionsQ.data && positionsQ.data.length > 0 && (
+      {positionsQ.isError ? (
+        <Panel title="Open positions">
+          <ErrorState error={positionsQ.error} />
+        </Panel>
+      ) : positionsQ.data && positionsQ.data.length > 0 ? (
         <Panel title="Open positions">
           <table className="w-full text-sm">
             <thead>
@@ -231,7 +241,7 @@ export default function RunDetailPage() {
             </tbody>
           </table>
         </Panel>
-      )}
+      ) : null}
 
       <Panel
         title={`Orders${ordersQ.data ? ` (${ordersQ.data.length})` : ''}`}

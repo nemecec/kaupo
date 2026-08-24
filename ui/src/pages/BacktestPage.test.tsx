@@ -79,4 +79,25 @@ describe('BacktestPage', () => {
       starting_cash: 10000,
     })
   })
+
+  it('shows a job-lost error instead of polling forever when the job 404s', async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/v1/strategies') return jsonResponse(STRATEGIES)
+      if (url === '/api/v1/backtests' && init?.method === 'POST') {
+        return jsonResponse({ run_id: 'job-1' }, 202)
+      }
+      if (url === '/api/v1/backtests/job-1') return jsonResponse({ detail: 'job not found' }, 404)
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+
+    renderWithProviders(<BacktestPage />)
+    const submit = await screen.findByRole('button', { name: /run backtest/i })
+    await waitFor(() => expect(submit).toBeEnabled())
+    fireEvent.click(submit)
+
+    expect(await screen.findByText(/backtest job lost/i)).toBeInTheDocument()
+    expect(screen.queryByText(/backtest running/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /runs list/i })).toHaveAttribute('href', '/runs')
+  })
 })

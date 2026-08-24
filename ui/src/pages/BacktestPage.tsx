@@ -64,7 +64,11 @@ export default function BacktestPage() {
     queryKey: ['backtests', 'job', jobId],
     queryFn: () => api.backtestJob(jobId as string),
     enabled: jobId !== null,
-    refetchInterval: (query) => (query.state.data?.status === 'running' ? 2_000 : false),
+    // stop polling on error (e.g. job lost when the API restarts) or terminal state
+    refetchInterval: (query) => {
+      if (query.state.error) return false
+      return query.state.data?.status === 'running' ? 2_000 : false
+    },
   })
 
   const job = jobQ.data
@@ -213,10 +217,22 @@ export default function BacktestPage() {
             </button>
           }
         >
-          {jobQ.isLoading || job?.status === 'running' ? (
+          {jobQ.isError ? (
+            <div
+              role="alert"
+              className="rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-sm text-rose-300"
+            >
+              Backtest job lost — the API may have restarted; check the{' '}
+              <Link to="/runs" className="underline">
+                runs list
+              </Link>
+              .{' '}
+              <span className="text-rose-400/70">
+                {jobQ.error instanceof Error ? jobQ.error.message : String(jobQ.error)}
+              </span>
+            </div>
+          ) : jobQ.isLoading || job?.status === 'running' ? (
             <Loading text="Backtest running…" />
-          ) : jobQ.isError ? (
-            <ErrorState error={jobQ.error} />
           ) : job?.status === 'failed' ? (
             <div role="alert" className="rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-sm text-rose-300">
               Backtest failed{job.error ? `: ${job.error}` : ''}

@@ -4,9 +4,12 @@ import { useRuns } from '../hooks/queries'
 import { formatDateTime, metricsSummary, shortId } from '../lib/format'
 import { EmptyState, ErrorState, Loading, Panel } from '../components/common'
 import { ModeBadge, StatusBadge } from '../components/StatusBadge'
+import { CappedNotice } from '../components/CappedNotice'
 
 const MODES = ['backtest', 'shadow', 'live']
 const STATUSES = ['running', 'completed', 'halted', 'failed']
+/** Page size for the runs list; a full page means the list may be truncated. */
+const RUNS_LIMIT = 200
 
 const selectCls =
   'rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-200 focus:border-accent focus:outline-none'
@@ -15,7 +18,7 @@ export default function RunsPage() {
   const [mode, setMode] = useState('')
   const [status, setStatus] = useState('')
   const navigate = useNavigate()
-  const runsQ = useRuns({ mode: mode || undefined, status: status || undefined, limit: 200 })
+  const runsQ = useRuns({ mode: mode || undefined, status: status || undefined, limit: RUNS_LIMIT })
   const runs = runsQ.data ?? []
 
   return (
@@ -42,7 +45,7 @@ export default function RunsPage() {
         </div>
       </div>
 
-      <Panel>
+      <Panel action={<CappedNotice length={runs.length} limit={RUNS_LIMIT} noun="runs" />}>
         {runsQ.isLoading ? (
           <Loading />
         ) : runsQ.isError ? (

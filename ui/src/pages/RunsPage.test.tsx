@@ -60,4 +60,14 @@ describe('RunsPage', () => {
       ).toBe(true)
     })
   })
+
+  it('shows a cap hint when the list fills the page limit', async () => {
+    const many: Run[] = Array.from({ length: 200 }, (_, i) => ({
+      ...RUNS[0],
+      id: `c${String(i).padStart(7, '0')}-fill`,
+    }))
+    vi.mocked(fetch).mockImplementation(async () => jsonResponse(many))
+    renderWithProviders(<RunsPage />)
+    expect(await screen.findByText(/showing latest 200 runs/i)).toBeInTheDocument()
+  })
 })
