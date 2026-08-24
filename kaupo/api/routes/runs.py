@@ -181,22 +181,16 @@ async def run_positions(
             positions[f.pair] = (qty - closed, cost - closed * avg)
 
     timeframe = (run.config or {}).get("timeframe", "1h")
+    # don't mark a finished run at prices past its end
+    price_cutoff = run.ended_at
     out = []
     for pair, (qty, cost) in positions.items():
         if qty <= 0:
             continue
-        last_price = (
-            (
-                await session.execute(
-                    select(CandleRow.close)
-                    .where(CandleRow.pair == pair, CandleRow.timeframe == timeframe)
-                    .order_by(CandleRow.ts.desc())
-                    .limit(1)
-                )
-            )
-            .scalars()
-            .first()
-        )
+        stmt = select(CandleRow.close).where(CandleRow.pair == pair, CandleRow.timeframe == timeframe)
+        if price_cutoff is not None:
+            stmt = stmt.where(CandleRow.ts <= price_cutoff)
+        last_price = (await session.execute(stmt.order_by(CandleRow.ts.desc()).limit(1))).scalars().first()
         out.append(
             PositionOut(
                 pair=pair,

@@ -30,9 +30,11 @@ def check_token(token: str, settings: Settings) -> Principal | None:
     """
     if settings.auth_disabled:
         return Principal(admin=True)
-    if settings.admin_token and hmac.compare_digest(token, settings.admin_token):
+    # encode both sides: compare_digest raises TypeError on non-ASCII str
+    token_b = token.encode("utf-8", "replace")
+    if settings.admin_token and hmac.compare_digest(token_b, settings.admin_token.encode()):
         return Principal(admin=True)
-    if settings.readonly_token and hmac.compare_digest(token, settings.readonly_token):
+    if settings.readonly_token and hmac.compare_digest(token_b, settings.readonly_token.encode()):
         return Principal(admin=False)
     return None
 

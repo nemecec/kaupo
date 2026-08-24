@@ -51,9 +51,15 @@ def _parse_params(params: list[str]) -> dict[str, Any]:
     return out
 
 
+def _parse_dt(value: str) -> datetime:
+    """ISO datetime; naive input is treated as UTC (never host-local)."""
+    dt = datetime.fromisoformat(value)
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+
 def _range(days: int, start: str | None, end: str | None) -> tuple[datetime, datetime]:
-    end_dt = datetime.fromisoformat(end).astimezone(UTC) if end else datetime.now(UTC)
-    start_dt = datetime.fromisoformat(start).astimezone(UTC) if start else end_dt - timedelta(days=days)
+    end_dt = _parse_dt(end) if end else datetime.now(UTC)
+    start_dt = _parse_dt(start) if start else end_dt - timedelta(days=days)
     return start_dt, end_dt
 
 
@@ -72,7 +78,7 @@ def _ensure_strategies_clean(directory: Path) -> None:
 def ingest(
     pair: PairOpt,
     timeframe: TimeframeOpt = "1h",
-    days: DaysOpt = 365,
+    days: Annotated[int, typer.Option(min=1)] = 365,
     start: StartOpt = None,
     end: EndOpt = None,
     verbose: VerboseOpt = False,
@@ -102,11 +108,11 @@ def backtest(
     strategy: StrategyOpt,
     pair: PairOpt,
     timeframe: TimeframeOpt = "1h",
-    days: DaysOpt = 365,
+    days: Annotated[int, typer.Option(min=1)] = 365,
     start: StartOpt = None,
     end: EndOpt = None,
     param: ParamOpt = [],
-    cash: Annotated[float, typer.Option(help="starting quote cash")] = 10_000.0,
+    cash: Annotated[float, typer.Option(help="starting quote cash", min=0.01)] = 10_000.0,
     strategies_dir: StrategiesDirOpt = None,
     no_persist: Annotated[bool, typer.Option(help="do not store the run in Postgres")] = False,
     verbose: VerboseOpt = False,
@@ -184,8 +190,10 @@ def run_shadow_cmd(
     pair: PairOpt,
     timeframe: TimeframeOpt = "1h",
     param: ParamOpt = [],
-    cash: Annotated[float, typer.Option(help="virtual starting cash")] = 10_000.0,
-    warmup: Annotated[int, typer.Option(help="history candles preloaded from DB")] = 100,
+    cash: Annotated[float, typer.Option(help="virtual starting cash", min=0.01)] = 10_000.0,
+    warmup: Annotated[
+        int | None, typer.Option(help="history candles preloaded from DB (default: lookback)")
+    ] = None,
     strategies_dir: StrategiesDirOpt = None,
     verbose: VerboseOpt = False,
 ) -> None:

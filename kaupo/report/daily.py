@@ -69,7 +69,11 @@ async def _run_report(session: AsyncSession, run: RunRow, start: datetime, end: 
             "active": False,
         }
 
+    # baseline: last snapshot before the day; falling back to starting cash
+    # on the run's first day (the first in-day snapshot is already post-trade)
     start_equity = prev.equity if prev else (snapshots[0].equity if snapshots else None)
+    if prev is None and isinstance((run.config or {}).get("starting_cash"), int | float):
+        start_equity = run.config["starting_cash"]
     end_equity = snapshots[-1].equity if snapshots else start_equity
     pnl = (end_equity - start_equity) if start_equity is not None and end_equity is not None else None
 

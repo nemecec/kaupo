@@ -21,7 +21,7 @@ def upgrade() -> None:
     op.execute(
         """
         DELETE FROM reports a USING reports b
-        WHERE a.period = b.period AND a.id < b.id
+        WHERE a.period = b.period AND (a.ts < b.ts OR (a.ts = b.ts AND a.id < b.id))
         """
     )
     op.drop_index("ix_reports_period", table_name="reports")
