@@ -150,8 +150,7 @@ async def test_cross_flush_order_upsert(session: AsyncSession, tmp_path: Path) -
 async def test_flush_failure_retains_buffers(session: AsyncSession) -> None:
     """A failed commit must not lose buffered rows; the next flush writes them."""
     from kaupo.core.recorder import DbRecorder, RunInfo
-    from kaupo.db.models import RunRow
-    from kaupo.domain import RunMode, new_id, utc_now
+    from kaupo.domain import RunMode
 
     sessionmaker = get_sessionmaker()
 

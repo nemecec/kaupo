@@ -50,7 +50,7 @@ services:
 
   shadow:
     build: .
-    command: kaupo run shadow --strategy regime-switch --pair BTC/EUR --timeframe 1h
+    command: kaupo run shadow --strategy ${KAUPO_SHADOW_STRATEGY:-regime-switch} --pair ${KAUPO_SHADOW_PAIR:-BTC/EUR} --timeframe ${KAUPO_SHADOW_TIMEFRAME:-1h}
     profiles: ["trading"]
     environment:
       KAUPO_DATABASE_URL: postgresql+asyncpg://kaupo:kaupo@db:5432/kaupo

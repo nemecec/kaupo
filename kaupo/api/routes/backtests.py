@@ -62,7 +62,10 @@ async def submit_backtest(
 ) -> BacktestAccepted:
     from kaupo.sdk.lint import lint_directory
 
-    violations = lint_directory(settings.strategies_dir)
+    try:
+        violations = lint_directory(settings.strategies_dir)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail=f"strategies dir misconfigured: {exc}") from exc
     if violations:
         raise HTTPException(
             status_code=422,

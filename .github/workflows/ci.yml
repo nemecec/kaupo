@@ -71,3 +71,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build engine image
         run: docker build -t kaupo:ci .
+
+      - name: Smoke-run image entrypoints
+        run: |
+          docker run --rm kaupo:ci kaupo --help > /dev/null
+          docker run --rm kaupo:ci alembic --version > /dev/null
