@@ -27,8 +27,22 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
 
 @asynccontextmanager
 async def session_scope() -> AsyncIterator[AsyncSession]:
-    """Transactional session for CLI/engine use."""
+    """Transactional session for CLI/engine use (global engine)."""
     session = get_sessionmaker()()
+    try:
+        yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
+
+
+@asynccontextmanager
+async def sm_scope(sessionmaker: async_sessionmaker[AsyncSession]) -> AsyncIterator[AsyncSession]:
+    """Transactional session on an explicitly passed sessionmaker."""
+    session = sessionmaker()
     try:
         yield session
         await session.commit()

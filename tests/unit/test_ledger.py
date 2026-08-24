@@ -29,7 +29,7 @@ def test_buy_updates_cash_position_and_entries() -> None:
     assert ledger.cash == Decimal("799")
     pos = ledger.position(PAIR)
     assert pos.size == 2.0
-    assert pos.avg_entry == 100.0
+    assert pos.avg_entry == 100.5  # fee included in cost basis
 
     entries = ledger.entries[1:]  # skip deposit
     assert [(e.asset, e.amount) for e in entries] == [

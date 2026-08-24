@@ -126,3 +126,70 @@ class TestLiquidate:
         assert fill.price == 99.0
         assert fill.size == 2.0
         assert v.get_order(fill.order_id) is not None
+
+
+class TestProtectionPositionAwareness:
+    def test_protection_disarmed_after_strategy_exit(self) -> None:
+        """buy with stop -> strategy exit -> candle through old stop is a no-op."""
+        v = venue()
+        buy = market(stop_loss=90.0)
+        v.submit(buy)
+        v.on_candle(candle(0, o=100))  # buy fills at 101, protection armed
+        # strategy exits manually
+        v.submit(market(Side.SELL))
+        fills = v.on_candle(candle(1, o=100))
+        assert len(fills) == 1 and fills[0].side is Side.SELL  # position now 0
+        # price later crashes through the old stop: protection must NOT fire
+        assert v.on_candle(candle(2, low=50)) == []
+
+    def test_protection_clamped_to_remaining_position(self) -> None:
+        v = venue()
+        v.submit(market(size=2.0, stop_loss=90.0))
+        v.on_candle(candle(0, o=100))  # buy 2 @ 101
+        v.submit(market(Side.SELL, size=1.0))
+        v.on_candle(candle(1, o=100))  # strategy sells 1 -> 1 left
+        fills = v.on_candle(candle(2, low=89))
+        assert len(fills) == 1
+        assert fills[0].size == 1.0  # clamped from original 2 to remaining 1
+
+    def test_partial_stop_keeps_watching_remainder(self) -> None:
+        v = venue()
+        v.submit(market(size=2.0, stop_loss=90.0))
+        v.on_candle(candle(0, o=100))
+        v.submit(market(Side.SELL, size=1.0))
+        v.on_candle(candle(1, o=100))  # 1 left
+        fills = v.on_candle(candle(2, low=89))
+        assert fills[0].size == 1.0
+        # position now 0; nothing left to protect
+        assert v.on_candle(candle(3, low=10)) == []
+
+    def test_cancel_all_clears_protections(self) -> None:
+        v = venue()
+        v.submit(market(stop_loss=90.0))
+        v.on_candle(candle(0, o=100))
+        v.cancel_all()
+        assert v.on_candle(candle(1, low=50)) == []
+
+    def test_venue_created_orders_use_candle_time(self) -> None:
+        v = venue()
+        fill = v.liquidate(PAIR, 1.0, candle(7, c=100))
+        order = v.get_order(fill.order_id)
+        assert order is not None
+        assert order.created_ts == candle(7).ts
+
+        v2 = venue()
+        v2.submit(market(stop_loss=90.0))
+        v2.on_candle(candle(0, o=100))
+        fills = v2.on_candle(candle(1, low=89))
+        prot_order = v2.get_order(fills[0].order_id)
+        assert prot_order is not None
+        assert prot_order.created_ts == candle(1).ts
+
+    def test_filled_orders_pruned(self) -> None:
+        v = venue()
+        order = market()
+        v.submit(order)
+        v.on_candle(candle(0, o=100))  # fills
+        assert v.get_order(order.id) is not None
+        v.on_candle(candle(1))  # next candle prunes closed orders
+        assert v.get_order(order.id) is None

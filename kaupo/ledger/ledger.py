@@ -84,8 +84,9 @@ class Ledger:
                 raise InsufficientFunds(f"need {cost} {self._quote}, have {self._cash}")
             self._cash -= cost
             new_size = _dec(pos.size) + _dec(fill.size)
+            # cost basis includes the entry fee so realized PnL covers both fees
             pos.avg_entry = (
-                float((_dec(pos.size) * _dec(pos.avg_entry) + quote_amount) / new_size)
+                float((_dec(pos.size) * _dec(pos.avg_entry) + quote_amount + fee) / new_size)
                 if new_size > 0
                 else 0.0
             )

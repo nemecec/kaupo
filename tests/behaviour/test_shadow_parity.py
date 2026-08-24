@@ -60,7 +60,7 @@ def build(recorder: InMemoryRecorder, mode: RunMode) -> Engine:
         risk=RiskManager(RiskConfig(max_position_quote=100_000, max_gross_exposure_quote=100_000)),
         ledger=Ledger("EUR", 10_000.0, BASE),
         recorder=recorder,
-        config=EngineConfig(pair=PAIR, timeframe=Timeframe.H1, starting_cash=10_000),
+        config=EngineConfig(pair=PAIR, timeframe=Timeframe.H1),
         run_info=RunInfo(
             mode=mode, strategy_id="parity-script", strategy_version="v1", strategy_source_hash="x", config={}
         ),

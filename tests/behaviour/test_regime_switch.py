@@ -66,7 +66,7 @@ async def run_strategy(candles: list[Candle], params: dict | None = None) -> InM
         risk=RiskManager(RiskConfig(max_position_quote=100_000, max_gross_exposure_quote=100_000)),
         ledger=Ledger("EUR", 10_000.0, BASE),
         recorder=recorder,
-        config=EngineConfig(pair=PAIR, timeframe=Timeframe.H1, starting_cash=10_000, liquidate_end=True),
+        config=EngineConfig(pair=PAIR, timeframe=Timeframe.H1, liquidate_end=True),
         run_info=RunInfo(
             mode=RunMode.BACKTEST,
             strategy_id=loaded.id,

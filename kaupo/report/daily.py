@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.backtest.metrics import round_trips
 from kaupo.db.models import EquitySnapshotRow, FillRow, ReportRow, RunRow
-from kaupo.db.session import session_scope
+from kaupo.db.session import sm_scope
 from kaupo.domain import Fill, OrderId, Pair, Side, new_id, utc_now
 
 
@@ -111,7 +111,7 @@ async def build_daily_report(
     Backtests are excluded: their equity timestamps are simulated, not real.
     Idempotently stored (one row per period, regenerated on demand)."""
     start, end = _day_bounds(day)
-    async with session_scope() as session:
+    async with sm_scope(sessionmaker) as session:
         runs = (
             (
                 await session.execute(
@@ -141,7 +141,7 @@ async def build_daily_report(
     }
 
     if persist:
-        async with session_scope() as session:
+        async with sm_scope(sessionmaker) as session:
             existing = (
                 (await session.execute(select(ReportRow).where(ReportRow.period == day.isoformat())))
                 .scalars()

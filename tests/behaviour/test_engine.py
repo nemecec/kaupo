@@ -73,7 +73,7 @@ def build_engine(recorder: InMemoryRecorder, risk: RiskManager | None = None) ->
         risk=risk or RiskManager(RiskConfig(max_position_quote=10_000, max_gross_exposure_quote=10_000)),
         ledger=Ledger("EUR", 10_000.0, BASE),
         recorder=recorder,
-        config=EngineConfig(pair=PAIR, timeframe=Timeframe.H1, starting_cash=10_000),
+        config=EngineConfig(pair=PAIR, timeframe=Timeframe.H1),
         run_info=RunInfo(
             mode=RunMode.BACKTEST,
             strategy_id="scripted",
@@ -147,3 +147,42 @@ async def test_equity_snapshots_recorded_each_candle() -> None:
     await engine.run(aiter([candle(i) for i in range(10)]))
     assert len(recorder.equity) == 10
     assert recorder.equity[-1][1] == pytest.approx(10_004.0)
+
+
+async def test_oversized_buy_is_resized_and_fills_without_crashing() -> None:
+    """An all-in (and then some) buy must be fee-aware resized, not crash."""
+    from kaupo.domain import OrderIntent
+
+    class AllIn(StrategyBase):
+        id = "all-in"
+
+        def on_candle(self, ctx):  # type: ignore[no-untyped-def]
+            if len(ctx.history(1000)) == 3:
+                return [OrderIntent(pair=PAIR, side=Side.BUY, size=10_000.0)]
+            return []
+
+    recorder = InMemoryRecorder()
+    engine = Engine(
+        strategy=AllIn(AllIn.params_schema()),
+        venue=PaperVenue(taker_fee_bps=26, maker_fee_bps=16, slippage_bps=5),
+        risk=RiskManager(
+            RiskConfig(
+                max_position_quote=1_000_000,
+                max_gross_exposure_quote=1_000_000,
+                taker_fee_bps=26,
+                slippage_bps=5,
+            )
+        ),
+        ledger=Ledger("EUR", 1_000.0, BASE),
+        recorder=recorder,
+        config=EngineConfig(pair=PAIR, timeframe=Timeframe.H1),
+        run_info=RunInfo(mode=RunMode.BACKTEST, strategy_id="all-in",
+                         strategy_version="v1", strategy_source_hash="x", config={}),
+    )
+    result = await engine.run(aiter([candle(i) for i in range(10)]))
+    assert result.status is RunStatus.COMPLETED
+    assert result.num_fills == 1
+    # affordable size = 1000 / (1 + 0.0031) / 103 -> ~9.66; cost incl. fee <= 1000
+    fill = recorder.fills[0]
+    assert fill.size * fill.price * (1 + 0.0026) <= 1_000.0
+    assert 0 < float(result.final_equity) < 1_100

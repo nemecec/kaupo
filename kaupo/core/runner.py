@@ -8,7 +8,7 @@ the exchange poller (which are also persisted to keep the store fresh).
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -17,11 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.core.engine import Engine, EngineConfig, RunResult
 from kaupo.core.recorder import DbRecorder, RunInfo
-from kaupo.data.candles import get_candles, upsert_candles
+from kaupo.data.candles import get_latest_candles, upsert_candles
 from kaupo.data.ingest import LiveCandlePoller, backfill
 from kaupo.data.kraken import KrakenClient
 from kaupo.db.models import EventRow
-from kaupo.db.session import session_scope
+from kaupo.db.session import sm_scope
 from kaupo.domain import Candle, Pair, RunMode, Timeframe
 from kaupo.ledger.ledger import Ledger
 from kaupo.risk.manager import RiskConfig, RiskManager
@@ -61,7 +61,7 @@ async def _chain_persist(
         if last_ts is not None and candle.ts <= last_ts:
             continue  # already covered by warm-up or duplicate
         last_ts = candle.ts
-        async with session_scope() as session:
+        async with sm_scope(sessionmaker) as session:
             await upsert_candles(session, [candle])
         yield candle
 
@@ -79,17 +79,23 @@ class DbControlProbe:
         self._command: str | None = None
 
     async def __call__(self) -> str | None:
-        async with session_scope() as session:
+        # latest command addressed to this run or to all runs (run_id null)
+        async with sm_scope(self._sessionmaker) as session:
+            run_id_col = EventRow.data["run_id"].as_string()
             rows = await session.execute(
-                select(EventRow).where(EventRow.source == "control").order_by(EventRow.ts.desc()).limit(20)
+                select(EventRow)
+                .where(
+                    EventRow.source == "control",
+                    (run_id_col.is_(None)) | (run_id_col == self._run_id),
+                )
+                .order_by(EventRow.ts.desc())
+                .limit(1)
             )
-            for row in rows.scalars():
-                data = row.data or {}
-                if data.get("run_id") in (None, self._run_id):
-                    command = data.get("command")
-                    if command in ("kill", "pause", "resume"):
-                        self._command = None if command == "resume" else command
-                        break
+            row = rows.scalars().first()
+            if row is not None:
+                command = (row.data or {}).get("command")
+                if command in ("kill", "pause", "resume"):
+                    self._command = None if command == "resume" else command
         return self._command
 
 
@@ -108,10 +114,8 @@ async def run_shadow(
     except Exception:
         log.warning("Store freshening failed; continuing with existing data", exc_info=True)
 
-    async with session_scope() as session:
-        warmup_candles = await get_candles(
-            session, request.pair, request.timeframe, freshen_since, datetime.now(UTC)
-        )
+    async with sm_scope(sessionmaker) as session:
+        warmup_candles = await get_latest_candles(session, request.pair, request.timeframe, request.warmup)
     if len(warmup_candles) < request.warmup // 2:
         log.warning(
             "Only %d warm-up candles for %s %s — run `kaupo ingest` for full context",
@@ -124,13 +128,18 @@ async def run_shadow(
     engine = Engine(
         strategy=request.strategy.create(request.params),
         venue=PaperVenue(request.taker_fee_bps, request.maker_fee_bps, request.slippage_bps),
-        risk=RiskManager(request.risk),
+        risk=RiskManager(
+            replace(
+                request.risk,
+                taker_fee_bps=request.taker_fee_bps,
+                slippage_bps=request.slippage_bps,
+            )
+        ),
         ledger=Ledger(request.pair.quote, request.starting_cash, datetime.now(UTC)),
         recorder=recorder,
         config=EngineConfig(
             pair=request.pair,
             timeframe=request.timeframe,
-            starting_cash=request.starting_cash,
             lookback=request.lookback,
             liquidate_end=False,  # positions stay open until strategy/risk exits them
         ),

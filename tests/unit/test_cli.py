@@ -93,8 +93,17 @@ def test_backtest_command(monkeypatch: pytest.MonkeyPatch) -> None:
 
     result = runner.invoke(
         cli.app,
-        ["backtest", "--strategy", "regime-switch", "--pair", "BTC/EUR", "--days", "30",
-         "--param", "adx_threshold=30"],
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--days",
+            "30",
+            "--param",
+            "adx_threshold=30",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert "run-1" in result.output
@@ -131,8 +140,6 @@ def test_run_shadow_command(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kraken_mod, "KrakenClient", FakeClient)
     monkeypatch.setattr(runner_mod, "run_shadow", fake_run_shadow)
 
-    result = runner.invoke(
-        cli.app, ["run", "shadow", "--strategy", "regime-switch", "--pair", "BTC/EUR"]
-    )
+    result = runner.invoke(cli.app, ["run", "shadow", "--strategy", "regime-switch", "--pair", "BTC/EUR"])
     assert result.exit_code == 0, result.output
     assert "Shadow run ended" in result.output

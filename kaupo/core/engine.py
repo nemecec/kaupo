@@ -34,7 +34,7 @@ from kaupo.domain import (
     Side,
     Timeframe,
 )
-from kaupo.ledger.ledger import Ledger
+from kaupo.ledger.ledger import InsufficientFunds, InsufficientPosition, Ledger
 from kaupo.risk.manager import Decision, RiskManager, RiskState
 from kaupo.sdk.protocol import StrategyBase
 from kaupo.venues.venue import Venue
@@ -46,7 +46,6 @@ log = logging.getLogger(__name__)
 class EngineConfig:
     pair: Pair
     timeframe: Timeframe
-    starting_cash: float
     lookback: int = 300
     liquidate_end: bool = False
 
@@ -87,7 +86,17 @@ class _Context:
         return self._engine.history[-1]
 
     def history(self, n: int) -> Sequence[Candle]:
-        hist = self._engine.history
+        engine = self._engine
+        maxlen = engine.history.maxlen
+        if maxlen is not None and n > maxlen and not engine._warned_history_cap:
+            engine._warned_history_cap = True
+            log.warning(
+                "Strategy requested history(%d) beyond lookback=%d; it will always "
+                "receive fewer candles (increase lookback)",
+                n,
+                maxlen,
+            )
+        hist = engine.history
         return list(hist)[-n:] if n < len(hist) else list(hist)
 
     def position(self) -> Position:
@@ -126,6 +135,8 @@ class Engine:
         self._halt_reason = ""
         self._control_probe = control_probe
         self._killed = False
+        self._last_snapshot_ts: datetime | None = None
+        self._warned_history_cap = False
 
     async def run(
         self, candles: AsyncIterable[Candle], stop: asyncio.Event | None = None, warmup: int = 0
@@ -143,12 +154,14 @@ class Engine:
                     self._halt_reason = "stopped externally"
                     break
                 last_candle = candle
+                if seen % 100 == 0:
+                    await asyncio.sleep(0)  # keep the event loop responsive
                 if seen < warmup:
-                    seen += 1
                     self.clock.set(candle)
                     self.history.append(candle)
-                    continue
-                await self._process_candle(candle)
+                else:
+                    await self._process_candle(candle)
+                seen += 1
                 if self._killed:
                     status = RunStatus.HALTED
                     self._halt_reason = "killed via control API"
@@ -180,7 +193,14 @@ class Engine:
         for order in self.venue.drain_new_orders():
             await self.recorder.record_order(order)  # protection exits created by venue
         for fill in fills:
-            realized = self.ledger.apply_fill(fill)
+            try:
+                realized = self.ledger.apply_fill(fill)
+            except (InsufficientFunds, InsufficientPosition) as exc:
+                # the risk manager should prevent this; treat as a rejected
+                # order rather than killing the run
+                log.error("Ledger rejected fill %s %s: %s", fill.side.value, fill.pair, exc)
+                self.risk.rejections.append(f"ledger rejected {fill.side.value}: {exc}")
+                continue
             if fill.side is Side.SELL:
                 self.risk.notify_trade_result(float(realized))
             await self.recorder.record_fill(fill)
@@ -194,6 +214,7 @@ class Engine:
         equity = self.ledger.equity({self.config.pair: price})
         unrealized = self._unrealized(price)
         await self.recorder.record_equity(candle.ts, equity, self.ledger.cash, unrealized)
+        self._last_snapshot_ts = candle.ts
 
         # 4. risk time-based checks
         if not self.risk.on_candle(self._risk_state(candle)):
@@ -272,14 +293,27 @@ class Engine:
                     await self.recorder.record_order(order)
                 await self.recorder.record_ledger(self.ledger.drain_entries())
                 self._fills += 1
-                equity = self.ledger.equity({self.config.pair: last_candle.close})
-                await self.recorder.record_equity(last_candle.ts, equity, self.ledger.cash, Decimal(0))
+                if last_candle.ts != self._last_snapshot_ts:
+                    equity = self.ledger.equity({self.config.pair: last_candle.close})
+                    await self.recorder.record_equity(last_candle.ts, equity, self.ledger.cash, Decimal(0))
+                    self._last_snapshot_ts = last_candle.ts
 
         for order in self.venue.cancel_all():
             if order.status is OrderStatus.CANCELLED:
                 await self.recorder.record_order(order)
 
+        # best-effort: persist any ledger entries left behind by a failure
+        leftover = self.ledger.drain_entries()
+        if leftover:
+            try:
+                await self.recorder.record_ledger(leftover)
+            except Exception:
+                log.warning("Could not persist leftover ledger entries", exc_info=True)
+
         price = last_candle.close if last_candle is not None else 0.0
         final_equity = self.ledger.equity({self.config.pair: price})
-        await self.recorder.finish(status, metrics=None)  # metrics set by caller
+        try:
+            await self.recorder.finish(status, metrics=None)  # metrics set by caller
+        except Exception:
+            log.error("Could not mark run as %s", status.value, exc_info=True)
         return final_equity

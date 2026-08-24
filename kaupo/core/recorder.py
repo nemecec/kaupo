@@ -164,11 +164,14 @@ class DbRecorder:
     async def flush(self) -> None:
         if not (self._orders or self._fills or self._ledger or self._equity):
             return
+        # snapshot buffers; clear only after a successful commit so a
+        # transient failure doesn't silently lose the audit trail
+        orders, fills, ledger, equity = self._orders, self._fills, self._ledger, self._equity
         async with self._sessionmaker() as session:
-            if self._orders:
+            if orders:
                 # upsert: orders are recorded at submit and again after fill;
                 # dedupe by id, keeping the latest recorded state
-                latest = {o.id: o for o in self._orders}
+                latest = {o.id: o for o in orders}
                 stmt = pg_insert(OrderRow).values(
                     [
                         {c.name: getattr(o, c.name) for c in OrderRow.__table__.columns}
@@ -185,17 +188,17 @@ class DbRecorder:
                     },
                 )
                 await session.execute(stmt)
-                self._orders = []
-            if self._fills:
-                session.add_all(self._fills)
-                self._fills = []
-            if self._ledger:
-                session.add_all(self._ledger)
-                self._ledger = []
-            if self._equity:
-                session.add_all(self._equity)
-                self._equity = []
+            if fills:
+                session.add_all(fills)
+            if ledger:
+                session.add_all(ledger)
+            if equity:
+                session.add_all(equity)
             await session.commit()
+        self._orders = []
+        self._fills = []
+        self._ledger = []
+        self._equity = []
 
 
 @dataclass
