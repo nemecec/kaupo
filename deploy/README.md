@@ -44,17 +44,21 @@ Create the bucket for the nightly dumps:
 aws s3 mb s3://kaupo-backups-<suffix> --region eu-north-1
 ```
 
-New buckets block public access by default. Add a 30-day expiry:
+New buckets block public access by default. Enable versioning so a leaked backup key cannot destroy old dumps. Then add a 30-day expiry:
 
 ```bash
+aws s3api put-bucket-versioning --bucket kaupo-backups-<suffix> \
+  --versioning-configuration Status=Enabled
 cat > /tmp/lifecycle.json <<'EOF'
 {
   "Rules": [
     {
       "ID": "expire-pgdumps",
       "Status": "Enabled",
-      "Filter": {"Prefix": "pgdump/"},
-      "Expiration": {"Days": 30}
+      "Prefix": "pgdump/",
+      "Expiration": {"Days": 30},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": 30},
+      "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}
     }
   ]
 }
