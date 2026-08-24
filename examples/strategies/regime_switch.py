@@ -12,6 +12,14 @@ TRENDING market -> momentum: buy breakouts above the N-candle high with +DI
                    leading, exit on a trailing stop.
 UNCERTAIN       -> no new entries.
 
+Design notes:
+- The regime classifier deliberately has no temporal hysteresis (the design
+  discussion covers why one may want it): it can flip candle to candle,
+  which mainly affects entries, as exits are managed per position.
+- Entry/exit bookkeeping is reconciled from the *actual* position each
+  candle (not from emitted intents), so risk-manager rejections cannot
+  desync the strategy's state.
+
 This is a reference implementation for the SDK, not investment advice.
 """
 
@@ -24,15 +32,15 @@ from kaupo.sdk.protocol import StrategyBase, StrategyContext
 
 
 class Params(BaseModel):
-    adx_period: int = 14
+    adx_period: int = Field(default=14, gt=0)
     adx_threshold: float = 25.0
-    bb_period: int = 20
+    bb_period: int = Field(default=20, gt=0)
     bb_num_std: float = 2.0
-    rsi_period: int = 14
+    rsi_period: int = Field(default=14, gt=0)
     rsi_overbought: float = 70.0
     entry_z_score: float = 1.5
-    breakout_period: int = 20
-    ma_period: int = 50
+    breakout_period: int = Field(default=20, gt=0)
+    ma_period: int = Field(default=50, gt=0)
     position_fraction: float = Field(default=0.25, gt=0, le=1)
     stop_loss_pct: float = Field(default=0.03, gt=0, lt=1)
     trailing_stop_pct: float = Field(default=0.04, gt=0, lt=1)
@@ -55,6 +63,13 @@ class RegimeSwitch(StrategyBase):
         if len(hist) < need:
             return []
 
+        # reconcile bookkeeping with the ACTUAL position first: an exit that
+        # got risk-rejected must not desync us; a filled exit resets state
+        position = ctx.position()
+        if position.size == 0 and self._entry_regime is not None:
+            self._entry_regime = None
+            self._highest_since_entry = None
+
         closes = ind.closes(hist)
         highs = ind.highs(hist)
         lows = ind.lows(hist)
@@ -75,11 +90,10 @@ class RegimeSwitch(StrategyBase):
             return []
 
         regime = self._regime(adx_v[-1], upper, lower, mid, ma, close)
-        position = ctx.position()
 
         if position.size > 0:
             return self._exits(ctx, position.size, close, mid[-1], rsi_v[-1], regime)
-        z_score = float((close - mid[-1]) / std[-1])
+        z_score = float((close - mid[-1]) / std[-1]) if std[-1] > 0 else 0.0
         return self._entries(ctx, close, highs, z_score, plus_di, minus_di, regime)
 
     # -- internals ---------------------------------------------------------
@@ -172,7 +186,6 @@ class RegimeSwitch(StrategyBase):
                 reason = "momentum exit: regime lost"
 
         if reason:
-            self._highest_since_entry = None
-            self._entry_regime = None
+            # state is reset in on_candle once the position is actually flat
             return [OrderIntent(pair=pair, side=Side.SELL, size=size, reason=reason)]
         return []

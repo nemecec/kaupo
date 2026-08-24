@@ -366,7 +366,7 @@ async def test_daily_report_overnight_round_trip_and_ended_runs(
         )
     )
     await session.flush()
-    for oid, side, ts, price in (
+    for oid, side, ts, _price in (
         ("o1", "buy", yesterday + timedelta(hours=23), 100.0),
         ("o2", "sell", today + timedelta(hours=1), 110.0),
     ):
