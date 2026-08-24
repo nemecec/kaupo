@@ -99,4 +99,5 @@ jobs:
             'install -d /etc/kaupo && install -m 600 /dev/null /etc/kaupo/kaupo.env && cat > /etc/kaupo/kaupo.env'
 
       - name: Deploy on the host
-        run: ssh -i ~/.ssh/deploy_key -o BatchMode=yes root@"${{ vars.HETZNER_HOST }}" "/opt/kaupo/deploy/host-deploy.sh $TAG"
+        # Pull first: a changed host-deploy.sh must take effect in this same run.
+        run: ssh -i ~/.ssh/deploy_key -o BatchMode=yes root@"${{ vars.HETZNER_HOST }}" "cd /opt/kaupo && git pull --ff-only && deploy/host-deploy.sh $TAG"
