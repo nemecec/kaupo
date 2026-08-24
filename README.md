@@ -1,86 +1,110 @@
 # Kaupo
 
-Autonomous algorithmic crypto-trading system. Named after the Estonian given name
-*Kaupo*, derived from *kaup* — "goods / wares / merchandise".
+Kaupo is an autonomous algorithmic crypto-trading system. The name is an Estonian given name. It comes from *kaup*, which means "goods" or "merchandise".
 
-Kaupo runs 24/7 in the background and trades fully autonomously. Trading
-strategies are **deterministic code plugins** (kept in a separate, private
-repository) that run **unchanged** in three execution modes:
+Kaupo runs in the background and trades without manual input. Trading strategies are deterministic code plugins. They live in a separate private repository. The same strategy code runs in three modes:
 
 | | Backtest | Shadow | Live |
 |---|---|---|---|
-| Candle source | historical (DB) | live polling | live polling |
-| Venue | paper (fees + slippage modeled) | paper | exchange via ccxt |
-| Money | virtual | virtual | real |
-| Purpose | fast feedback for (AI-agent) strategy iteration | forward validation | real trading |
+| Candle source | Historical data from Postgres | Live polling from the exchange | Live polling from the exchange |
+| Venue | Paper venue with fees and slippage | Paper venue | Exchange through ccxt |
+| Money | Virtual | Virtual | Real |
+| Purpose | Fast feedback for strategy iteration | Forward validation | Real trading |
 
 ## Status
 
-Phase 1 (MVP): market-data ingestion (Kraken), strategy SDK, backtesting,
-shadow trading, ledger, risk manager, REST API + daily reports, React/TS
-dashboard. Live trading with real money is **not** enabled yet (Phase 3).
+Phase 1 (MVP) is complete:
+
+- Market-data ingestion from Kraken
+- Strategy SDK and determinism linter
+- Backtesting and shadow trading
+- Ledger, risk manager, and kill switch
+- REST API, daily reports, and React dashboard
+
+Live trading with real money is not enabled yet. That is Phase 3.
 
 ## Quickstart (local)
 
-Prerequisites: [uv](https://docs.astral.sh/uv/), Docker (for Postgres), Node 22+ (for the UI).
+Prerequisites: uv, Docker, and Node 22 or later.
 
-```bash
-# 1. Install Python deps
-uv sync
+1. Install the Python dependencies:
+   ```bash
+   uv sync
+   ```
+2. Start Postgres:
+   ```bash
+   docker compose up -d db
+   ```
+3. Run the migrations:
+   ```bash
+   uv run alembic upgrade head
+   ```
+4. Download historical candles:
+   ```bash
+   uv run kaupo ingest --pair BTC/EUR --timeframe 1h --days 365
+   ```
+5. Run a backtest with the example strategy:
+   ```bash
+   uv run kaupo backtest --strategy regime-switch --pair BTC/EUR --timeframe 1h --days 365
+   ```
+6. Start shadow trading with virtual money:
+   ```bash
+   uv run kaupo run shadow --strategy regime-switch --pair BTC/EUR --timeframe 1h
+   ```
+7. Start the API and the UI:
+   ```bash
+   uv run uvicorn kaupo.api.app:app --reload
+   cd ui && npm install && npm run dev
+   ```
 
-# 2. Start Postgres
-docker compose up -d db
+## The full stack in Docker
 
-# 3. Run migrations
-uv run alembic upgrade head
+1. Start the stack:
+   ```bash
+   docker compose up -d
+   ```
+2. To also start a shadow-trading container, use the trading profile:
+   ```bash
+   docker compose --profile trading up -d
+   ```
+3. Open the dashboard at http://localhost:3000. The API listens on http://localhost:8100.
 
-# 4. Download historical candles
-uv run kaupo ingest --pair BTC/EUR --timeframe 1h --days 365
-
-# 5. Run a backtest with the example strategy
-uv run kaupo backtest --strategy regime-switch --pair BTC/EUR --timeframe 1h --days 365
-
-# 6. Start shadow trading (paper money, live data)
-uv run kaupo run shadow --strategy regime-switch --pair BTC/EUR --timeframe 1h
-
-# 7. Start the API and the UI
-uv run uvicorn kaupo.api.app:app --reload
-cd ui && npm install && npm run dev
-```
-
-Or the whole stack in Docker: `docker compose up` (add `--profile trading` to
-also start a shadow-trading container). Then open the dashboard at
-<http://localhost:3000> (API at <http://localhost:8100>).
-
-To trade your private strategies instead of the bundled example:
+To use your private strategies instead of the example, set `KAUPO_STRATEGIES_DIR`:
 
 ```bash
 KAUPO_STRATEGIES_DIR=../kaupo-strategies/strategies docker compose --profile trading up -d
 ```
 
-Stop everything with `docker compose --profile trading down`.
+The shadow strategy comes from `KAUPO_SHADOW_STRATEGY` (default `regime-switch`). Set it to a strategy id from your private repository.
+
+To stop the stack:
+
+```bash
+docker compose --profile trading down
+```
 
 ## Tests
 
 ```bash
 uv run pytest tests/unit tests/behaviour   # fast, no Docker needed
-uv run pytest tests/integration            # uses testcontainers (Docker)
-uv run ruff check . && uv run mypy         # lint + typecheck
+uv run pytest tests/integration            # uses testcontainers (Docker required)
+uv run ruff check . && uv run mypy         # lint and typecheck
 ```
+
+The CI workflow runs the same checks. The coverage gate is 85%.
 
 ## Repository layout
 
-- `kaupo/` — the platform (Python package; `core`, `data`, `sdk`, `backtest`,
-  `venues`, `risk`, `ledger`, `report`, `api`, `cli`)
-- `examples/strategies/` — open-source example strategies (your real
-  strategies live in the private `kaupo-strategies` repo)
-- `ui/` — React + TypeScript dashboard
-- `tests/` — `unit`, `behaviour` (scenario/parity), `integration`
+- `kaupo/` — the platform package: `core`, `data`, `sdk`, `backtest`, `venues`, `risk`, `ledger`, `report`, `api`, `cli`, `db`
+- `examples/strategies/` — open-source example strategies. Your real strategies live in the private `kaupo-strategies` repository
+- `ui/` — the React and TypeScript dashboard
+- `tests/` — `unit`, `behaviour` (scenario and parity), and `integration` tests
+- `docs/design.html` — the full architecture and roadmap
 
 ## Design
 
-See `docs/design.html` for the full architecture and roadmap.
+Read `docs/design.html` for the architecture and the roadmap. Where the document and the code differ, the code wins.
 
 ## License
 
-Apache-2.0. Strategies are *not* part of this repo and carry their own terms.
+Apache-2.0. Strategies are not part of this repository and carry their own terms.

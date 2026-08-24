@@ -103,7 +103,7 @@
   <strong>Contents</strong>
   <ol>
     <li><a href="#name">The name</a></li>
-    <li><a href="#what">What we're building</a></li>
+    <li><a href="#what">What we are building</a></li>
     <li><a href="#architecture">High-level architecture</a></li>
     <li><a href="#repos">Repositories &amp; layout</a></li>
     <li><a href="#sdk">Strategy SDK</a></li>
@@ -122,26 +122,26 @@
 <main>
 
 <h2 id="name"><span class="num">1.</span>The name</h2>
-<p><strong>Kaupo</strong> — an Estonian male given name (Kaupo of Turaida) derived from <em>kaup</em>, "goods / wares / merchandise". Short, pronounceable, and literally about trading. The public platform repo is <code>kaupo</code>; the private strategies repo is <code>kaupo-strategies</code>.</p>
-<p class="kicker">Alternatives if you don't like it: <strong>Kasum</strong> — "profit"; <strong>Turg</strong> — "market".</p>
+<p><strong>Kaupo</strong> is an Estonian male given name (Kaupo of Turaida). It comes from <em>kaup</em>, which means "goods" or "merchandise". It is short and easy to pronounce. The public platform repository is <code>kaupo</code>. The private strategies repository is <code>kaupo-strategies</code>.</p>
+<p class="kicker">Alternatives: <strong>Kasum</strong> ("profit") or <strong>Turg</strong> ("market").</p>
 
-<h2 id="what"><span class="num">2.</span>What we're building</h2>
-<p>A self-hosted, open-source platform that:</p>
+<h2 id="what"><span class="num">2.</span>What we are building</h2>
+<p>A self-hosted, open-source platform with these properties:</p>
 <ul>
-  <li>runs 24/7 in the background and trades <strong>fully autonomously</strong> — you review dashboards and reports, you never click "buy";</li>
-  <li>treats <strong>strategies as deterministic code plugins</strong>, developed together with AI agents in a <em>separate, private</em> repo;</li>
-  <li>gives agents <strong>fast feedback loops</strong>: the same strategy code runs unchanged in backtest, shadow (paper), and live modes;</li>
-  <li>supports <strong>scheduled strategy review</strong> (e.g. every 24 h) driven by AI agents through machine-readable APIs and reports;</li>
-  <li>starts simple (one exchange, candles, no sentiment) and grows (sentiment, multi-exchange, portfolio risk).</li>
+  <li>It runs in the background and trades without manual input. The user reviews dashboards and reports. The user never clicks "buy".</li>
+  <li>Strategies are deterministic code plugins. The user develops them with AI agents in a separate private repository.</li>
+  <li>The same strategy code runs in backtest, shadow, and live modes. This gives agents a fast feedback loop.</li>
+  <li>AI agents review the strategies on a schedule (for example every 24 hours). They use machine-readable APIs and reports.</li>
+  <li>The system starts simple: one exchange, candles, no sentiment analysis. It grows later.</li>
 </ul>
 
 <h3>Design principles</h3>
 <ol>
-  <li><strong>One strategy code, three execution modes.</strong> Backtest, shadow, and live share the exact same engine loop; only the candle source and the venue adapter differ. This is what makes backtests trustworthy and gives agents a reliable feedback signal.</li>
-  <li><strong>Determinism by contract.</strong> Strategies never see wall-clock time, never do I/O, never get unseeded randomness. All inputs come through a context object. Enforced by SDK design + lint + tests.</li>
-  <li><strong>Agent-first interfaces.</strong> Everything the system does is reachable via documented REST/OpenAPI + CLI + JSON artifacts — an AI agent can pull reports, run backtests, and compare runs without a human.</li>
-  <li><strong>Cost-conscious.</strong> Single small server, co-located Postgres, no Kubernetes, no managed services until they're clearly needed. Target ~$15–20/mo (less on free tier).</li>
-  <li><strong>Risk manager is not a strategy.</strong> Hard guardrails (position limits, daily-loss halt, pair whitelist, no leverage, kill switch) live outside strategy code and apply to live <em>and</em> shadow.</li>
+  <li><strong>One strategy code, three execution modes.</strong> Backtest, shadow, and live share the same engine loop. Only the candle source and the venue differ. This makes backtests trustworthy. It gives agents a reliable feedback signal.</li>
+  <li><strong>Determinism by contract.</strong> Strategies never see wall-clock time. They do no I/O. They get no unseeded randomness. All inputs come through a context object. The SDK design, the linter, and the tests enforce this.</li>
+  <li><strong>Agent-first interfaces.</strong> Every function is reachable through a documented REST API, the CLI, and JSON artifacts. An AI agent can pull reports, run backtests, and compare runs without a human.</li>
+  <li><strong>Cost-conscious.</strong> One small server, co-located Postgres, no Kubernetes, no managed services. Target cost: 15–20 USD per month. Less on the free tier.</li>
+  <li><strong>The risk manager is not a strategy.</strong> Hard guardrails live outside the strategy code. Position limits, daily-loss halt, pair whitelist, no leverage, and a kill switch. They apply to live and shadow trading.</li>
 </ol>
 
 <h2 id="architecture"><span class="num">3.</span>High-level architecture</h2>
@@ -170,7 +170,7 @@
                              │                      │
                        React TS UI            AI agents (API/CLI,
                        (dashboard)            GitHub Actions cron)</code></pre>
-<p>Single deployable unit (modular monolith), three containers locally: <code>postgres</code>, <code>engine</code> (core + API), <code>ui</code> (static files via nginx; Vite dev server in development). Strategies are volume-mounted, not baked into the image.</p>
+<p>The system is a single deployable unit: a modular monolith. Locally it runs as three containers: <code>postgres</code>, <code>engine</code> (core plus API), and <code>ui</code> (static files behind nginx). Strategies are volume-mounted. They are not baked into the image.</p>
 
 <h2 id="repos"><span class="num">4.</span>Repositories &amp; layout</h2>
 <p><strong>Public GitHub repo <code>kaupo</code></strong> (monorepo):</p>
@@ -198,7 +198,7 @@
 ├── strategies/                   # deterministic strategy plugins (Python)
 ├── promotion.yml                 # shadow→live promotion gates
 └── .github/workflows/review.yml  # scheduled AI-agent review (cron)</code></pre>
-<p>The engine loads strategy modules listed in config from the mounted volume; each load records the module hash / git SHA so every run is tied to an exact strategy version.</p>
+<p>The engine loads the strategy modules from the mounted volume. Each load records the source hash of the module. Every run is tied to an exact strategy version.</p>
 
 <h2 id="sdk"><span class="num">5.</span>Strategy SDK — the contract agents code against</h2>
 <pre><code>class Strategy(Protocol):
@@ -217,7 +217,7 @@ class Context(Protocol):
 
 class OrderIntent:  # what the strategy wants; risk manager decides what it gets
     side, size, order_type, limit_price, stop_loss, take_profit, reason</code></pre>
-<p>Rules enforced: no <code>datetime.now()</code>, no network/file I/O, no mutable globals (state lives in declared fields so backtests can snapshot/reset). A <code>make lint-strategy</code> check plus SDK design make violations hard. Open-source example strategies (regime detection via ADX + Bollinger width, switching between mean-reversion and momentum modules — from our earlier discussion) ship in <code>examples/strategies/</code> as reference implementations.</p>
+<p>The rules are: no <code>datetime.now()</code>, no network or file I/O, no unseeded randomness. The CLI, the API, and CI enforce them with <code>kaupo lint-strategies</code>. The linter is a tripwire for plausible mistakes, not a security boundary. The repository ships open-source example strategies in <code>examples/strategies/</code>. One of them detects the market regime with ADX and Bollinger width. It switches between a mean-reversion module and a momentum module.</p>
 
 <h2 id="modes"><span class="num">6.</span>Execution modes</h2>
 <table>
@@ -228,32 +228,32 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
   <tr><td>Purpose</td><td>agent feedback loop</td><td>forward validation</td><td>real trading</td></tr>
 </table>
 <ul>
-  <li><strong>Backtester</strong>: event-driven, identical loop to live. Inputs: strategy ref, params, pairs, date range, fee/slippage model. Each run stores equity curve, trades, and metrics (total return, CAGR, Sharpe, Sortino, max drawdown, win rate, avg win/loss, exposure %, fees paid, regime stats). Runnable via CLI (no services needed) or API (async job). Months of 1h candles run in seconds → agents get near-immediate feedback.</li>
-  <li><strong>Shadow</strong>: N concurrent shadow runs supported (strategy v1 vs v2 A/B on live data, virtual money).</li>
-  <li><strong>Live</strong>: phase 3, only after a shadow track record. The real venue adapter adds order reconciliation (exchange state vs ledger) and crash recovery.</li>
+  <li><strong>Backtester</strong>: event-driven, with the same loop as live trading. Inputs: strategy, parameters, pair, date range, and the fee model. Each run stores the equity curve, the trades, and the metrics. The metrics include total return, Sharpe ratio, max drawdown, win rate, and fees paid. You can run it through the CLI or the API. Months of 1h candles run in seconds. Agents get almost immediate feedback.</li>
+  <li><strong>Shadow</strong>: several shadow runs can run at the same time. For example, strategy v1 against v2 on live data with virtual money.</li>
+  <li><strong>Live</strong>: Phase 3, only after a shadow track record exists. The real venue adapter adds order reconciliation and crash recovery.</li>
 </ul>
-<blockquote class="callout"><p><strong>Risk manager</strong> (all modes): max position per pair, max gross exposure, max daily loss → auto-halt, pair whitelist, no leverage, min notional, cooldown after N consecutive losses. Configured per run; cannot be weakened by strategy params.</p></blockquote>
+<blockquote class="callout"><p><strong>Risk manager</strong> (all modes): max position per pair, max gross exposure, max daily loss (which halts the run), pair whitelist, no leverage, minimum order size, and a cooldown after consecutive losses. The configuration is per run. Strategy parameters cannot weaken it.</p></blockquote>
 
-<h2 id="agents"><span class="num">7.</span>AI-agent integration &amp; review cadence</h2>
-<p>Agents get no special backdoor — they use the same public interfaces:</p>
+<h2 id="agents"><span class="num">7.</span>AI-agent integration and review cadence</h2>
+<p>Agents get no special backdoor. They use the same public interfaces:</p>
 <ul>
-  <li><strong>OpenAPI-documented REST</strong> (<code>/api/v1/…</code>) + <strong>CLI</strong> (<code>kaupo backtest …</code>, <code>kaupo report …</code>) + JSON artifacts.</li>
-  <li><code>GET /api/v1/reports/daily?date=…</code> — machine-readable JSON: per-run equity, P&amp;L attribution, trades, drawdowns, anomalies, data gaps.</li>
-  <li><code>POST /api/v1/backtests</code> (async) → poll <code>GET /api/v1/backtests/{id}</code> for metrics.</li>
+  <li><strong>OpenAPI-documented REST</strong> (<code>/api/v1/…</code>), the <strong>CLI</strong> (<code>kaupo backtest …</code>), and JSON artifacts.</li>
+  <li><code>GET /api/v1/reports/daily?date=…</code> returns machine-readable JSON: per-run equity, P&amp;L, trades, drawdowns, anomalies, and data gaps.</li>
+  <li><code>POST /api/v1/backtests</code> starts an async job. Poll <code>GET /api/v1/backtests/{id}</code> for the metrics.</li>
 </ul>
-<h3>Review cadence (configurable, default daily)</h3>
-<p>Implemented as a <strong>GitHub Actions <code>schedule:</code> workflow in <code>kaupo-strategies</code></strong> (cron, e.g. 06:00 UTC). The job runs an AI agent headless, which:</p>
+<h3>Review cadence (configurable, daily by default)</h3>
+<p>A GitHub Actions <code>schedule:</code> workflow in <code>kaupo-strategies</code> runs the review (for example at 06:13 UTC). The job runs an AI agent without a human in the loop. The agent does these steps:</p>
 <ol>
-  <li>pulls daily reports from the API (read-only token);</li>
-  <li>forms hypotheses → runs backtests (in CI against a synced candle dump — free compute — or via API);</li>
-  <li>proposes changes → opens a PR in <code>kaupo-strategies</code>.</li>
+  <li>It pulls the daily reports from the API with the read-only token.</li>
+  <li>It forms hypotheses and runs backtests through the API.</li>
+  <li>It proposes changes and opens a pull request in <code>kaupo-strategies</code>.</li>
 </ol>
 <h3>Promotion pipeline (phase 3)</h3>
-<p>Merged PR → engine reloads strategies → new version automatically starts shadowing → if it passes the gates in <code>promotion.yml</code> (min shadow duration, Sharpe ≥ X, max drawdown ≤ Y), it's flagged for promotion → you approve with one click (full auto later if you want).</p>
-<p class="kicker">Why GitHub-native instead of an in-system scheduler: strategy iteration already lives in that repo, Actions provides free backtest compute, PRs give an audit trail of every agent decision, and the engine stays simpler. (If you later prefer in-system triggering, the engine can emit a webhook on a cron — the API surface doesn't change.)</p>
+<p>A merged pull request makes the engine load the new strategy version. The new version starts shadowing automatically. If it passes the gates in <code>promotion.yml</code> (minimum shadow duration, Sharpe ratio, max drawdown), the system flags it for promotion. You approve the promotion to live trading with one click.</p>
+<p class="kicker">Why GitHub-native and not an in-system scheduler: the strategy iteration already lives in that repository. Actions gives free compute for backtests. Pull requests give an audit trail of every agent decision. The engine stays simpler.</p>
 
 <h2 id="data"><span class="num">8.</span>Data model (PostgreSQL)</h2>
-<p>Plain Postgres 16 with good indexes — sufficient for a handful of pairs × 1m/1h candles (millions of rows is trivial). TimescaleDB extension as a later option, not a dependency.</p>
+<p>Plain Postgres 16 with good indexes is sufficient. A handful of pairs at 1m or 1h candles means millions of rows, which is trivial for Postgres. TimescaleDB is a later option, not a dependency.</p>
 <ul>
   <li><code>candles(pair, timeframe, ts, open, high, low, close, volume)</code> — unique <code>(pair, timeframe, ts)</code></li>
   <li><code>strategies(id, version, source_hash, params jsonb)</code></li>
@@ -263,9 +263,9 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
   <li><code>ledger_entries(run_id, ts, asset, amount, balance_after, reason, ref_id)</code> — append-only</li>
   <li><code>equity_snapshots(run_id, ts, equity, cash, unrealized_pnl)</code></li>
   <li><code>reports(id, ts, period, run_id, body jsonb)</code></li>
-  <li><code>events(id, ts, level, source, message, data jsonb)</code> — alerts / audit log</li>
+  <li><code>events(id, ts, level, source, message, data jsonb)</code> — alerts and audit log</li>
 </ul>
-<p>Backups: nightly <code>pg_dump</code> → S3 with lifecycle expiry (pennies/month).</p>
+<p>Backups: a nightly <code>pg_dump</code> goes to S3 with lifecycle expiry. This costs pennies per month.</p>
 
 <h2 id="api"><span class="num">9.</span>API surface (FastAPI)</h2>
 <ul>
@@ -275,74 +275,74 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
   <li><code>GET /api/v1/runs?mode=…</code>, <code>GET /api/v1/runs/{id}/equity|orders|trades|positions</code></li>
   <li><code>GET /api/v1/reports/daily?date=…</code></li>
   <li><code>POST /api/v1/control/pause | resume | kill</code> — kill switch (authenticated)</li>
-  <li><code>WS /ws/live</code> — live ticks, equity updates, fill events for the dashboard</li>
+  <li><code>WS /ws/live</code> — live status updates for the dashboard (token in the query string)</li>
 </ul>
-<p>Auth: single user → one admin token + one read-only token (the latter is what agents get). No user management. OpenAPI schema → generated TypeScript client for the UI.</p>
+<p>Auth uses two bearer tokens. The admin token gives full access. The read-only token is for agents. There is no user management. The OpenAPI schema generates the TypeScript client for the UI.</p>
 
 <h2 id="ui"><span class="num">10.</span>UI (React + TypeScript)</h2>
-<p>React 19 + TypeScript + Vite + TanStack Query + <strong>TradingView lightweight-charts</strong> (OSS, purpose-built for candles/equity curves) + Tailwind. Typed API client generated from OpenAPI — end-to-end type safety.</p>
+<p>The dashboard uses React 19, TypeScript, Vite, TanStack Query, TradingView lightweight-charts, and Tailwind. The charts library is open-source and purpose-built for candles and equity curves.</p>
 <ul>
-  <li><strong>Dashboard</strong> — total equity curve, P&amp;L day/week/month, open positions, engine status, kill switch</li>
-  <li><strong>Runs</strong> — list/filter backtest &amp; shadow runs, compare two runs</li>
-  <li><strong>Run detail</strong> — equity + drawdown charts, trades overlaid on candle chart, metrics table, params</li>
+  <li><strong>Dashboard</strong> — equity curve, P&amp;L, open positions, engine status, kill switch</li>
+  <li><strong>Runs</strong> — list and filter runs, open a run detail</li>
+  <li><strong>Run detail</strong> — equity and drawdown charts, trades on the candle chart, metrics, parameters</li>
   <li><strong>Trades/Orders</strong> — filterable tables</li>
-  <li><strong>Reports</strong> — daily report viewer</li>
-  <li><strong>Alerts/Events</strong> — audit log</li>
+  <li><strong>Reports</strong> — the daily report viewer</li>
+  <li><strong>Events</strong> — the audit log</li>
 </ul>
-<p class="kicker">Alternatives considered: Svelte/Solid — nicer DX but thinner financial-charting ecosystem; Next.js — unnecessary for a single-user dashboard. React + Vite SPA is the pragmatic choice.</p>
+<p class="kicker">Alternatives considered: Svelte and Solid have a nicer developer experience but a thinner charting ecosystem. Next.js is unnecessary for a single-user dashboard. React plus Vite is the pragmatic choice.</p>
 
 <h2 id="testing"><span class="num">11.</span>Testing strategy</h2>
 <ul>
-  <li><strong>Unit (pytest)</strong>: indicators (validated against <code>ta</code> reference values), ledger math, risk rules, regime detector, metrics calculations.</li>
-  <li><strong>Behaviour (pytest scenario tests)</strong>: canned candle sequences → expected order traces, run identically through all three modes to prove backtest/shadow/live parity; kill-switch and daily-loss-halt scenarios; golden-file metrics.</li>
-  <li><strong>Integration</strong>: <code>testcontainers</code> Postgres (migrations + repositories), fake venue with recorded fixtures (no network in CI), API contract tests (httpx), end-to-end backtest via CLI.</li>
-  <li><strong>UI</strong>: Vitest + React Testing Library.</li>
-  <li><strong>CI (GitHub Actions)</strong>: ruff, mypy, pytest with coverage gate, UI tests, docker build. Same shape in <code>kaupo-strategies</code> so every agent PR is tested before merge.</li>
+  <li><strong>Unit (pytest)</strong>: indicators (validated against pandas references), ledger math, risk rules, and metrics.</li>
+  <li><strong>Behaviour (pytest scenario tests)</strong>: canned candle sequences produce expected order traces. The same scenario runs in backtest and shadow mode to prove parity. Golden-file metrics pin exact numbers.</li>
+  <li><strong>Integration</strong>: testcontainers Postgres for migrations and repositories, scripted fake exchanges (no network in CI), API contract tests, and a full backtest-to-database path.</li>
+  <li><strong>UI</strong>: Vitest and React Testing Library.</li>
+  <li><strong>CI (GitHub Actions)</strong>: ruff, mypy, pytest with a coverage gate, UI tests, and a Docker build with a smoke test. The <code>kaupo-strategies</code> CI has the same shape. Every agent pull request is tested before merge.</li>
 </ul>
 
-<h2 id="deployment"><span class="num">12.</span>Deployment &amp; costs</h2>
-<p><strong>Local</strong>: <code>docker compose up</code> → Postgres + engine + UI. Backtests additionally runnable service-free via CLI against a local candle cache.</p>
-<p><strong>AWS (cost-conscious target ~$15–20/mo)</strong>:</p>
+<h2 id="deployment"><span class="num">12.</span>Deployment and costs</h2>
+<p><strong>Local</strong>: <code>docker compose up</code> starts Postgres, the engine, and the UI. You can also run backtests without services through the CLI.</p>
+<p><strong>AWS (target: 15–20 USD per month)</strong>:</p>
 <ul>
-  <li>One <strong>EC2 <code>t4g.small</code></strong> (ARM, 2 GB, ~$12/mo) running the same docker compose stack (engine + Postgres + UI behind Caddy with auto-TLS). AWS free tier can cover most of year one.</li>
-  <li>20 GB gp3 EBS (~$1.6/mo); nightly <code>pg_dump</code> → S3, lifecycle-expired after 30 days (pennies).</li>
-  <li>Secrets in <strong>SSM Parameter Store</strong> (free); GitHub Actions deploys via <strong>OIDC + SSM Run Command</strong> — no SSH port open, no stored AWS keys.</li>
-  <li>Optional: expose UI only over Tailscale (free) instead of public HTTPS.</li>
-  <li>Documented scaling path (when justified, not before): RDS Postgres + ECS Fargate, ~$50–70/mo.</li>
+  <li>One EC2 <code>t4g.small</code> instance (ARM, 2 GB, about 12 USD per month). It runs the same docker compose stack. The AWS free tier can cover most of year one.</li>
+  <li>20 GB gp3 EBS (about 1.60 USD per month). A nightly <code>pg_dump</code> goes to S3 and expires after 30 days.</li>
+  <li>Secrets live in SSM Parameter Store (free). GitHub Actions deploys through OIDC and SSM Run Command. No SSH port is open. No AWS keys are stored.</li>
+  <li>Optional: expose the UI only over Tailscale (free) instead of public HTTPS.</li>
+  <li>A documented scaling path exists for later: RDS Postgres plus ECS Fargate, at 50–70 USD per month.</li>
 </ul>
 
 <h2 id="roadmap"><span class="num">13.</span>Phased roadmap</h2>
 <h3>Phase 1 — MVP <span class="pill">implementation scope of this plan</span></h3>
 <ol>
-  <li>Repo scaffold: monorepo, CI, ruff/mypy, docker-compose, Postgres + migrations</li>
-  <li>Candle ingestion: Kraken historical backfill (REST) + live (WS), storage layer</li>
-  <li>Strategy SDK + protocol + lint rules</li>
-  <li>Backtesting engine + paper venue (fees/slippage) + metrics</li>
-  <li>Ledger/portfolio accounting</li>
+  <li>Repository scaffold: monorepo, CI, ruff/mypy, docker-compose, Postgres plus migrations</li>
+  <li>Candle ingestion: Kraken historical backfill and live polling</li>
+  <li>Strategy SDK, protocol, and lint rules</li>
+  <li>Backtesting engine, paper venue (fees and slippage), and metrics</li>
+  <li>Ledger and portfolio accounting</li>
   <li>CLI (<code>kaupo ingest</code>, <code>kaupo backtest</code>, <code>kaupo run shadow</code>)</li>
   <li>Shadow trading mode on live data</li>
   <li>FastAPI: status, runs, backtests, equity/trades, WebSocket</li>
-  <li>UI: dashboard, runs list/compare, run detail with charts, trades</li>
-  <li>Example open-source strategy: regime-switch (ADX/Bollinger) mean-reversion ↔ momentum</li>
-  <li>Tests across all levels; coverage gate green</li>
+  <li>UI: dashboard, runs list, run detail with charts, trades</li>
+  <li>Example open-source strategy: regime-switch (mean-reversion and momentum)</li>
+  <li>Tests across all levels with a green coverage gate</li>
   <li>Daily report endpoint (JSON)</li>
 </ol>
-<h3>Phase 2 — AWS &amp; agents</h3>
-<p>EC2 deploy via Actions/SSM, auth tokens, S3 backups, Telegram alerts, <code>kaupo-strategies</code> repo + scheduled agent review workflow.</p>
+<h3>Phase 2 — AWS and agents</h3>
+<p>EC2 deployment through Actions and SSM, auth tokens, S3 backups, Telegram alerts, and the scheduled agent review workflow in <code>kaupo-strategies</code>.</p>
 <h3>Phase 3 — Live trading</h3>
-<p>Kraken venue hardening, reconciliation, kill switch, promotion gates, tiny capital start.</p>
+<p>Kraken venue hardening, reconciliation, promotion gates, position recovery on restart, and a small amount of starting capital.</p>
 <h3>Phase 4+</h3>
-<p>Sentiment module, multi-exchange, parameter sweeps/optimization, portfolio-level risk, TimescaleDB if needed.</p>
+<p>Sentiment module, multi-exchange support, parameter optimization, and portfolio-level risk.</p>
 <h3>Known gaps (tracked)</h3>
 <ul>
-  <li><strong>Position recovery on restart</strong>: a restarted shadow/live run starts with a fresh ledger (<code>starting_cash</code>); a position open at shutdown is forgotten by the new run. Acceptable for backtests, wrong for long-running daemons. Fix in Phase 3: rebuild the ledger from the previous run's entries on start.</li>
-  <li><strong>PYTHONHASHSEED nondeterminism</strong>: <code>hash(str)</code>/set iteration order vary per process; strategies relying on them break cross-process parity. Documented as a lint limitation.</li>
-  <li><strong>Live venue</strong>: partial fills will need strategy-side reconciliation (SDK has no fill callback yet).</li>
+  <li><strong>Position recovery on restart</strong>: a restarted run starts with a fresh ledger. A position that was open at shutdown is forgotten. This is acceptable for backtests but wrong for long-running daemons. The Phase 3 fix rebuilds the ledger from the entries of the previous run.</li>
+  <li><strong>PYTHONHASHSEED nondeterminism</strong>: <code>hash(str)</code> and set iteration order vary per process. Strategies that rely on them break cross-process parity. This is a documented lint limitation.</li>
+  <li><strong>Live venue</strong>: partial fills need strategy-side reconciliation. The SDK has no fill callback yet.</li>
 </ul>
 
 <h2 id="stack"><span class="num">14.</span>Tech stack summary</h2>
-<p>Python 3.12 (engine/api/cli — ccxt, pandas, pydantic, FastAPI, pytest), PostgreSQL 16, Docker Compose, React 19 + TypeScript + Vite + lightweight-charts, GitHub Actions CI/CD, AWS (EC2 + S3 + SSM).</p>
-<blockquote class="callout"><p>Python over Kotlin, confirmed: the trading/backtesting/data ecosystem (ccxt, pandas, ta) is where agents and strategy code will live; the JVM would only add friction.</p></blockquote>
+<p>Python 3.12 (engine, API, CLI), PostgreSQL 16, Docker Compose, React 19 plus TypeScript and Vite, lightweight-charts, GitHub Actions CI/CD, and AWS (EC2, S3, SSM).</p>
+<blockquote class="callout"><p>Python over Kotlin, confirmed. The trading and data ecosystem (ccxt, pandas, ta) is where agents and strategy code live. The JVM only adds friction here.</p></blockquote>
 
 </main>
 </div>
