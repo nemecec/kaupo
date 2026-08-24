@@ -151,6 +151,7 @@ COMPOSE="docker compose --env-file /etc/kaupo/kaupo.env -f /opt/kaupo/deploy/com
 ```
 
 - Deploy: automatic after a green CI run on `main`. Manual: `gh workflow run deploy.yml`.
+- Shadow strategy: set the GitHub variables `KAUPO_SHADOW_STRATEGY`, `KAUPO_SHADOW_PAIR`, and `KAUPO_SHADOW_TIMEFRAME`. The next deploy applies them. Empty values fall back to the defaults in `compose.prod.yml`.
 - Update strategies: push to the `kaupo-strategies` main branch. The next deploy pulls them. To apply them now, run `/opt/kaupo/deploy/host-deploy.sh` on the host.
 - Logs: `$COMPOSE logs -f shadow` on the host. Replace `shadow` with `api` or `db`.
 - Backup log: `/var/log/kaupo-backup.log` on the host.

@@ -85,6 +85,7 @@ def ingest(
 ) -> None:
     """Download historical candles from the exchange into Postgres."""
     _setup_logging(verbose)
+    from kaupo.data.candles import get_candle_range
     from kaupo.data.ingest import backfill
     from kaupo.data.kraken import KrakenClient
     from kaupo.db.session import get_sessionmaker
@@ -93,14 +94,24 @@ def ingest(
     tf = Timeframe.parse(timeframe)
     p = Pair.parse(pair)
 
-    async def _run() -> int:
+    async def _run() -> tuple[int, datetime | None, datetime | None, int]:
+        sm = get_sessionmaker()
         async with KrakenClient() as client:
-            return await backfill(client, get_sessionmaker(), p, tf, start_dt, end_dt)
+            total = await backfill(client, sm, p, tf, start_dt, end_dt)
+        async with sm() as session:
+            first, last, count = await get_candle_range(session, p, tf)
+        return total, first, last, count
 
-    total = asyncio.run(_run())
-    console.print(
-        f"[green]Ingested {total} candles[/green] for {p} {tf.value} ({start_dt.date()} → {end_dt.date()})"
-    )
+    total, first, last, count = asyncio.run(_run())
+    console.print(f"[green]Ingested {total} candles[/green] for {p} {tf.value}")
+    if first is None or last is None:
+        return
+    console.print(f"Database coverage: {count} candles, {first:%Y-%m-%d %H:%M} → {last:%Y-%m-%d %H:%M} UTC")
+    if first > start_dt:
+        console.print(
+            f"[yellow]Coverage starts {first:%Y-%m-%d}, after the requested {start_dt:%Y-%m-%d}.[/yellow]"
+            " Kraken serves at most the 720 newest candles of a timeframe."
+        )
 
 
 @app.command()

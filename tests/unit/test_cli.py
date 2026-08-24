@@ -1,6 +1,6 @@
 """CLI tests: typer runner with exchange/DB calls monkeypatched out."""
 
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -56,30 +56,73 @@ def test_lint_strategies_violation(tmp_path: Path) -> None:
     assert "requests" in result.output
 
 
+def _patch_coverage(
+    monkeypatch: pytest.MonkeyPatch, first: datetime | None, last: datetime | None, count: int
+) -> None:
+    """Cut the DB out of the ingest coverage report."""
+    import kaupo.data.candles as candles_mod
+    import kaupo.db.session as session_mod
+
+    class FakeSession:
+        async def __aenter__(self) -> "FakeSession":
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            pass
+
+    monkeypatch.setattr(session_mod, "get_sessionmaker", lambda: FakeSession)
+
+    async def fake_range(session: Any, pair: Any, tf: Any) -> tuple[Any, Any, int]:
+        return first, last, count
+
+    monkeypatch.setattr(candles_mod, "get_candle_range", fake_range)
+
+
+class _FakeKrakenClient:
+    async def __aenter__(self) -> "_FakeKrakenClient":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        pass
+
+
 def test_ingest_command(monkeypatch: pytest.MonkeyPatch) -> None:
     import kaupo.data.ingest as ingest_mod
     import kaupo.data.kraken as kraken_mod
 
     calls: dict[str, Any] = {}
 
-    class FakeClient:
-        async def __aenter__(self) -> "FakeClient":
-            return self
-
-        async def __aexit__(self, *exc: object) -> None:
-            pass
-
     async def fake_backfill(client: Any, sm: Any, pair: Any, tf: Any, start: Any, end: Any) -> int:
         calls.update(pair=str(pair), tf=tf.value)
         return 42
 
-    monkeypatch.setattr(kraken_mod, "KrakenClient", FakeClient)
+    monkeypatch.setattr(kraken_mod, "KrakenClient", _FakeKrakenClient)
     monkeypatch.setattr(ingest_mod, "backfill", fake_backfill)
+    _patch_coverage(monkeypatch, datetime(2025, 8, 24, tzinfo=UTC), datetime(2026, 8, 24, tzinfo=UTC), 8760)
 
     result = runner.invoke(cli.app, ["ingest", "--pair", "BTC/EUR", "--timeframe", "1h", "--days", "7"])
     assert result.exit_code == 0, result.output
     assert "42 candles" in result.output
+    assert "Database coverage: 8760 candles" in result.output
+    assert "720 newest" not in result.output
     assert calls == {"pair": "BTC/EUR", "tf": "1h"}
+
+
+def test_ingest_warns_on_partial_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kaupo.data.ingest as ingest_mod
+    import kaupo.data.kraken as kraken_mod
+
+    async def fake_backfill(client: Any, sm: Any, pair: Any, tf: Any, start: Any, end: Any) -> int:
+        return 720
+
+    monkeypatch.setattr(kraken_mod, "KrakenClient", _FakeKrakenClient)
+    monkeypatch.setattr(ingest_mod, "backfill", fake_backfill)
+    _patch_coverage(monkeypatch, datetime(2026, 7, 25, tzinfo=UTC), datetime(2026, 8, 24, tzinfo=UTC), 720)
+
+    result = runner.invoke(cli.app, ["ingest", "--pair", "BTC/EUR", "--timeframe", "1h", "--days", "365"])
+    assert result.exit_code == 0, result.output
+    assert "Database coverage: 720 candles" in result.output
+    assert "720 newest candles" in result.output
 
 
 def test_backtest_command(monkeypatch: pytest.MonkeyPatch) -> None:
