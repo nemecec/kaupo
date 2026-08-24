@@ -1,0 +1,11 @@
+# Public entry for kaupo. Automatic HTTPS certificates from Let's Encrypt.
+# The ui container also proxies /api and /ws to the api container.
+
+kaupo.trade {
+	encode zstd gzip
+	reverse_proxy ui:80
+}
+
+www.kaupo.trade {
+	redir https://kaupo.trade{uri} permanent
+}

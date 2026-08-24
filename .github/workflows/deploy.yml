@@ -1,0 +1,95 @@
+name: Deploy
+
+# Runs after a green CI run on main, or manually from the Actions tab.
+# Builds x86 images, pushes them to GHCR, then deploys on the Hetzner host over SSH.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+  TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push the engine image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/kaupo:${{ env.TAG }}
+            ${{ env.REGISTRY }}/kaupo:latest
+          cache-from: type=gha,scope=kaupo
+          cache-to: type=gha,mode=max,scope=kaupo
+
+      - name: Build and push the UI image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ui
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/kaupo-ui:${{ env.TAG }}
+            ${{ env.REGISTRY }}/kaupo-ui:latest
+          cache-from: type=gha,scope=kaupo-ui
+          cache-to: type=gha,mode=max,scope=kaupo-ui
+
+      - name: Set up SSH
+        run: |
+          install -d -m 700 ~/.ssh
+          echo "${{ secrets.HETZNER_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ vars.HETZNER_HOST }}" >> ~/.ssh/known_hosts 2> /dev/null
+
+      - name: Bootstrap the host when needed
+        run: |
+          if ! ssh -i ~/.ssh/deploy_key -o BatchMode=yes root@"${{ vars.HETZNER_HOST }}" 'test -d /opt/kaupo/.git'; then
+            scp -i ~/.ssh/deploy_key -o BatchMode=yes deploy/bootstrap.sh root@"${{ vars.HETZNER_HOST }}":/tmp/kaupo-bootstrap.sh
+            ssh -i ~/.ssh/deploy_key -o BatchMode=yes root@"${{ vars.HETZNER_HOST }}" 'bash /tmp/kaupo-bootstrap.sh'
+          fi
+
+      - name: Write secrets on the host
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          KAUPO_ADMIN_TOKEN: ${{ secrets.KAUPO_ADMIN_TOKEN }}
+          KAUPO_READONLY_TOKEN: ${{ secrets.KAUPO_READONLY_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+          KAUPO_BACKUP_BUCKET: ${{ vars.KAUPO_BACKUP_BUCKET }}
+        run: |
+          {
+            echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
+            echo "KAUPO_ADMIN_TOKEN=$KAUPO_ADMIN_TOKEN"
+            echo "KAUPO_READONLY_TOKEN=$KAUPO_READONLY_TOKEN"
+            echo "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
+            echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
+            echo "AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION"
+            echo "KAUPO_BACKUP_BUCKET=$KAUPO_BACKUP_BUCKET"
+          } | ssh -i ~/.ssh/deploy_key -o BatchMode=yes root@"${{ vars.HETZNER_HOST }}" \
+            'install -d /etc/kaupo && install -m 600 /dev/null /etc/kaupo/kaupo.env && cat > /etc/kaupo/kaupo.env'
+
+      - name: Deploy on the host
+        run: ssh -i ~/.ssh/deploy_key -o BatchMode=yes root@"${{ vars.HETZNER_HOST }}" "/opt/kaupo/deploy/host-deploy.sh $TAG"

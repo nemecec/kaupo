@@ -83,6 +83,12 @@ To stop the stack:
 docker compose --profile trading down
 ```
 
+## Deployment (production)
+
+The production stack runs on one Hetzner CX23 server behind Caddy at https://kaupo.trade. Images come from GHCR. Deploys run from GitHub Actions over SSH after a green CI run on `main`. Nightly `pg_dump` backups go to AWS S3.
+
+See `deploy/README.md` for the setup steps.
+
 ## Tests
 
 ```bash

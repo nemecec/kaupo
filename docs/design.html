@@ -140,7 +140,7 @@
   <li><strong>One strategy code, three execution modes.</strong> Backtest, shadow, and live share the same engine loop. Only the candle source and the venue differ. This makes backtests trustworthy. It gives agents a reliable feedback signal.</li>
   <li><strong>Determinism by contract.</strong> Strategies never see wall-clock time. They do no I/O. They get no unseeded randomness. All inputs come through a context object. The SDK design, the linter, and the tests enforce this.</li>
   <li><strong>Agent-first interfaces.</strong> Every function is reachable through a documented REST API, the CLI, and JSON artifacts. An AI agent can pull reports, run backtests, and compare runs without a human.</li>
-  <li><strong>Cost-conscious.</strong> One small server, co-located Postgres, no Kubernetes, no managed services. Target cost: 15–20 USD per month. Less on the free tier.</li>
+  <li><strong>Cost-conscious.</strong> One small server, co-located Postgres, no Kubernetes, no managed services. Target cost: under 10 EUR per month.</li>
   <li><strong>The risk manager is not a strategy.</strong> Hard guardrails live outside the strategy code. Position limits, daily-loss halt, pair whitelist, no leverage, and a kill switch. They apply to live and shadow trading.</li>
 </ol>
 
@@ -302,13 +302,12 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
 
 <h2 id="deployment"><span class="num">12.</span>Deployment and costs</h2>
 <p><strong>Local</strong>: <code>docker compose up</code> starts Postgres, the engine, and the UI. You can also run backtests without services through the CLI.</p>
-<p><strong>AWS (target: 15–20 USD per month)</strong>:</p>
+<p><strong>Production (target: under 10 EUR per month)</strong>:</p>
 <ul>
-  <li>One EC2 <code>t4g.small</code> instance (ARM, 2 GB, about 12 USD per month). It runs the same docker compose stack. The AWS free tier can cover most of year one.</li>
-  <li>20 GB gp3 EBS (about 1.60 USD per month). A nightly <code>pg_dump</code> goes to S3 and expires after 30 days.</li>
-  <li>Secrets live in SSM Parameter Store (free). GitHub Actions deploys through OIDC and SSM Run Command. No SSH port is open. No AWS keys are stored.</li>
-  <li>Optional: expose the UI only over Tailscale (free) instead of public HTTPS.</li>
-  <li>A documented scaling path exists for later: RDS Postgres plus ECS Fargate, at 50–70 USD per month.</li>
+  <li>One Hetzner CX23 server (x86, 2 vCPU, 4 GB, about 6 EUR per month with IPv4). It runs the same docker compose stack behind Caddy at <code>kaupo.trade</code>, with automatic HTTPS certificates.</li>
+  <li>Durability: Hetzner keeps seven daily whole-disk backups for 20 percent of the server price. A nightly <code>pg_dump</code> also goes to AWS S3 and expires after 30 days. This is the cross-provider copy.</li>
+  <li>Images live in GHCR. GitHub Actions deploys over SSH after a green CI run. Inbound ports are 22, 80, and 443 only. Secrets travel as GitHub secrets and land on the host with mode 600.</li>
+  <li>A documented scaling path exists for later: ECS Fargate plus RDS on AWS, at 50–70 USD per month. The containers and images move as they are.</li>
 </ul>
 
 <h2 id="roadmap"><span class="num">13.</span>Phased roadmap</h2>
@@ -327,8 +326,8 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
   <li>Tests across all levels with a green coverage gate</li>
   <li>Daily report endpoint (JSON)</li>
 </ol>
-<h3>Phase 2 — AWS and agents</h3>
-<p>EC2 deployment through Actions and SSM, auth tokens, S3 backups, Telegram alerts, and the scheduled agent review workflow in <code>kaupo-strategies</code>.</p>
+<h3>Phase 2 — Production and agents</h3>
+<p>Hetzner deployment through GitHub Actions and SSH, GHCR images, S3 backups, Telegram alerts, and the scheduled agent review workflow in <code>kaupo-strategies</code>.</p>
 <h3>Phase 3 — Live trading</h3>
 <p>Kraken venue hardening, reconciliation, promotion gates, position recovery on restart, and a small amount of starting capital.</p>
 <h3>Phase 4+</h3>
@@ -341,7 +340,7 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
 </ul>
 
 <h2 id="stack"><span class="num">14.</span>Tech stack summary</h2>
-<p>Python 3.12 (engine, API, CLI), PostgreSQL 16, Docker Compose, React 19 plus TypeScript and Vite, lightweight-charts, GitHub Actions CI/CD, and AWS (EC2, S3, SSM).</p>
+<p>Python 3.12 (engine, API, CLI), PostgreSQL 16, Docker Compose, React 19 plus TypeScript and Vite, lightweight-charts, GitHub Actions CI/CD, and Hetzner Cloud (CX23, Caddy, GHCR) with AWS S3 for backups.</p>
 <blockquote class="callout"><p>Python over Kotlin, confirmed. The trading and data ecosystem (ccxt, pandas, ta) is where agents and strategy code live. The JVM only adds friction here.</p></blockquote>
 
 </main>

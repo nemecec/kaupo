@@ -79,3 +79,15 @@ jobs:
 
       - name: Build UI image
         run: docker build ./ui
+
+      - name: Validate deploy scripts
+        run: shellcheck deploy/*.sh
+
+      - name: Validate production compose file
+        working-directory: deploy
+        run: |
+          POSTGRES_PASSWORD=x KAUPO_ADMIN_TOKEN=x KAUPO_READONLY_TOKEN=x \
+            docker compose -f compose.prod.yml config --quiet
+
+      - name: Validate Caddyfile
+        run: docker run --rm -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
