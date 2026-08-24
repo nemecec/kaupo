@@ -334,6 +334,12 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
 <p>Kraken venue hardening, reconciliation, kill switch, promotion gates, tiny capital start.</p>
 <h3>Phase 4+</h3>
 <p>Sentiment module, multi-exchange, parameter sweeps/optimization, portfolio-level risk, TimescaleDB if needed.</p>
+<h3>Known gaps (tracked)</h3>
+<ul>
+  <li><strong>Position recovery on restart</strong>: a restarted shadow/live run starts with a fresh ledger (<code>starting_cash</code>); a position open at shutdown is forgotten by the new run. Acceptable for backtests, wrong for long-running daemons. Fix in Phase 3: rebuild the ledger from the previous run's entries on start.</li>
+  <li><strong>PYTHONHASHSEED nondeterminism</strong>: <code>hash(str)</code>/set iteration order vary per process; strategies relying on them break cross-process parity. Documented as a lint limitation.</li>
+  <li><strong>Live venue</strong>: partial fills will need strategy-side reconciliation (SDK has no fill callback yet).</li>
+</ul>
 
 <h2 id="stack"><span class="num">14.</span>Tech stack summary</h2>
 <p>Python 3.12 (engine/api/cli — ccxt, pandas, pydantic, FastAPI, pytest), PostgreSQL 16, Docker Compose, React 19 + TypeScript + Vite + lightweight-charts, GitHub Actions CI/CD, AWS (EC2 + S3 + SSM).</p>
