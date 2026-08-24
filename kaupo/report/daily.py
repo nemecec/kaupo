@@ -58,7 +58,9 @@ async def _run_report(session: AsyncSession, run: RunRow, start: datetime, end: 
         .first()
     )
 
-    if not snapshots and prev is None:
+    if not snapshots and not fills:
+        # no activity today: inactive even if the run row looks alive
+        # (e.g. a container-killed run that never got ended_at)
         return {
             "run_id": run.id,
             "mode": run.mode,
