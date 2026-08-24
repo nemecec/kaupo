@@ -99,6 +99,7 @@ async def submit_backtest(
         start=start,
         end=end,
         starting_cash=body.starting_cash,
+        exchange=body.exchange,
     )
     from kaupo.domain import new_id
 

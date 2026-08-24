@@ -12,8 +12,9 @@ pytestmark = pytest.mark.integration
 PAIR = Pair.parse("BTC/EUR")
 
 
-def make_candle(ts: datetime, price: float = 100.0) -> Candle:
+def make_candle(ts: datetime, price: float = 100.0, exchange: str = "kraken") -> Candle:
     return Candle(
+        exchange=exchange,
         pair=PAIR,
         timeframe=Timeframe.H1,
         ts=ts,
@@ -79,3 +80,44 @@ async def test_query_respects_bounds_and_pair(session: AsyncSession) -> None:
 
     other = await get_candles(session, Pair.parse("ETH/EUR"), Timeframe.H1, base, base + timedelta(hours=5))
     assert other == []
+
+
+async def test_exchange_isolation(session: AsyncSession) -> None:
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    await upsert_candles(session, [make_candle(base + timedelta(hours=i), 100 + i) for i in range(3)])
+    await upsert_candles(
+        session, [make_candle(base + timedelta(hours=i), 200 + i, "binance") for i in range(5)]
+    )
+
+    end = base + timedelta(hours=10)
+    kraken = await get_candles(session, PAIR, Timeframe.H1, base, end)
+    binance = await get_candles(session, PAIR, Timeframe.H1, base, end, exchange="binance")
+    assert [c.exchange for c in kraken] == ["kraken"] * 3
+    assert [c.exchange for c in binance] == ["binance"] * 5
+    assert kraken[0].open == 100.0
+    assert binance[0].open == 200.0
+
+    first, last, count = await get_candle_range(session, PAIR, Timeframe.H1)
+    assert (first, last, count) == (base, base + timedelta(hours=2), 3)
+    first, last, count = await get_candle_range(session, PAIR, Timeframe.H1, exchange="binance")
+    assert (first, last, count) == (base, base + timedelta(hours=4), 5)
+
+    latest = await get_latest_ts(session, PAIR, Timeframe.H1, exchange="binance")
+    assert latest == base + timedelta(hours=4)
+
+
+async def test_upsert_same_ts_per_exchange_updates_independently(session: AsyncSession) -> None:
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    await upsert_candles(session, [make_candle(base, 100)])
+    await upsert_candles(session, [make_candle(base, 200, "binance")])
+
+    # re-upserting one exchange's row must leave the other exchange's row alone
+    await upsert_candles(session, [make_candle(base, 300, "binance")])
+
+    end = base + timedelta(hours=1)
+    kraken = await get_candles(session, PAIR, Timeframe.H1, base, end)
+    binance = await get_candles(session, PAIR, Timeframe.H1, base, end, exchange="binance")
+    assert len(kraken) == 1
+    assert kraken[0].open == 100.0
+    assert len(binance) == 1
+    assert binance[0].open == 300.0

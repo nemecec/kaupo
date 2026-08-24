@@ -43,6 +43,7 @@ async def candles(
     start: datetime = Query(...),
     end: datetime = Query(...),
     limit: int = Query(5000, ge=1, le=50_000),
+    exchange: str = Query("kraken"),
 ) -> list[CandleOut]:
     try:
         parsed_pair = Pair.parse(pair)
@@ -56,6 +57,7 @@ async def candles(
         _aware(start),
         _aware(end),
         limit=limit,
+        exchange=exchange,
     )
     return [
         CandleOut(ts=c.ts, open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume) for c in rows

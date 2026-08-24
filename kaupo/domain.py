@@ -86,6 +86,7 @@ class Candle:
     low: float
     close: float
     volume: float
+    exchange: str = "kraken"  # source venue; part of the storage key
 
 
 class Side(enum.Enum):

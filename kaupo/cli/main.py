@@ -25,6 +25,7 @@ TimeframeOpt = Annotated[str, typer.Option(help="1m 5m 15m 30m 1h 4h 1d")]
 DaysOpt = Annotated[int, typer.Option(help="how far back from --end (or now)")]
 StartOpt = Annotated[str | None, typer.Option(help="ISO date, overrides --days")]
 EndOpt = Annotated[str | None, typer.Option(help="ISO date")]
+ExchangeOpt = Annotated[str, typer.Option(help="candle data source: kraken or binance")]
 VerboseOpt = Annotated[bool, typer.Option("--verbose", "-v")]
 StrategiesDirOpt = Annotated[Path | None, typer.Option(help="override strategies directory")]
 StrategyOpt = Annotated[str, typer.Option(help="strategy id")]
@@ -81,14 +82,20 @@ def ingest(
     days: Annotated[int, typer.Option(min=1)] = 365,
     start: StartOpt = None,
     end: EndOpt = None,
+    exchange: ExchangeOpt = "kraken",
     verbose: VerboseOpt = False,
 ) -> None:
     """Download historical candles from the exchange into Postgres."""
     _setup_logging(verbose)
+    from kaupo.data.binance import BinanceClient
     from kaupo.data.candles import get_candle_range
     from kaupo.data.ingest import backfill
     from kaupo.data.kraken import KrakenClient
     from kaupo.db.session import get_sessionmaker
+
+    clients = {"kraken": KrakenClient, "binance": BinanceClient}
+    if exchange not in clients:
+        raise typer.BadParameter(f"--exchange must be one of: {', '.join(sorted(clients))}")
 
     start_dt, end_dt = _range(days, start, end)
     tf = Timeframe.parse(timeframe)
@@ -96,22 +103,24 @@ def ingest(
 
     async def _run() -> tuple[int, datetime | None, datetime | None, int]:
         sm = get_sessionmaker()
-        async with KrakenClient() as client:
+        async with clients[exchange]() as client:
             total = await backfill(client, sm, p, tf, start_dt, end_dt)
         async with sm() as session:
-            first, last, count = await get_candle_range(session, p, tf)
+            first, last, count = await get_candle_range(session, p, tf, exchange=exchange)
         return total, first, last, count
 
     total, first, last, count = asyncio.run(_run())
-    console.print(f"[green]Ingested {total} candles[/green] for {p} {tf.value}")
+    console.print(f"[green]Ingested {total} candles[/green] for {p} {tf.value} from {exchange}")
     if first is None or last is None:
         return
     console.print(f"Database coverage: {count} candles, {first:%Y-%m-%d %H:%M} → {last:%Y-%m-%d %H:%M} UTC")
     if first > start_dt:
-        console.print(
+        warning = (
             f"[yellow]Coverage starts {first:%Y-%m-%d}, after the requested {start_dt:%Y-%m-%d}.[/yellow]"
-            " Kraken serves at most the 720 newest candles of a timeframe."
         )
+        if exchange == "kraken":
+            warning += " Kraken serves at most the 720 newest candles of a timeframe."
+        console.print(warning)
 
 
 @app.command()
@@ -124,6 +133,7 @@ def backtest(
     end: EndOpt = None,
     param: ParamOpt = [],
     cash: Annotated[float, typer.Option(help="starting quote cash", min=0.01)] = 10_000.0,
+    exchange: ExchangeOpt = "kraken",
     strategies_dir: StrategiesDirOpt = None,
     no_persist: Annotated[bool, typer.Option(help="do not store the run in Postgres")] = False,
     verbose: VerboseOpt = False,
@@ -153,6 +163,7 @@ def backtest(
         start=start_dt,
         end=end_dt,
         starting_cash=cash,
+        exchange=exchange,
         persist=not no_persist,
     )
 

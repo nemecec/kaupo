@@ -86,6 +86,7 @@ class BacktestIn(BaseModel):
     days: int = Field(default=365, ge=1)
     params: dict[str, Any] = {}
     starting_cash: float = Field(default=10_000.0, gt=0)
+    exchange: str = "kraken"
 
     @model_validator(mode="after")
     def _check_range(self) -> BacktestIn:

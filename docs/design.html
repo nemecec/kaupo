@@ -255,7 +255,7 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
 <h2 id="data"><span class="num">8.</span>Data model (PostgreSQL)</h2>
 <p>Plain Postgres 16 with good indexes is sufficient. A handful of pairs at 1m or 1h candles means millions of rows, which is trivial for Postgres. TimescaleDB is a later option, not a dependency.</p>
 <ul>
-  <li><code>candles(pair, timeframe, ts, open, high, low, close, volume)</code> — unique <code>(pair, timeframe, ts)</code></li>
+  <li><code>candles(exchange, pair, timeframe, ts, open, high, low, close, volume)</code> — unique <code>(exchange, pair, timeframe, ts)</code></li>
   <li><code>strategies(id, version, source_hash, params jsonb)</code></li>
   <li><code>runs(id, mode, strategy_id, started_at, ended_at, status, config jsonb, metrics jsonb)</code></li>
   <li><code>orders(id, run_id, ts, pair, side, type, size, limit_price, status, filled_price, fee)</code></li>
@@ -265,6 +265,7 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
   <li><code>reports(id, ts, period, run_id, body jsonb)</code></li>
   <li><code>events(id, ts, level, source, message, data jsonb)</code> — alerts and audit log</li>
 </ul>
+<p>Kraken serves only the 720 newest candles of a timeframe, so deep history comes from the Binance backfill path (public API, no key). Prices differ slightly across exchanges, so each backtest reads one exchange's candles.</p>
 <p>Backups: a nightly <code>pg_dump</code> goes to S3 with lifecycle expiry. This costs pennies per month.</p>
 
 <h2 id="api"><span class="num">9.</span>API surface (FastAPI)</h2>

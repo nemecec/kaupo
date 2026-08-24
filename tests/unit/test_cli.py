@@ -57,7 +57,11 @@ def test_lint_strategies_violation(tmp_path: Path) -> None:
 
 
 def _patch_coverage(
-    monkeypatch: pytest.MonkeyPatch, first: datetime | None, last: datetime | None, count: int
+    monkeypatch: pytest.MonkeyPatch,
+    first: datetime | None,
+    last: datetime | None,
+    count: int,
+    seen: dict[str, Any] | None = None,
 ) -> None:
     """Cut the DB out of the ingest coverage report."""
     import kaupo.data.candles as candles_mod
@@ -72,7 +76,9 @@ def _patch_coverage(
 
     monkeypatch.setattr(session_mod, "get_sessionmaker", lambda: FakeSession)
 
-    async def fake_range(session: Any, pair: Any, tf: Any) -> tuple[Any, Any, int]:
+    async def fake_range(session: Any, pair: Any, tf: Any, exchange: str = "kraken") -> tuple[Any, Any, int]:
+        if seen is not None:
+            seen["exchange"] = exchange
         return first, last, count
 
     monkeypatch.setattr(candles_mod, "get_candle_range", fake_range)
@@ -80,6 +86,14 @@ def _patch_coverage(
 
 class _FakeKrakenClient:
     async def __aenter__(self) -> "_FakeKrakenClient":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        pass
+
+
+class _FakeBinanceClient:
+    async def __aenter__(self) -> "_FakeBinanceClient":
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -125,13 +139,50 @@ def test_ingest_warns_on_partial_coverage(monkeypatch: pytest.MonkeyPatch) -> No
     assert "720 newest candles" in result.output
 
 
+def test_ingest_binance_exchange(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kaupo.data.binance as binance_mod
+    import kaupo.data.ingest as ingest_mod
+
+    used: dict[str, Any] = {}
+
+    async def fake_backfill(client: Any, sm: Any, pair: Any, tf: Any, start: Any, end: Any) -> int:
+        used["is_binance"] = isinstance(client, _FakeBinanceClient)
+        return 57_000
+
+    monkeypatch.setattr(binance_mod, "BinanceClient", _FakeBinanceClient)
+    monkeypatch.setattr(ingest_mod, "backfill", fake_backfill)
+    seen: dict[str, Any] = {}
+    _patch_coverage(
+        monkeypatch, datetime(2020, 1, 3, tzinfo=UTC), datetime(2026, 8, 24, tzinfo=UTC), 57_000, seen
+    )
+
+    result = runner.invoke(
+        cli.app,
+        ["ingest", "--pair", "BTC/EUR", "--timeframe", "1h", "--days", "2400", "--exchange", "binance"],
+    )
+    assert result.exit_code == 0, result.output
+    assert used["is_binance"] is True
+    assert seen["exchange"] == "binance"
+    assert "from binance" in result.output
+    assert "720 newest" not in result.output
+
+
+def test_ingest_rejects_unknown_exchange() -> None:
+    result = runner.invoke(cli.app, ["ingest", "--pair", "BTC/EUR", "--exchange", "coinbase"])
+    assert result.exit_code == 2
+    assert "binance, kraken" in result.output
+
+
 def test_backtest_command(monkeypatch: pytest.MonkeyPatch) -> None:
     import kaupo.backtest.run as bt_mod
+
+    captured: dict[str, Any] = {}
 
     class FakeResult:
         status = type("S", (), {"value": "completed"})()
 
     async def fake_run_backtest(request: Any, sm: Any) -> Any:
+        captured["exchange"] = request.exchange
         metrics = {"num_fills": 3, "total_return_pct": 1.5}
         return RunId("run-1"), FakeResult(), metrics
 
@@ -156,6 +207,41 @@ def test_backtest_command(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.exit_code == 0, result.output
     assert "run-1" in result.output
     assert "num_fills" in result.output
+    assert captured["exchange"] == "kraken"  # default
+
+
+def test_backtest_exchange_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kaupo.backtest.run as bt_mod
+
+    captured: dict[str, Any] = {}
+
+    class FakeResult:
+        status = type("S", (), {"value": "completed"})()
+
+    async def fake_run_backtest(request: Any, sm: Any) -> Any:
+        captured["exchange"] = request.exchange
+        return RunId("run-1"), FakeResult(), {"num_fills": 0}
+
+    monkeypatch.setattr(bt_mod, "run_backtest", fake_run_backtest)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--days",
+            "30",
+            "--exchange",
+            "binance",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["exchange"] == "binance"
 
 
 def test_backtest_unknown_strategy() -> None:

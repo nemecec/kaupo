@@ -43,10 +43,15 @@ Prerequisites: uv, Docker, and Node 22 or later.
    ```bash
    uv run kaupo ingest --pair BTC/EUR --timeframe 1h --days 365
    ```
+   Kraken serves only the 720 newest candles. For deep history, backfill from Binance (public API, no key) with `--exchange binance`:
+   ```bash
+   uv run kaupo ingest --exchange binance --pair BTC/EUR --timeframe 1h --days 2400
+   ```
 5. Run a backtest with the example strategy:
    ```bash
    uv run kaupo backtest --strategy regime-switch --pair BTC/EUR --timeframe 1h --days 365
    ```
+   To use the Binance candles, add `--exchange binance`.
 6. Start shadow trading with virtual money:
    ```bash
    uv run kaupo run shadow --strategy regime-switch --pair BTC/EUR --timeframe 1h

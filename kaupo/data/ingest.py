@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.data.candles import upsert_candles
+from kaupo.data.ccxt_client import CcxtExchangeClient
 from kaupo.data.kraken import KrakenClient
 from kaupo.domain import Candle, Pair, Timeframe
 
@@ -15,7 +16,7 @@ log = logging.getLogger(__name__)
 
 
 async def backfill(
-    client: KrakenClient,
+    client: CcxtExchangeClient,
     sessionmaker: async_sessionmaker[AsyncSession],
     pair: Pair,
     timeframe: Timeframe,
@@ -23,7 +24,7 @@ async def backfill(
     end: datetime | None = None,
     on_progress: Callable[[int], None] | None = None,
 ) -> int:
-    """Page through Kraken history from ``start`` and upsert. Returns candle count."""
+    """Page through exchange history from ``start`` and upsert. Returns candle count."""
     end = end or datetime.now(UTC)
     step = timedelta(seconds=timeframe.seconds)
     since = start

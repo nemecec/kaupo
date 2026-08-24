@@ -40,6 +40,7 @@ class BacktestRequest:
     lookback: int = 300
     liquidate_end: bool = True
     persist: bool = True
+    exchange: str = "kraken"  # which exchange's stored candles to run on
 
 
 async def _aiter(candles: list[Candle]) -> AsyncIterator[Candle]:
@@ -55,11 +56,14 @@ async def run_backtest(
     # live/shadow run would — this is what makes backtest ≡ shadow
     prefill_start = request.start - timedelta(seconds=request.timeframe.seconds * request.lookback)
     async with sm_scope(sessionmaker) as session:
-        candles = await get_candles(session, request.pair, request.timeframe, prefill_start, request.end)
+        candles = await get_candles(
+            session, request.pair, request.timeframe, prefill_start, request.end, exchange=request.exchange
+        )
     in_range = [c for c in candles if c.ts >= request.start]
     if not in_range:
         raise ValueError(
-            f"No candles for {request.pair} {request.timeframe.value} in range; run `kaupo ingest` first"
+            f"No {request.exchange} candles for {request.pair} {request.timeframe.value} in range; "
+            "run `kaupo ingest` first"
         )
     warmup = len(candles) - len(in_range)
     log.info("Backtesting %s on %d candles (+%d warm-up)", request.strategy.id, len(in_range), warmup)
@@ -94,6 +98,7 @@ async def run_backtest(
             config={
                 "pair": str(request.pair),
                 "timeframe": request.timeframe.value,
+                "exchange": request.exchange,
                 "params": request.params,
                 "start": request.start.isoformat(),
                 "end": request.end.isoformat(),

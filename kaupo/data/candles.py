@@ -11,11 +11,12 @@ from kaupo.domain import Candle, Pair, Timeframe
 
 
 async def upsert_candles(session: AsyncSession, candles: list[Candle]) -> int:
-    """Idempotent insert; existing (pair, timeframe, ts) rows are overwritten."""
+    """Idempotent insert; existing (exchange, pair, timeframe, ts) rows are overwritten."""
     if not candles:
         return 0
     rows = [
         {
+            "exchange": c.exchange,
             "pair": str(c.pair),
             "timeframe": c.timeframe.value,
             "ts": c.ts,
@@ -43,6 +44,7 @@ async def get_candles(
     start: datetime,
     end: datetime,
     limit: int | None = None,
+    exchange: str = "kraken",
 ) -> list[Candle]:
     """Candles with open time in [start, end), ascending.
 
@@ -50,6 +52,7 @@ async def get_candles(
     (fetched descending, then reversed) instead of the whole range.
     """
     where = (
+        CandleRow.exchange == exchange,
         CandleRow.pair == str(pair),
         CandleRow.timeframe == timeframe.value,
         CandleRow.ts >= start,
@@ -64,6 +67,7 @@ async def get_candles(
         rows = list((await session.execute(stmt)).scalars())
     return [
         Candle(
+            exchange=row.exchange,
             pair=pair,
             timeframe=timeframe,
             ts=row.ts,
@@ -77,10 +81,16 @@ async def get_candles(
     ]
 
 
-async def get_latest_ts(session: AsyncSession, pair: Pair, timeframe: Timeframe) -> datetime | None:
+async def get_latest_ts(
+    session: AsyncSession, pair: Pair, timeframe: Timeframe, exchange: str = "kraken"
+) -> datetime | None:
     stmt = (
         select(CandleRow.ts)
-        .where(CandleRow.pair == str(pair), CandleRow.timeframe == timeframe.value)
+        .where(
+            CandleRow.exchange == exchange,
+            CandleRow.pair == str(pair),
+            CandleRow.timeframe == timeframe.value,
+        )
         .order_by(CandleRow.ts.desc())
         .limit(1)
     )
@@ -88,11 +98,17 @@ async def get_latest_ts(session: AsyncSession, pair: Pair, timeframe: Timeframe)
     return result.scalar_one_or_none()
 
 
-async def get_latest_candles(session: AsyncSession, pair: Pair, timeframe: Timeframe, n: int) -> list[Candle]:
+async def get_latest_candles(
+    session: AsyncSession, pair: Pair, timeframe: Timeframe, n: int, exchange: str = "kraken"
+) -> list[Candle]:
     """The ``n`` most recent candles, ordered oldest first."""
     stmt = (
         select(CandleRow)
-        .where(CandleRow.pair == str(pair), CandleRow.timeframe == timeframe.value)
+        .where(
+            CandleRow.exchange == exchange,
+            CandleRow.pair == str(pair),
+            CandleRow.timeframe == timeframe.value,
+        )
         .order_by(CandleRow.ts.desc())
         .limit(n)
     )
@@ -101,6 +117,7 @@ async def get_latest_candles(session: AsyncSession, pair: Pair, timeframe: Timef
     rows.reverse()
     return [
         Candle(
+            exchange=row.exchange,
             pair=pair,
             timeframe=timeframe,
             ts=row.ts,
@@ -115,13 +132,15 @@ async def get_latest_candles(session: AsyncSession, pair: Pair, timeframe: Timef
 
 
 async def get_candle_range(
-    session: AsyncSession, pair: Pair, timeframe: Timeframe
+    session: AsyncSession, pair: Pair, timeframe: Timeframe, exchange: str = "kraken"
 ) -> tuple[datetime | None, datetime | None, int]:
     """(first ts, last ts, count) for coverage reporting."""
     from sqlalchemy import func
 
     stmt = select(func.min(CandleRow.ts), func.max(CandleRow.ts), func.count()).where(
-        CandleRow.pair == str(pair), CandleRow.timeframe == timeframe.value
+        CandleRow.exchange == exchange,
+        CandleRow.pair == str(pair),
+        CandleRow.timeframe == timeframe.value,
     )
     result = await session.execute(stmt)
     first, last, count = result.one()

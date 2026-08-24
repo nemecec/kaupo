@@ -15,6 +15,7 @@ class Base(DeclarativeBase):
 class CandleRow(Base):
     __tablename__ = "candles"
 
+    exchange: Mapped[str] = mapped_column(String(20), primary_key=True, server_default="kraken")
     pair: Mapped[str] = mapped_column(String(20), primary_key=True)
     timeframe: Mapped[str] = mapped_column(String(4), primary_key=True)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
