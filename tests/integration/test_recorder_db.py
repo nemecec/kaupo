@@ -215,3 +215,36 @@ async def test_flush_failure_retains_buffers(session: AsyncSession) -> None:
 
     row = (await session.execute(select(OrderRow).where(OrderRow.id == order.id))).scalar_one()
     assert row.run_id == recorder.run_id
+
+
+async def test_start_halts_stale_same_strategy_shadow_runs(session: AsyncSession) -> None:
+    """A starting shadow/live run supersedes stale "running" rows of the same
+    strategy (dead processes from restarts). Other strategies and backtests
+    stay untouched."""
+    from kaupo.core.recorder import DbRecorder, RunInfo
+    from kaupo.db.models import RunRow
+    from kaupo.domain import RunMode
+
+    sm = get_sessionmaker()
+
+    def info(mode: RunMode, strategy_id: str) -> RunInfo:
+        return RunInfo(
+            mode=mode, strategy_id=strategy_id, strategy_version="v", strategy_source_hash="x", config={}
+        )
+
+    stale = DbRecorder(sm)
+    await stale.start(info(RunMode.SHADOW, "s1"))
+    other_strategy = DbRecorder(sm)
+    await other_strategy.start(info(RunMode.SHADOW, "s2"))
+    backtest_same_strategy = DbRecorder(sm)
+    await backtest_same_strategy.start(info(RunMode.BACKTEST, "s1"))
+    live = DbRecorder(sm)
+    await live.start(info(RunMode.SHADOW, "s1"))
+
+    rows = {r.id: r for r in (await session.execute(select(RunRow))).scalars().all()}
+    assert rows[stale.run_id].status == "halted"
+    assert rows[stale.run_id].ended_at is not None
+    assert rows[stale.run_id].metrics["halt_reason"] == "superseded by a newer run of the same strategy"
+    assert rows[other_strategy.run_id].status == "running"
+    assert rows[backtest_same_strategy.run_id].status == "running"
+    assert rows[live.run_id].status == "running"

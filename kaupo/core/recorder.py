@@ -6,6 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -89,6 +90,24 @@ class DbRecorder:
                     config=info.config,
                 )
             )
+            if info.mode in (RunMode.SHADOW, RunMode.LIVE):
+                # Long-running modes have one live process per strategy. Rows
+                # still marked "running" for the same strategy belong to dead
+                # processes (container restarts, deploys) — halt them.
+                await session.execute(
+                    update(RunRow)
+                    .where(
+                        RunRow.mode == info.mode.value,
+                        RunRow.strategy_id == info.strategy_id,
+                        RunRow.status == RunStatus.RUNNING.value,
+                        RunRow.id != self.run_id,
+                    )
+                    .values(
+                        status=RunStatus.HALTED.value,
+                        ended_at=utc_now(),
+                        metrics={"halt_reason": "superseded by a newer run of the same strategy"},
+                    )
+                )
             await session.commit()
 
     async def record_order(self, order: Order) -> None:
