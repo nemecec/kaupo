@@ -32,11 +32,11 @@ def ohlcv(ts: datetime, price: float = 100.0) -> list[float]:
 
 
 async def test_in_progress_candle_dropped() -> None:
-    # one closed candle (11:00, closes 12:00 + grace) and one in-progress (12:00)
-    rows = [ohlcv(NOW - timedelta(hours=1)), ohlcv(NOW)]
+    # one fully closed candle (10:00) and one in-progress (12:00)
+    rows = [ohlcv(NOW - timedelta(hours=2)), ohlcv(NOW)]
     candles = await make_client(rows).fetch_candles(PAIR, TF)
     assert len(candles) == 1
-    assert candles[0].ts == NOW - timedelta(hours=1)
+    assert candles[0].ts == NOW - timedelta(hours=2)
 
 
 async def test_close_grace_margin() -> None:
