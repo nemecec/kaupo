@@ -1,7 +1,14 @@
-"""Technical indicators, pure numpy. Warmup periods yield NaN.
+"""Technical indicators, pure numpy.
 
 Wilder-smoothed indicators (RSI, ATR, ADX) use the recursive form
-equivalent to ``pandas.ewm(alpha=1/n, adjust=False)``.
+equivalent to ``pandas.ewm(alpha=1/n, adjust=False)`` — seeded with the
+first value rather than the canonical SMA-of-first-`period` seed, so early
+values differ slightly from ta-lib/TradingView (converges within ~3*n).
+
+Warmup: ``sma``/``rolling_std``/``rolling_max``/``rolling_min``/``bollinger_bands``
+yield NaN before ``period`` values exist; ``ema``/``rsi``/``atr``/``adx`` emit
+values from the start (smoothed series have no NaN warmup — check your own
+minimum history).
 """
 
 from collections.abc import Sequence
@@ -42,6 +49,8 @@ def sma(values: list[float] | F64, period: int) -> F64:
 
 def ema(values: list[float] | F64, period: int) -> F64:
     v = _arr(values)
+    if len(v) == 0:
+        return np.array([], dtype=np.float64)
     alpha = 2.0 / (period + 1)
     out = np.empty(v.shape)
     out[0] = v[0]
@@ -69,6 +78,8 @@ def bollinger_bands(
 
 def _wilder(values: F64, period: int) -> F64:
     """Wilder smoothing; first value seeded at index 0."""
+    if len(values) == 0:
+        return np.array([], dtype=np.float64)
     alpha = 1.0 / period
     out = np.empty(values.shape)
     out[0] = values[0]
@@ -88,13 +99,20 @@ def rsi(closes_: list[float] | F64, period: int = 14) -> F64:
     avg_gain = _wilder(gain, period)
     avg_loss = _wilder(loss, period)
     with np.errstate(divide="ignore", invalid="ignore"):
-        rs = np.where(avg_loss == 0, np.inf, avg_gain / avg_loss)
+        # no losses at all -> RSI 100; no gains AND no losses (flat) -> undefined
+        rs = np.where(
+            avg_loss == 0,
+            np.where(avg_gain == 0, np.nan, np.inf),
+            avg_gain / avg_loss,
+        )
     out[1:] = 100.0 - 100.0 / (1.0 + rs)
     return out
 
 
 def true_range(highs_: list[float] | F64, lows_: list[float] | F64, closes_: list[float] | F64) -> F64:
     h, low, c = _arr(highs_), _arr(lows_), _arr(closes_)
+    if len(h) == 0:
+        return np.array([], dtype=np.float64)
     tr = np.empty(h.shape)
     tr[0] = h[0] - low[0]
     for i in range(1, len(h)):

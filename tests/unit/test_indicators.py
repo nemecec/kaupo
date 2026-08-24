@@ -124,3 +124,14 @@ def test_short_series_warmup() -> None:
     assert np.all(np.isnan(out))
     out = ind.rsi([1.0], 14)
     assert np.all(np.isnan(out))
+
+
+def test_rsi_flat_window_is_nan_not_100() -> None:
+    out = ind.rsi(np.full(30, 100.0), 14)
+    assert np.all(np.isnan(out[1:]))
+
+
+def test_empty_inputs() -> None:
+    assert len(ind.ema([], 5)) == 0
+    assert len(ind.atr([], [], [], 5)) == 0
+    assert len(ind.true_range([], [], [])) == 0

@@ -158,3 +158,19 @@ class TestLiveCandlePoller:
         client = FakeClient([[]])
         poller = LiveCandlePoller(client, PAIR, TF, poll_interval_seconds=0)  # type: ignore[arg-type]
         assert await poller.poll_once() == []
+
+
+class TestPollerGapRefill:
+    async def test_gap_after_outage_is_backfilled(self) -> None:
+        # baseline at candle 0; window moved far ahead -> poller must fetch
+        # from the baseline, not jump to the newest candle
+        all_candles = [candle(i) for i in range(20)]
+        client = FakeClient([all_candles[0:1], all_candles])
+        poller = LiveCandlePoller(client, PAIR, TF, poll_interval_seconds=0)  # type: ignore[arg-type]
+
+        first = await poller.poll_once()
+        assert first == [all_candles[0]]  # baseline established
+
+        # second call: poller detects baseline << window and requests from baseline
+        new = await poller.poll_once()
+        assert new == all_candles[1:]  # entire gap returned, nothing skipped
