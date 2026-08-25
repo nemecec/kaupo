@@ -26,7 +26,7 @@ class Decision(enum.Enum):
 class RiskConfig:
     max_position_quote: float = 1_000.0  # per-pair cap on position market value
     max_gross_exposure_quote: float = 2_000.0  # total across pairs
-    max_daily_loss_quote: float = 200.0  # halt when equity drops this much in a day
+    max_daily_loss_quote: float = 200.0  # halt when floor equity drops this much in a day (see _floor_equity)
     min_order_quote: float = 10.0  # below this, orders are rejected as dust
     max_consecutive_losses: int = 5  # then cooldown
     cooldown_candles: int = 12  # candles to wait after max_consecutive_losses
@@ -66,13 +66,28 @@ class Assessment:
     size: float = 0.0  # effective size after resizing
 
 
+def _floor_equity(state: RiskState) -> float:
+    """Equity floor for the daily rail: cash plus each open position valued at
+    min(cost basis, market value).
+
+    Givebacks of unrealized profit do not move the floor — a trend position
+    that first appreciates cannot trip the rail. Real losses count fully:
+    realized losses move cash down, and positions below cost show market value.
+    """
+    total = state.cash
+    for pair, position in state.positions.items():
+        market = position.market_value(state.prices.get(pair, 0.0))
+        total += min(position.avg_entry * position.size, market)
+    return total
+
+
 @dataclass
 class RiskManager:
     config: RiskConfig
     halted: bool = False
     halt_reason: str = ""
     _day: tuple[int, int, int] | None = None
-    _day_start_equity: float = 0.0
+    _day_start_floor: float = 0.0
     _consecutive_losses: int = 0
     _cooldown_remaining: int = 0
     rejections: deque[str] = field(default_factory=lambda: deque(maxlen=1000))
@@ -80,17 +95,18 @@ class RiskManager:
     def on_candle(self, state: RiskState) -> bool:
         """Advance time-based tracking. Returns True if the run may continue."""
         day = (state.ts.year, state.ts.month, state.ts.day)
+        floor = _floor_equity(state)
         if day != self._day:
             self._day = day
-            self._day_start_equity = state.equity
+            self._day_start_floor = floor
 
         if self._cooldown_remaining > 0:
             self._cooldown_remaining -= 1
 
-        if state.equity - self._day_start_equity <= -self.config.max_daily_loss_quote:
+        if floor - self._day_start_floor <= -self.config.max_daily_loss_quote:
             self.halted = True
             self.halt_reason = (
-                f"max daily loss hit: equity {state.equity:.2f} vs day start {self._day_start_equity:.2f}"
+                f"max daily loss hit: floor equity {floor:.2f} vs day start {self._day_start_floor:.2f}"
             )
         return not self.halted
 

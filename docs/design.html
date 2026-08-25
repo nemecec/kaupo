@@ -141,7 +141,7 @@
   <li><strong>Determinism by contract.</strong> Strategies never see wall-clock time. They do no I/O. They get no unseeded randomness. All inputs come through a context object. The SDK design, the linter, and the tests enforce this.</li>
   <li><strong>Agent-first interfaces.</strong> Every function is reachable through a documented REST API, the CLI, and JSON artifacts. An AI agent can pull reports, run backtests, and compare runs without a human.</li>
   <li><strong>Cost-conscious.</strong> One small server, co-located Postgres, no Kubernetes, no managed services. Target cost: under 10 EUR per month.</li>
-  <li><strong>The risk manager is not a strategy.</strong> Hard guardrails live outside the strategy code. Position limits, daily-loss halt, pair whitelist, no leverage, and a kill switch. They apply to live and shadow trading.</li>
+  <li><strong>The risk manager is not a strategy.</strong> Hard guardrails live outside the strategy code. Position limits, a daily-loss halt on floor equity (open positions at min(cost, market), so givebacks of unrealized profit cannot trip it), pair whitelist, no leverage, and a kill switch. They apply to live and shadow trading.</li>
 </ol>
 
 <h2 id="architecture"><span class="num">3.</span>High-level architecture</h2>

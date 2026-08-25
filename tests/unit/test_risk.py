@@ -82,16 +82,56 @@ class TestSellAssessment:
 
 class TestDailyLossHalt:
     def test_halts_on_max_daily_loss(self, rm: RiskManager) -> None:
-        assert rm.on_candle(state(equity=10_000)) is True
-        assert rm.on_candle(state(equity=10_000 - 201)) is False
+        assert rm.on_candle(state(cash=10_000)) is True
+        assert rm.on_candle(state(cash=10_000 - 201)) is False
         assert rm.halted
         assert "max daily loss" in rm.halt_reason
 
     def test_day_rollover_resets_baseline(self, rm: RiskManager) -> None:
-        assert rm.on_candle(state(equity=10_000, ts=TS)) is True
-        assert rm.on_candle(state(equity=9_900, ts=TS)) is True  # -100, under limit
+        assert rm.on_candle(state(cash=10_000, ts=TS)) is True
+        assert rm.on_candle(state(cash=9_900, ts=TS)) is True  # -100, under limit
         next_day = TS + timedelta(days=1)
-        assert rm.on_candle(state(equity=9_900, ts=next_day)) is True  # new baseline
+        assert rm.on_candle(state(cash=9_900, ts=next_day)) is True  # new baseline
+
+    def test_giveback_of_unrealized_profit_does_not_halt(self, rm: RiskManager) -> None:
+        # day 1: position held at cost 100, price runs to 150
+        appreciated = RiskState(
+            ts=TS,
+            cash=9_000,
+            positions={PAIR: Position(pair=PAIR, size=10, avg_entry=100)},
+            prices={PAIR: 150},
+            equity=10_500,
+        )
+        assert rm.on_candle(appreciated) is True
+        # day 2: 300-quote giveback in market terms — the floor is unchanged
+        given_back = RiskState(
+            ts=TS + timedelta(days=1),
+            cash=9_000,
+            positions={PAIR: Position(pair=PAIR, size=10, avg_entry=100)},
+            prices={PAIR: 120},
+            equity=10_200,
+        )
+        assert rm.on_candle(given_back) is True
+        assert not rm.halted
+
+    def test_below_cost_position_counts_toward_the_rail(self, rm: RiskManager) -> None:
+        at_cost = RiskState(
+            ts=TS,
+            cash=9_000,
+            positions={PAIR: Position(pair=PAIR, size=10, avg_entry=100)},
+            prices={PAIR: 100},
+            equity=10_000,
+        )
+        assert rm.on_candle(at_cost) is True
+        below_cost = RiskState(
+            ts=TS,
+            cash=9_000,
+            positions={PAIR: Position(pair=PAIR, size=10, avg_entry=100)},
+            prices={PAIR: 70},
+            equity=9_700,
+        )
+        assert rm.on_candle(below_cost) is False
+        assert rm.halted
 
 
 class TestConsecutiveLosses:
