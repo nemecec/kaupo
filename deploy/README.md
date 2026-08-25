@@ -107,6 +107,7 @@ gh secret set AWS_SECRET_ACCESS_KEY -b "<secret-access-key>"
 gh variable set HETZNER_HOST -b "<server-ip>"
 gh variable set AWS_REGION -b "eu-north-1"
 gh variable set KAUPO_BACKUP_BUCKET -b "kaupo-backups-<suffix>"
+gh secret set KAUPO_NTFY_TOPIC -b "kaupo-$(openssl rand -hex 6)"
 ```
 
 The database password never leaves this chain. You never type it yourself.
@@ -155,6 +156,7 @@ COMPOSE="docker compose --env-file /etc/kaupo/kaupo.env -f /opt/kaupo/deploy/com
 - Update strategies: push to the `kaupo-strategies` main branch. The next deploy pulls them and restarts the shadow container only when strategy code changed. Memory and docs commits trigger nothing. To apply changes now, run `/opt/kaupo/deploy/host-deploy.sh` on the host.
 - Logs: `$COMPOSE logs -f shadow` on the host. Replace `shadow` with `api` or `db`.
 - Backup log: `/var/log/kaupo-backup.log` on the host.
+- Alerts (ntfy): the topic name is in `/etc/kaupo/kaupo.env` on the host. Subscribe to it in the ntfy app. A daily summary posts at 06:47 UTC. Halts, kill-switch use, strategy switches, and agent events post immediately.
 - Reboots: `kaupo.service` starts the stack on boot.
 
 ## Restore from a backup

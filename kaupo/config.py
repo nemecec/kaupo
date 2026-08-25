@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # Exchange
     exchange: str = "kraken"
 
+    # Alerts (ntfy topic; empty disables push alerts)
+    notify_ntfy_topic: str = ""
+
     # Live ingestion polling
     poll_interval_seconds: float = 20.0
 

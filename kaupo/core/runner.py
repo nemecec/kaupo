@@ -208,4 +208,9 @@ async def run_shadow(
         len(warmup_candles),
     )
     stream = _chain_persist(warmup_candles, poller, sessionmaker, stop)
-    return await engine.run(stream, stop=stop, warmup=len(warmup_candles))
+    result = await engine.run(stream, stop=stop, warmup=len(warmup_candles))
+    if result.halt_reason:
+        from kaupo.core.notify import record_halt
+
+        await record_halt(sessionmaker, recorder.run_id, request.strategy.id, result.halt_reason)
+    return result

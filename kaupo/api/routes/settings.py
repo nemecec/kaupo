@@ -110,5 +110,8 @@ async def update_settings(
     if changed:
         await settings_repo.upsert_settings(session, changed)
         await _notify_shadow_runs(session, changed)
+        from kaupo.core.notify import send_alert
+
+        await send_alert(f"Shadow strategy switch requested: {changed}")
     rows = (await session.execute(select(SettingRow))).scalars().all()
     return _settings_out(rows)

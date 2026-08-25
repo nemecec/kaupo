@@ -94,6 +94,10 @@ async def control(
             data={"command": command, "run_id": body.run_id},
         )
     )
+    if command == "kill":
+        from kaupo.core.notify import send_alert
+
+        await send_alert(f"Kill switch used: run {body.run_id or 'ALL'}")
     return ControlOut(command=command, run_id=body.run_id, issued_at=ts)
 
 

@@ -60,9 +60,10 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 
-# Nightly backup at 03:17 UTC
+# Nightly backup at 03:17 UTC, daily summary at 06:47 UTC
 cat > /etc/cron.d/kaupo-backup <<'EOF'
 17 3 * * * root /opt/kaupo/deploy/backup.sh >> /var/log/kaupo-backup.log 2>&1
+47 6 * * * root /opt/kaupo/deploy/notify-daily.sh >> /var/log/kaupo-notify.log 2>&1
 EOF
 
 echo
