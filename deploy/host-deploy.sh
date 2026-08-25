@@ -32,6 +32,8 @@ else
 fi
 after=$(strategies_tree)
 
+current_tag=$(grep '^KAUPO_TAG=' "$ENV_FILE" | cut -d= -f2- || true)
+
 set_env() { # key value — replace the line or append it
   if grep -q "^$1=" "$ENV_FILE"; then
     sed -i "s|^$1=.*|$1=$2|" "$ENV_FILE"
@@ -49,7 +51,14 @@ compose() {
   docker compose --env-file "$ENV_FILE" -f deploy/compose.prod.yml --profile trading "$@"
 }
 
-compose pull
+# A rebuild re-pushes the same tag with a fresh digest. Pulling it makes
+# compose recreate every container for no content change. Pull only on a
+# real tag change; `up -d` is a no-op when nothing changed.
+if [[ "$TAG" != "$current_tag" ]]; then
+  compose pull
+else
+  echo "image tag unchanged ($TAG); skipping pull"
+fi
 compose up -d --remove-orphans
 if [[ "$before" != "none" && "$before" != "$after" ]]; then
   echo "strategy code changed ($before -> $after); restarting shadow"
