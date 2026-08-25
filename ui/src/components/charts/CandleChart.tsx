@@ -12,7 +12,7 @@ interface Props {
 
 /** OHLC candle chart with buy/sell markers snapped to bar times. */
 export function CandleChart({ candles, trades = [], height = 340 }: Props) {
-  const { containerRef, chartRef } = useChart(height)
+  const { containerRef, chartRef, disposeSeries } = useChart(height)
   // fit the time scale only on first data load so live updates keep the user's zoom
   const fittedRef = useRef(false)
 
@@ -40,9 +40,9 @@ export function CandleChart({ candles, trades = [], height = 340 }: Props) {
       fittedRef.current = true
     }
     return () => {
-      chart.removeSeries(series)
+      disposeSeries(series)
     }
-  }, [candles, trades, chartRef])
+  }, [candles, trades, chartRef, disposeSeries])
 
   return <div ref={containerRef} className="w-full" style={{ height }} data-testid="candle-chart" />
 }

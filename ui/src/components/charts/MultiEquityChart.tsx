@@ -11,7 +11,7 @@ export interface NamedSeries {
 
 /** Overlaid equity lines for several runs (dashboard). */
 export function MultiEquityChart({ seriesList, height = 300 }: { seriesList: NamedSeries[]; height?: number }) {
-  const { containerRef, chartRef } = useChart(height)
+  const { containerRef, chartRef, disposeSeries } = useChart(height)
   // fit the time scale only on first data load so live updates keep the user's zoom
   const fittedRef = useRef(false)
 
@@ -33,9 +33,9 @@ export function MultiEquityChart({ seriesList, height = 300 }: { seriesList: Nam
       fittedRef.current = true
     }
     return () => {
-      for (const series of added) chart.removeSeries(series)
+      for (const series of added) disposeSeries(series)
     }
-  }, [seriesList, chartRef])
+  }, [seriesList, chartRef, disposeSeries])
 
   return (
     <div>

@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
+import { ErrorBoundary } from './ErrorBoundary'
 import { TokenInput } from './TokenInput'
 
 const NAV_ITEMS = [
@@ -49,7 +50,9 @@ export function Layout() {
         </aside>
         <main className="min-w-0 flex-1 px-6 py-6">
           <div className="mx-auto max-w-6xl">
-            <Outlet />
+            <ErrorBoundary>
+              <Outlet />
+            </ErrorBoundary>
           </div>
         </main>
       </div>

@@ -6,7 +6,7 @@ import { CHART_COLORS, drawdownLine } from './utils'
 
 /** Underwater equity (drawdown %) chart, always <= 0. */
 export function DrawdownChart({ points, height = 160 }: { points: EquityPoint[]; height?: number }) {
-  const { containerRef, chartRef } = useChart(height)
+  const { containerRef, chartRef, disposeSeries } = useChart(height)
   // fit the time scale only on first data load so live updates keep the user's zoom
   const fittedRef = useRef(false)
 
@@ -28,9 +28,9 @@ export function DrawdownChart({ points, height = 160 }: { points: EquityPoint[];
       fittedRef.current = true
     }
     return () => {
-      chart.removeSeries(series)
+      disposeSeries(series)
     }
-  }, [points, chartRef])
+  }, [points, chartRef, disposeSeries])
 
   return <div ref={containerRef} className="w-full" style={{ height }} data-testid="drawdown-chart" />
 }

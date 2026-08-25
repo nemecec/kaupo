@@ -1,5 +1,5 @@
-import { useEffect, useRef, type RefObject } from 'react'
-import { createChart, type IChartApi } from 'lightweight-charts'
+import { useCallback, useEffect, useRef, type RefObject } from 'react'
+import { createChart, type IChartApi, type ISeriesApi, type SeriesType } from 'lightweight-charts'
 import { BASE_CHART_OPTIONS } from './utils'
 
 /**
@@ -9,6 +9,7 @@ import { BASE_CHART_OPTIONS } from './utils'
 export function useChart(height: number): {
   containerRef: RefObject<HTMLDivElement | null>
   chartRef: RefObject<IChartApi | null>
+  disposeSeries: (series: ISeriesApi<SeriesType>) => void
 } {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -24,5 +25,11 @@ export function useChart(height: number): {
     }
   }, [height])
 
-  return { containerRef, chartRef }
+  // Effect cleanups run in declaration order, so by series-cleanup time the
+  // chart may already be disposed. This guard reads the ref late, on purpose.
+  const disposeSeries = useCallback((series: ISeriesApi<SeriesType>) => {
+    chartRef.current?.removeSeries(series)
+  }, [])
+
+  return { containerRef, chartRef, disposeSeries }
 }

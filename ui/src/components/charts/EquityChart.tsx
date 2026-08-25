@@ -12,7 +12,7 @@ interface Props {
 
 /** Single equity-curve area chart, optionally with trade markers. */
 export function EquityChart({ points, markers, height = 280 }: Props) {
-  const { containerRef, chartRef } = useChart(height)
+  const { containerRef, chartRef, disposeSeries } = useChart(height)
   // fit the time scale only on first data load so live updates keep the user's zoom
   const fittedRef = useRef(false)
 
@@ -37,9 +37,9 @@ export function EquityChart({ points, markers, height = 280 }: Props) {
       fittedRef.current = true
     }
     return () => {
-      chart.removeSeries(series)
+      disposeSeries(series)
     }
-  }, [points, markers, chartRef])
+  }, [points, markers, chartRef, disposeSeries])
 
   return <div ref={containerRef} className="w-full" style={{ height }} data-testid="equity-chart" />
 }
