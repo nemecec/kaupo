@@ -13,6 +13,8 @@ from kaupo.core.recorder import InMemoryRecorder, RunInfo
 from kaupo.domain import (
     Candle,
     OrderIntent,
+    OrderStatus,
+    OrderType,
     Pair,
     RunMode,
     RunStatus,
@@ -118,6 +120,81 @@ async def test_position_held_at_end_is_not_liquidated_by_default() -> None:
     assert result.num_fills == 1
     # position marked at last close (104): 10_000 - 103 + 104
     assert float(result.final_equity) == pytest.approx(10_001.0)
+
+
+class LimitBuyExpireSell(StrategyBase):
+    id = "limit-scripted"
+
+    def __init__(self, params):  # type: ignore[no-untyped-def]
+        super().__init__(params)
+        self.n = 0
+
+    def on_candle(self, ctx):  # type: ignore[no-untyped-def]
+        self.n += 1
+        if self.n == 1:
+            # candle 1: open 101, low 100 -> touches 100.5, fills at the limit
+            return [
+                OrderIntent(
+                    pair=PAIR,
+                    side=Side.BUY,
+                    size=1.0,
+                    order_type=OrderType.LIMIT,
+                    limit_price=100.5,
+                    reason="passive entry",
+                )
+            ]
+        if self.n == 3:
+            # candle 3: high 104 never reaches 999 -> expires at that close
+            return [
+                OrderIntent(
+                    pair=PAIR,
+                    side=Side.SELL,
+                    size=1.0,
+                    order_type=OrderType.LIMIT,
+                    limit_price=999.0,
+                    reason="passive exit, never touched",
+                )
+            ]
+        return []
+
+
+async def test_limit_orders_fill_at_maker_and_expire_untouched() -> None:
+    recorder = InMemoryRecorder()
+    engine = Engine(
+        strategy=LimitBuyExpireSell(LimitBuyExpireSell.params_schema()),
+        venue=PaperVenue(taker_fee_bps=26, maker_fee_bps=16, slippage_bps=5),
+        risk=RiskManager(RiskConfig(max_position_quote=10_000, max_gross_exposure_quote=10_000)),
+        ledger=Ledger("EUR", 10_000.0, BASE),
+        recorder=recorder,
+        config=EngineConfig(pair=PAIR, timeframe=Timeframe.H1),
+        run_info=RunInfo(
+            mode=RunMode.BACKTEST,
+            strategy_id="limit-scripted",
+            strategy_version="v1",
+            strategy_source_hash="x",
+            config={},
+        ),
+    )
+    result = await engine.run(aiter([candle(i) for i in range(6)]))
+
+    assert result.status is RunStatus.COMPLETED
+    assert result.num_fills == 1
+
+    (buy,) = recorder.fills
+    assert buy.side is Side.BUY
+    assert buy.price == 100.5  # the limit, not the (higher) open, no slippage
+    assert buy.fee == pytest.approx(100.5 * 0.0016)  # maker fee
+    assert buy.ts == BASE + timedelta(hours=1)
+
+    # audit trail: both orders recorded at submit and again at resolution
+    assert len(recorder.orders) == 4
+    statuses = {o.id: o.status for o in recorder.orders}
+    assert statuses[buy.order_id] is OrderStatus.FILLED
+    (expired_id,) = {oid for oid in statuses if oid != buy.order_id}
+    assert statuses[expired_id] is OrderStatus.CANCELLED  # expired untouched
+
+    # 10_000 - 100.5 - fee, position marked at last close (105)
+    assert float(result.final_equity) == pytest.approx(10_000 - 100.5 * 1.0016 + 105)
 
 
 async def test_daily_loss_halts_run() -> None:

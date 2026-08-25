@@ -74,7 +74,15 @@ class StrategyBase(ABC):
         self.params = params
 
     @abstractmethod
-    def on_candle(self, ctx: StrategyContext) -> list[OrderIntent]: ...
+    def on_candle(self, ctx: StrategyContext) -> list[OrderIntent]:
+        """Return this candle's intents ([] to do nothing); risk may resize or reject.
+
+        MARKET intents fill at the next candle's open (taker fee + slippage).
+        LIMIT intents set a positive ``limit_price`` and live for one candle:
+        they fill at the limit or better when the range touches the price
+        (maker fee, no slippage) and expire unfilled at that candle's close.
+        """
+        ...
 
 
 @dataclass(frozen=True)

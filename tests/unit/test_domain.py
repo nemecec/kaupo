@@ -49,6 +49,37 @@ class TestOrderIntent:
                 order_type=OrderType.LIMIT,
             )
 
+    def test_limit_requires_positive_price(self) -> None:
+        for bad in (0.0, -50.0):
+            with pytest.raises(ValueError, match="limit_price"):
+                OrderIntent(
+                    pair=Pair.parse("BTC/EUR"),
+                    side=Side.BUY,
+                    size=0.1,
+                    order_type=OrderType.LIMIT,
+                    limit_price=bad,
+                )
+
+    def test_market_forbids_price(self) -> None:
+        with pytest.raises(ValueError, match="limit_price"):
+            OrderIntent(
+                pair=Pair.parse("BTC/EUR"),
+                side=Side.BUY,
+                size=0.1,
+                limit_price=50.0,
+            )
+
+    def test_limit_ok(self) -> None:
+        intent = OrderIntent(
+            pair=Pair.parse("BTC/EUR"),
+            side=Side.BUY,
+            size=0.1,
+            order_type=OrderType.LIMIT,
+            limit_price=50.0,
+        )
+        assert intent.order_type is OrderType.LIMIT
+        assert intent.limit_price == 50.0
+
 
 def test_utc_now_is_aware() -> None:
     from kaupo.domain import utc_now

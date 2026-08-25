@@ -18,6 +18,10 @@ class Venue(Protocol):
         """Orders created internally since the last drain (e.g. protective exits)."""
         ...
 
+    def drain_expired(self) -> list[Order]:
+        """Limit orders that expired untouched since the last drain."""
+        ...
+
     def void_fill(self, fill: Fill) -> None:
         """Roll back a fill the ledger rejected (position tracking + order state)."""
         ...

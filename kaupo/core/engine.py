@@ -197,6 +197,8 @@ class Engine:
         fills = self.venue.on_candle(candle)
         for order in self.venue.drain_new_orders():
             await self.recorder.record_order(order)  # protection exits created by venue
+        for order in self.venue.drain_expired():
+            await self.recorder.record_order(order)  # limit orders expired untouched
         for fill in fills:
             try:
                 realized = self.ledger.apply_fill(fill)

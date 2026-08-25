@@ -121,7 +121,13 @@ class RunStatus(enum.Enum):
 
 @dataclass(frozen=True)
 class OrderIntent:
-    """What a strategy wants to do. The risk manager and venue decide what happens."""
+    """What a strategy wants to do. The risk manager and venue decide what happens.
+
+    MARKET intents fill at the next candle's open (taker fee + slippage).
+    LIMIT intents need a positive ``limit_price`` and live for one candle:
+    they fill at the limit or better when that candle's range touches the
+    price (maker fee, no slippage) and expire unfilled at its close.
+    """
 
     pair: Pair
     side: Side
@@ -135,8 +141,11 @@ class OrderIntent:
     def __post_init__(self) -> None:
         if self.size <= 0:
             raise ValueError(f"Order size must be positive, got {self.size}")
-        if self.order_type is OrderType.LIMIT and self.limit_price is None:
-            raise ValueError("Limit orders require limit_price")
+        if self.order_type is OrderType.LIMIT:
+            if self.limit_price is None or self.limit_price <= 0:
+                raise ValueError(f"Limit orders require a positive limit_price, got {self.limit_price}")
+        elif self.limit_price is not None:
+            raise ValueError("Market orders must not set limit_price")
 
 
 @dataclass

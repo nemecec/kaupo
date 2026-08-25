@@ -5,7 +5,10 @@ Execution model (identical in backtest and shadow):
 - market orders fill at the *next* candle's open, worsened by slippage, taker fee
 - limit orders fill when a candle's range touches the limit (buy: low <= limit,
   sell: high >= limit), at the limit price (or the open if it gapped through),
-  maker fee
+  maker fee, no slippage
+- a limit order lives for ONE candle only: submitted after a strategy decision,
+  it is eligible on the next candle and expires unfilled at that candle's
+  close (status cancelled; reported via drain_expired)
 - stop-loss / take-profit attached to an order become active once that order
   fills and are evaluated on every subsequent candle; if both trigger in one
   candle the stop-loss wins (conservative)
@@ -15,6 +18,7 @@ fills, drops protections when the position is closed by other means (e.g. a
 strategy exit), and clamps protection exits to the remaining position.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -30,6 +34,8 @@ from kaupo.domain import (
     Side,
 )
 
+log = logging.getLogger(__name__)
+
 
 @dataclass
 class _Protection:
@@ -44,6 +50,7 @@ class PaperVenue:
         self._slip = slippage_bps / 10_000
         self._market_queue: list[Order] = []
         self._limit_open: list[Order] = []
+        self._expired: list[Order] = []
         self._protections: list[tuple[Order, _Protection]] = []
         # armed this candle; evaluated from the NEXT candle onward (the entry
         # candle's low may precede the fill — intracandle order is unknowable)
@@ -66,6 +73,10 @@ class PaperVenue:
 
     def drain_new_orders(self) -> list[Order]:
         orders, self._new_orders = self._new_orders, []
+        return orders
+
+    def drain_expired(self) -> list[Order]:
+        orders, self._expired = self._expired, []
         return orders
 
     def liquidate(self, pair: Pair, size: float, candle: Candle) -> Fill:
@@ -118,7 +129,8 @@ class PaperVenue:
 
         # Chronological order within the candle:
         # 1. market orders fill at the OPEN (they were submitted last candle)
-        # 2. limit orders fill when the candle's range touches their price
+        # 2. limit orders fill when the candle's range touches their price;
+        #    still untouched at the close, they expire (one-candle lifetime)
         # 3. protections (SL/TP) trigger intracandle, AFTER positions are known
         # Positions are tracked incrementally so later fills see earlier fills.
 
@@ -130,16 +142,25 @@ class PaperVenue:
             self._track_position(fill)
             self._arm_protection(order)
 
-        still_open: list[Order] = []
-        for order in self._limit_open:
+        limits = self._limit_open
+        self._limit_open = []
+        for order in limits:
             limit_fill = self._try_limit(order, candle)
             if limit_fill is None:
-                still_open.append(order)
+                order.status = OrderStatus.CANCELLED
+                self._expired.append(order)
+                log.info(
+                    "Limit order %s (%s %s @ %s) expired unfilled on %s",
+                    order.id,
+                    order.side.value,
+                    order.pair,
+                    order.limit_price,
+                    candle.ts,
+                )
             else:
                 fills.append(limit_fill)
                 self._track_position(limit_fill)
                 self._arm_protection(order)
-        self._limit_open = still_open
 
         remaining_protections: list[tuple[Order, _Protection]] = []
         for order, prot in self._protections:

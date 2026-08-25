@@ -53,10 +53,11 @@ class TestLimitOrders:
         v = venue()
         order = Order(pair=PAIR, side=Side.BUY, order_type=OrderType.LIMIT, size=1.0, limit_price=95.0)
         v.submit(order)
-        assert v.on_candle(candle(0, low=96)) == []
-        fills = v.on_candle(candle(1, low=94))
+        fills = v.on_candle(candle(0, low=94))
+        assert len(fills) == 1
         assert fills[0].price == 95.0
         assert fills[0].fee == 95.0 * 0.005  # maker
+        assert order.status is OrderStatus.FILLED
 
     def test_gap_through_gets_open(self) -> None:
         v = venue()
@@ -69,9 +70,46 @@ class TestLimitOrders:
         v = venue()
         order = Order(pair=PAIR, side=Side.SELL, order_type=OrderType.LIMIT, size=1.0, limit_price=105.0)
         v.submit(order)
-        assert v.on_candle(candle(0, h=104)) == []
-        fills = v.on_candle(candle(1, h=106))
+        fills = v.on_candle(candle(0, h=106))
+        assert len(fills) == 1
         assert fills[0].price == 105.0
+        assert fills[0].fee == 105.0 * 0.005  # maker
+
+    def test_fill_at_limit_has_no_slippage(self) -> None:
+        """Open exactly at the limit: fills at the limit, not the slipped price."""
+        v = venue()
+        order = Order(pair=PAIR, side=Side.SELL, order_type=OrderType.LIMIT, size=1.0, limit_price=105.0)
+        v.submit(order)
+        fills = v.on_candle(candle(0, o=105, h=106))
+        assert fills[0].price == 105.0  # a market sell would fill at 105 * 0.99
+
+    def test_untouched_expires_at_candle_close(self) -> None:
+        """One-candle lifetime: no rest, no second chance, expiry is drained once."""
+        v = venue()
+        order = Order(pair=PAIR, side=Side.BUY, order_type=OrderType.LIMIT, size=1.0, limit_price=95.0)
+        v.submit(order)
+        assert v.on_candle(candle(0, low=96)) == []  # never touched
+        assert order.status is OrderStatus.CANCELLED
+        assert v.drain_expired() == [order]
+        assert v.drain_expired() == []  # drained once
+        # a later candle through the limit does NOT fill the expired order
+        assert v.on_candle(candle(1, low=50)) == []
+
+    def test_filled_limit_is_not_reported_expired(self) -> None:
+        v = venue()
+        order = Order(pair=PAIR, side=Side.BUY, order_type=OrderType.LIMIT, size=1.0, limit_price=95.0)
+        v.submit(order)
+        v.on_candle(candle(0, low=94))
+        assert v.drain_expired() == []
+
+    def test_cancel_all_cancels_unprocessed_limit(self) -> None:
+        """A limit submitted after the last candle is cancelled at wind-down."""
+        v = venue()
+        order = Order(pair=PAIR, side=Side.BUY, order_type=OrderType.LIMIT, size=1.0, limit_price=95.0)
+        v.submit(order)
+        cancelled = v.cancel_all()
+        assert cancelled == [order]
+        assert order.status is OrderStatus.CANCELLED
 
 
 class TestProtection:
