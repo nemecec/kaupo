@@ -25,7 +25,7 @@ from kaupo.db.session import sm_scope
 from kaupo.domain import Candle, Pair, RunMode, Timeframe
 from kaupo.ledger.ledger import Ledger
 from kaupo.risk.manager import RiskConfig, RiskManager
-from kaupo.sdk.protocol import LoadedStrategy
+from kaupo.sdk.protocol import LoadedStrategy, StrategyBase
 from kaupo.venues.paper import PaperVenue
 
 log = logging.getLogger(__name__)
@@ -170,8 +170,13 @@ async def run_shadow(
     if request.assignment_id is not None:
         # lets the supervisor and the API find the run's desired-state row
         config["assignment_id"] = request.assignment_id
+    strategy = request.strategy.create(request.params)
+    if not isinstance(strategy, StrategyBase):
+        raise ValueError(
+            f"Strategy {request.strategy.id!r} is a portfolio strategy; shadow runs are single-pair only"
+        )
     engine = Engine(
-        strategy=request.strategy.create(request.params),
+        strategy=strategy,
         venue=PaperVenue(request.taker_fee_bps, request.maker_fee_bps, request.slippage_bps),
         risk=RiskManager(
             replace(

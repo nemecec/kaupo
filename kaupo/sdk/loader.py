@@ -1,8 +1,9 @@
 """Discover and load strategy plugins from a directory.
 
 Each ``*.py`` file (not starting with ``_``) in the directory is imported;
-every :class:`StrategyBase` subclass defined *in that file* is registered.
-Duplicate strategy ids are an error.
+every :class:`StrategyBase` or :class:`PortfolioStrategyBase` subclass
+defined *in that file* is registered. Strategy ids are unique across both
+kinds; duplicates are an error.
 
 Loaded modules are cached by content hash: unchanged files are not
 re-executed on repeated loads (the API calls this per request).
@@ -15,7 +16,7 @@ import logging
 import sys
 from pathlib import Path
 
-from kaupo.sdk.protocol import LoadedStrategy, StrategyBase
+from kaupo.sdk.protocol import LoadedStrategy, PortfolioStrategyBase, StrategyBase
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +72,9 @@ def _load_file(path: Path, content_hash: str) -> list[LoadedStrategy]:
 
     strategies = []
     for _, obj in inspect.getmembers(module, inspect.isclass):
-        if obj is StrategyBase or not issubclass(obj, StrategyBase):
+        if obj in (StrategyBase, PortfolioStrategyBase):
+            continue
+        if not issubclass(obj, (StrategyBase, PortfolioStrategyBase)):
             continue
         if obj.__module__ != module_name:
             continue  # only classes defined in this file

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from kaupo.api.deps import Principal, get_principal, require_admin
 from kaupo.api.schemas import BacktestAccepted, BacktestIn, RunOut
+from kaupo.backtest.portfolio import PortfolioBacktestRequest, run_portfolio_backtest
 from kaupo.backtest.run import BacktestRequest, run_backtest
 from kaupo.config import Settings, get_settings
 from kaupo.db.models import RunRow
@@ -44,10 +45,13 @@ def _evict_old_jobs() -> None:
             job.task.cancel()
 
 
-async def _execute(job_id: str, request: BacktestRequest) -> None:
+async def _execute(job_id: str, request: BacktestRequest | PortfolioBacktestRequest) -> None:
     job = _jobs[job_id]
     try:
-        run_id, _, _ = await run_backtest(request, get_sessionmaker())
+        if isinstance(request, PortfolioBacktestRequest):
+            run_id, _, _ = await run_portfolio_backtest(request, get_sessionmaker())
+        else:
+            run_id, _, _ = await run_backtest(request, get_sessionmaker())
         job.run_id = run_id
     except Exception as exc:
         log.exception("Backtest job %s failed", job_id)
@@ -80,27 +84,52 @@ async def submit_backtest(
             status_code=404,
             detail=f"unknown strategy {body.strategy!r}; available: {sorted(strategies)}",
         )
-    try:
-        pair = Pair.parse(body.pair)
-        timeframe = Timeframe.parse(body.timeframe)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    loaded = strategies[body.strategy]
 
     def aware(dt: datetime) -> datetime:
         return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
     end = aware(body.end) if body.end else datetime.now(UTC)
     start = aware(body.start) if body.start else end - timedelta(days=body.days)
-    request = BacktestRequest(
-        strategy=strategies[body.strategy],
-        params=body.params,
-        pair=pair,
-        timeframe=timeframe,
-        start=start,
-        end=end,
-        starting_cash=body.starting_cash,
-        exchange=body.exchange,
-    )
+
+    request: BacktestRequest | PortfolioBacktestRequest
+    try:
+        timeframe = Timeframe.parse(body.timeframe)
+        if body.pairs is not None:
+            if not loaded.is_portfolio:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"strategy {body.strategy!r} is not a portfolio strategy; pass pair",
+                )
+            request = PortfolioBacktestRequest(
+                strategy=loaded,
+                params=body.params,
+                pairs=[Pair.parse(p) for p in body.pairs],
+                timeframe=timeframe,
+                start=start,
+                end=end,
+                starting_cash=body.starting_cash,
+                exchange=body.exchange,
+            )
+        else:
+            if loaded.is_portfolio:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"strategy {body.strategy!r} is a portfolio strategy; pass pairs",
+                )
+            assert body.pair is not None  # the schema guarantees exactly one of pair/pairs
+            request = BacktestRequest(
+                strategy=loaded,
+                params=body.params,
+                pair=Pair.parse(body.pair),
+                timeframe=timeframe,
+                start=start,
+                end=end,
+                starting_cash=body.starting_cash,
+                exchange=body.exchange,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     from kaupo.domain import new_id
 
     _evict_old_jobs()

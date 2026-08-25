@@ -1,11 +1,13 @@
 """Strategy plugin contract.
 
-A strategy is a class deriving from :class:`StrategyBase` with:
+A strategy is a class deriving from :class:`StrategyBase` (single pair) or
+:class:`PortfolioStrategyBase` (multi-pair universe, backtest-only) with:
 
 - ``id``: unique strategy identifier
 - ``params_schema``: a pydantic model class; the engine validates user params
   against it before instantiating the strategy
-- ``on_candle(ctx)``: called once per closed candle; returns order intents
+- ``on_candle(ctx)``: called once per closed candle (single pair) or once
+  per joined timestamp step (portfolio); returns order intents
 
 Determinism rules (enforced by ``kaupo lint-strategies``):
 
@@ -15,14 +17,14 @@ Determinism rules (enforced by ``kaupo lint-strategies``):
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel
 
-from kaupo.domain import Candle, OrderIntent, Position
+from kaupo.domain import Candle, OrderIntent, Pair, Position
 
 
 class EmptyParams(BaseModel):
@@ -85,12 +87,71 @@ class StrategyBase(ABC):
         ...
 
 
+class PortfolioContext(Protocol):
+    """Read-only view of the world handed to a portfolio strategy on each step.
+
+    One step is one timestamp of the joined universe: only the pairs with a
+    candle closed at that timestamp appear in ``candles``.
+    """
+
+    @property
+    def clock(self) -> Clock: ...
+
+    @property
+    def candles(self) -> Mapping[Pair, Candle]:
+        """The candles closed this step, by pair. A pair without a candle
+        this step is absent — its last known close still feeds equity."""
+        ...
+
+    def history(self, pair: Pair, n: int) -> Sequence[Candle]:
+        """Last ``n`` closed candles for ``pair`` including this step's, oldest first.
+
+        Returns fewer than ``n`` at the start of a run. A pair's history
+        advances only on steps where that pair has a candle.
+        """
+        ...
+
+    def positions(self) -> Mapping[Pair, Position]:
+        """Open positions by pair (only pairs with a nonzero size)."""
+        ...
+
+    def cash(self) -> float:
+        """Available quote currency."""
+        ...
+
+    def equity(self) -> float:
+        """cash + every position valued at its last known close."""
+        ...
+
+
+class PortfolioStrategyBase(ABC):
+    """Contract for multi-pair strategies (backtest-only for now)."""
+
+    id: ClassVar[str]
+    params_schema: ClassVar[type[BaseModel]] = EmptyParams
+
+    def __init__(self, params: BaseModel) -> None:
+        self.params = params
+
+    @abstractmethod
+    def on_candle(self, ctx: PortfolioContext) -> list[OrderIntent]:
+        """Return this step's intents ([] to do nothing); risk may resize or reject.
+
+        Fill semantics match the single-pair engine, per pair: MARKET intents
+        fill at the pair's next candle open (taker fee + slippage); LIMIT
+        intents live for one candle of that pair (maker fee, no slippage).
+        Every intent must name a pair of the run's universe; intents for
+        foreign pairs are rejected.
+        """
+        ...
+
+
 @dataclass(frozen=True)
 class LoadedStrategy:
     """A strategy class discovered on disk, with provenance."""
 
     id: str
-    cls: type[StrategyBase]
+    cls: type[StrategyBase] | type[PortfolioStrategyBase]
     source_hash: str  # sha256 of the source file
     path: str
 
@@ -98,7 +159,11 @@ class LoadedStrategy:
     def version(self) -> str:
         return self.source_hash[:12]
 
-    def create(self, params: dict[str, Any]) -> StrategyBase:
+    @property
+    def is_portfolio(self) -> bool:
+        return issubclass(self.cls, PortfolioStrategyBase)
+
+    def create(self, params: dict[str, Any]) -> StrategyBase | PortfolioStrategyBase:
         params = params or {}
         # allowed keys = field names plus aliases (honoring populate_by_name)
         schema = self.cls.params_schema

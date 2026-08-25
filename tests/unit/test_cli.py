@@ -446,7 +446,7 @@ def test_run_supervisor_command(monkeypatch: pytest.MonkeyPatch) -> None:
     result = runner.invoke(cli.app, ["run", "supervisor", "--strategies-dir", str(EXAMPLES_DIR)])
     assert result.exit_code == 0, result.output
     assert "Supervisor stopped" in result.output
-    assert captured["strategies"] == ["regime-switch"]
+    assert captured["strategies"] == ["momentum-rotation", "regime-switch"]
     assert captured["kwargs"]["reconcile_interval_seconds"] == 15.0
 
 
@@ -455,3 +455,109 @@ def test_run_supervisor_lint_enforced(tmp_path: Path) -> None:
     result = runner.invoke(cli.app, ["run", "supervisor", "--strategies-dir", str(tmp_path)])
     assert result.exit_code == 1
     assert "wall-clock" in result.output
+
+
+def test_backtest_pairs_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kaupo.backtest.portfolio as pf_mod
+
+    captured: dict[str, Any] = {}
+
+    class FakeResult:
+        status = type("S", (), {"value": "completed"})()
+
+    async def fake_run(request: Any, sm: Any) -> Any:
+        captured["pairs"] = [str(p) for p in request.pairs]
+        captured["exchange"] = request.exchange
+        metrics = {"num_fills": 2, "universe": captured["pairs"]}
+        return RunId("run-2"), FakeResult(), metrics
+
+    monkeypatch.setattr(pf_mod, "run_portfolio_backtest", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "momentum-rotation",
+            "--pairs",
+            "SOL/EUR,BTC/EUR",
+            "--days",
+            "30",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "run-2" in result.output
+    assert captured["pairs"] == ["BTC/EUR", "SOL/EUR"]  # canonical sorted order
+    assert captured["exchange"] == "kraken"
+
+
+def test_backtest_pair_and_pairs_mutually_exclusive() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--pairs",
+            "BTC/EUR,SOL/EUR",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "exactly one" in result.output
+
+
+def test_backtest_pairs_requires_a_portfolio_strategy() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pairs",
+            "BTC/EUR,SOL/EUR",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "not a portfolio strategy" in result.output
+
+
+def test_backtest_pair_requires_a_single_pair_strategy() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "momentum-rotation",
+            "--pair",
+            "BTC/EUR",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "portfolio strategy" in result.output
+
+
+def test_backtest_pairs_rejects_mixed_quotes() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "momentum-rotation",
+            "--pairs",
+            "BTC/EUR,SOL/USD",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "one quote currency" in result.output

@@ -79,7 +79,8 @@ class CandleOut(BaseModel):
 
 class BacktestIn(BaseModel):
     strategy: str
-    pair: str
+    pair: str | None = None  # single-pair backtest
+    pairs: list[str] | None = None  # portfolio backtest (>=2 pairs, one shared quote)
     timeframe: str = "1h"
     start: datetime | None = None
     end: datetime | None = None
@@ -89,9 +90,13 @@ class BacktestIn(BaseModel):
     exchange: str = "kraken"
 
     @model_validator(mode="after")
-    def _check_range(self) -> BacktestIn:
+    def _check(self) -> BacktestIn:
         if self.start is not None and self.end is not None and self.start >= self.end:
             raise ValueError("start must be before end")
+        if (self.pair is None) == (self.pairs is None):
+            raise ValueError("pass exactly one of pair or pairs")
+        if self.pairs is not None and len(self.pairs) < 2:
+            raise ValueError("pairs needs at least 2 entries; use pair for one pair")
         return self
 
 

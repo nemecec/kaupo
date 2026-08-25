@@ -52,6 +52,10 @@ Prerequisites: uv, Docker, and Node 22 or later.
    uv run kaupo backtest --strategy regime-switch --pair BTC/EUR --timeframe 1h --days 365
    ```
    To use the Binance candles, add `--exchange binance`.
+   For a portfolio backtest over several pairs, pass `--pairs` to a portfolio strategy. All pairs share one quote currency:
+   ```bash
+   uv run kaupo backtest --strategy momentum-rotation --pairs BTC/EUR,SOL/EUR,ADA/EUR --timeframe 1h --days 365
+   ```
 6. Start shadow trading with virtual money:
    ```bash
    uv run kaupo run shadow --strategy regime-switch --pair BTC/EUR --timeframe 1h
@@ -97,6 +101,17 @@ docker compose --profile trading down
 The production stack runs on one Hetzner CX23 server behind Caddy at https://kaupo.trade. Images come from GHCR. Deploys run from GitHub Actions over SSH after a green CI run on `main`. Nightly `pg_dump` backups go to AWS S3.
 
 See `deploy/README.md` for the setup steps.
+
+## Strategy SDK
+
+A strategy is a Python class with an `id`, a pydantic `params_schema`, and an `on_candle(ctx)` method that returns order intents. Two base classes exist:
+
+- `StrategyBase` — one pair per run. It runs in backtest, shadow, and live modes.
+- `PortfolioStrategyBase` — a universe of pairs in one backtest run. Its context gives the candles closed at each step, per-pair history, all open positions, cash, and equity. Each order intent names its pair. Intents for pairs outside the universe are rejected.
+
+`kaupo/sdk/portfolio.py` has a rebalance helper. Give it target weights (fractions of equity, sum at most 1) and the context. It returns a plan with `sells` and `buys`. Buys use only the free cash at plan time, never the proceeds of same-plan sells. Emit the sells on one step and the buys on the next step. `examples/strategies/momentum_rotation.py` shows this pattern.
+
+The determinism linter (`kaupo lint-strategies`) checks both kinds. The API accepts a portfolio backtest through `POST /api/v1/backtests` with `pairs` instead of `pair`. Its metrics add `universe` and a `per_pair` attribution (realized PnL, fees, round trips, win rate per pair).
 
 ## Tests
 

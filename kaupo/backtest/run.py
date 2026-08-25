@@ -18,7 +18,7 @@ from kaupo.db.session import sm_scope
 from kaupo.domain import Candle, Pair, RunId, RunMode, Timeframe
 from kaupo.ledger.ledger import Ledger
 from kaupo.risk.manager import RiskConfig, RiskManager
-from kaupo.sdk.protocol import LoadedStrategy
+from kaupo.sdk.protocol import LoadedStrategy, StrategyBase
 from kaupo.venues.paper import PaperVenue
 
 log = logging.getLogger(__name__)
@@ -78,8 +78,13 @@ async def run_backtest(
         request.risk, taker_fee_bps=request.taker_fee_bps, slippage_bps=request.slippage_bps
     )
     risk = RiskManager(risk_config)
+    strategy = request.strategy.create(request.params)
+    if not isinstance(strategy, StrategyBase):
+        raise ValueError(
+            f"Strategy {request.strategy.id!r} is a portfolio strategy; use run_portfolio_backtest (--pairs)"
+        )
     engine = Engine(
-        strategy=request.strategy.create(request.params),
+        strategy=strategy,
         venue=PaperVenue(request.taker_fee_bps, request.maker_fee_bps, request.slippage_bps),
         risk=risk,
         ledger=Ledger(request.pair.quote, request.starting_cash, request.start),

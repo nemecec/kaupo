@@ -167,6 +167,77 @@ async def test_backtest_job(client: AsyncClient, session: AsyncSession) -> None:
     assert r.status_code == 404
 
 
+async def test_backtest_job_portfolio_pairs(client: AsyncClient, session: AsyncSession) -> None:
+    for j, pair in enumerate(("ADA/EUR", "BTC/EUR", "SOL/EUR")):
+        candles = [
+            Candle(
+                pair=Pair.parse(pair),
+                timeframe=Timeframe.H1,
+                ts=BASE + timedelta(hours=i),
+                open=100 * (j + 1) + i,
+                high=100 * (j + 1) + i + 1,
+                low=100 * (j + 1) + i - 1,
+                close=100 * (j + 1) + i,
+                volume=1.0,
+            )
+            for i in range(120)
+        ]
+        await upsert_candles(session, candles)
+    await session.commit()
+
+    r = await client.post(
+        "/api/v1/backtests",
+        json={
+            "strategy": "momentum-rotation",
+            "pairs": ["BTC/EUR", "SOL/EUR", "ADA/EUR"],
+            "timeframe": "1h",
+            "start": BASE.isoformat(),
+            "end": (BASE + timedelta(hours=120)).isoformat(),
+            "params": {"lookback": 24, "top_k": 2, "rebalance_interval": 24},
+        },
+    )
+    assert r.status_code == 202
+    job_id = r.json()["run_id"]
+
+    for _ in range(100):
+        r = await client.get(f"/api/v1/backtests/{job_id}")
+        if r.json()["status"] != "running":
+            break
+    assert r.json()["status"] == "completed"
+    metrics = r.json()["run"]["metrics"]
+    assert metrics["universe"] == ["ADA/EUR", "BTC/EUR", "SOL/EUR"]
+    assert set(metrics["per_pair"]) == {"ADA/EUR", "BTC/EUR", "SOL/EUR"}
+    assert r.json()["run"]["config"]["pair"] == "ADA/EUR,BTC/EUR,SOL/EUR"
+
+
+async def test_backtest_pairs_routing_validation(client: AsyncClient) -> None:
+    # pair and pairs together
+    r = await client.post(
+        "/api/v1/backtests",
+        json={"strategy": "regime-switch", "pair": "BTC/EUR", "pairs": ["BTC/EUR", "SOL/EUR"]},
+    )
+    assert r.status_code == 422
+    # a one-entry universe
+    r = await client.post("/api/v1/backtests", json={"strategy": "momentum-rotation", "pairs": ["BTC/EUR"]})
+    assert r.status_code == 422
+    # a single-pair strategy does not take pairs
+    r = await client.post(
+        "/api/v1/backtests", json={"strategy": "regime-switch", "pairs": ["BTC/EUR", "SOL/EUR"]}
+    )
+    assert r.status_code == 422
+    assert "not a portfolio strategy" in r.json()["detail"]
+    # a portfolio strategy does not take pair
+    r = await client.post("/api/v1/backtests", json={"strategy": "momentum-rotation", "pair": "BTC/EUR"})
+    assert r.status_code == 422
+    assert "portfolio strategy" in r.json()["detail"]
+    # mixed quotes
+    r = await client.post(
+        "/api/v1/backtests", json={"strategy": "momentum-rotation", "pairs": ["BTC/EUR", "SOL/USD"]}
+    )
+    assert r.status_code == 422
+    assert "one quote currency" in r.json()["detail"]
+
+
 async def test_candles_endpoint(client: AsyncClient, session: AsyncSession) -> None:
     candles = [
         Candle(
@@ -336,8 +407,7 @@ async def test_strategies_endpoint(client: AsyncClient) -> None:
     r = await client.get("/api/v1/strategies")
     assert r.status_code == 200
     body = r.json()
-    assert len(body) == 1
-    assert body[0]["id"] == "regime-switch"
+    assert {s["id"] for s in body} == {"momentum-rotation", "regime-switch"}
     assert body[0]["params_schema"]["type"] == "object"
 
 

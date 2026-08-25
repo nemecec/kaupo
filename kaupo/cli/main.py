@@ -126,7 +126,11 @@ def ingest(
 @app.command()
 def backtest(
     strategy: StrategyOpt,
-    pair: PairOpt,
+    pair: Annotated[str | None, typer.Option(help="e.g. BTC/EUR")] = None,
+    pairs: Annotated[
+        str | None,
+        typer.Option(help="comma-separated universe for a portfolio backtest, e.g. BTC/EUR,SOL/EUR"),
+    ] = None,
     timeframe: TimeframeOpt = "1h",
     days: Annotated[int, typer.Option(min=1)] = 365,
     start: StartOpt = None,
@@ -138,8 +142,9 @@ def backtest(
     no_persist: Annotated[bool, typer.Option(help="do not store the run in Postgres")] = False,
     verbose: VerboseOpt = False,
 ) -> None:
-    """Backtest a strategy on historical candles."""
+    """Backtest a strategy on historical candles. Pass --pair or --pairs."""
     _setup_logging(verbose)
+    from kaupo.backtest.portfolio import PortfolioBacktestRequest, run_portfolio_backtest
     from kaupo.backtest.run import BacktestRequest, run_backtest
     from kaupo.db.session import get_sessionmaker
     from kaupo.sdk.loader import load_strategies
@@ -153,21 +158,53 @@ def backtest(
             f"[red]Unknown strategy {strategy!r}[/red]. Available: {', '.join(sorted(strategies))}"
         )
         raise typer.Exit(1)
+    loaded = strategies[strategy]
 
     start_dt, end_dt = _range(days, start, end)
-    request = BacktestRequest(
-        strategy=strategies[strategy],
-        params=_parse_params(param),
-        pair=Pair.parse(pair),
-        timeframe=Timeframe.parse(timeframe),
-        start=start_dt,
-        end=end_dt,
-        starting_cash=cash,
-        exchange=exchange,
-        persist=not no_persist,
-    )
+    request: BacktestRequest | PortfolioBacktestRequest
+    try:
+        if pair is not None and pairs is None:
+            if loaded.is_portfolio:
+                err_console.print(f"[red]Strategy {strategy!r} is a portfolio strategy[/red] — use --pairs")
+                raise typer.Exit(1)
+            request = BacktestRequest(
+                strategy=loaded,
+                params=_parse_params(param),
+                pair=Pair.parse(pair),
+                timeframe=Timeframe.parse(timeframe),
+                start=start_dt,
+                end=end_dt,
+                starting_cash=cash,
+                exchange=exchange,
+                persist=not no_persist,
+            )
+        elif pairs is not None and pair is None:
+            if not loaded.is_portfolio:
+                err_console.print(
+                    f"[red]Strategy {strategy!r} is not a portfolio strategy[/red] — use --pair"
+                )
+                raise typer.Exit(1)
+            request = PortfolioBacktestRequest(
+                strategy=loaded,
+                params=_parse_params(param),
+                pairs=[Pair.parse(p) for p in pairs.split(",")],
+                timeframe=Timeframe.parse(timeframe),
+                start=start_dt,
+                end=end_dt,
+                starting_cash=cash,
+                exchange=exchange,
+                persist=not no_persist,
+            )
+        else:
+            err_console.print("[red]Pass exactly one of --pair or --pairs[/red]")
+            raise typer.Exit(1)
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
 
     async def _run() -> Any:
+        if isinstance(request, PortfolioBacktestRequest):
+            return await run_portfolio_backtest(request, get_sessionmaker())
         return await run_backtest(request, get_sessionmaker())
 
     run_id, result, metrics = asyncio.run(_run())

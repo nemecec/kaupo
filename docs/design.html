@@ -218,6 +218,7 @@ class Context(Protocol):
 class OrderIntent:  # what the strategy wants; risk manager decides what it gets
     side, size, order_type, limit_price, stop_loss, take_profit, reason</code></pre>
 <p>The rules are: no <code>datetime.now()</code>, no network or file I/O, no unseeded randomness. The CLI, the API, and CI enforce them with <code>kaupo lint-strategies</code>. The linter is a tripwire for plausible mistakes, not a security boundary. The repository ships open-source example strategies in <code>examples/strategies/</code>. One of them detects the market regime with ADX and Bollinger width. It switches between a mean-reversion module and a momentum module.</p>
+<p>A second base class, <code>PortfolioStrategyBase</code>, covers multi-pair universes in backtests. Its context gives the candles closed at each joined timestamp step, per-pair history, all open positions, cash, and equity. Each order intent names its pair. All pairs share one quote currency, so no FX conversion enters the loop. The SDK ships a rebalance helper: target weights in, a two-phase plan out (sells first, buys next step from free cash). The example <code>momentum-rotation</code> strategy uses it.</p>
 
 <h2 id="modes"><span class="num">6.</span>Execution modes</h2>
 <table>
@@ -229,6 +230,7 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
 </table>
 <ul>
   <li><strong>Backtester</strong>: event-driven, with the same loop as live trading. Inputs: strategy, parameters, pair, date range, and the fee model. Each run stores the equity curve, the trades, and the metrics. The metrics include total return, Sharpe ratio, max drawdown, win rate, and fees paid. You can run it through the CLI or the API. Months of 1h candles run in seconds. Agents get almost immediate feedback. The paper venue fills market orders at the next candle open with taker fee and slippage. A limit order lives for one candle: it fills at the limit price (or the open, if better) when the candle range touches the price, pays the maker fee without slippage, and expires unfilled at that close.</li>
+  <li><strong>Portfolio backtester</strong>: the same loop over a universe of pairs (CLI <code>--pairs</code>, API <code>pairs</code>). A portfolio run joins the per-pair candle streams on timestamp. One venue instance per pair keeps the execution semantics exact. Pairs without a candle at a step keep their last close in the equity snapshot. The metrics add a per-pair attribution: realized PnL, fees, round trips, and win rate per pair.</li>
   <li><strong>Shadow</strong>: several shadow runs can run at the same time. For example, strategy v1 against v2 on live data with virtual money.</li>
   <li><strong>Live</strong>: Phase 3, only after a shadow track record exists. The real venue adapter adds order reconciliation and crash recovery.</li>
 </ul>
