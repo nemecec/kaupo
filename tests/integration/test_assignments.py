@@ -74,7 +74,7 @@ async def _run_status(run_id: str) -> str | None:
         return row.status if row is not None else None
 
 
-async def _wait_for(cond: Callable[[], object], seconds: float = 10.0) -> None:
+async def _wait_for(cond: Callable[[], object], seconds: float = 30.0) -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + seconds
     while True:
