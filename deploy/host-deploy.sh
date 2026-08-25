@@ -17,6 +17,10 @@ cd "$REPO_DIR"
 git pull --ff-only
 
 # Private strategies. Works once the host deploy key is added to the repository.
+# The tree hash of strategies/ changes exactly when strategy code changes.
+# Memory and docs commits must not restart the shadow run.
+strategies_tree() { git -C "$STRATEGIES_DIR" rev-parse HEAD:strategies 2>/dev/null || echo none; }
+before=$(strategies_tree)
 if git ls-remote git@github.com:nemecec/kaupo-strategies.git > /dev/null 2>&1; then
   if [[ -d "$STRATEGIES_DIR/.git" ]]; then
     git -C "$STRATEGIES_DIR" pull --ff-only
@@ -26,6 +30,7 @@ if git ls-remote git@github.com:nemecec/kaupo-strategies.git > /dev/null 2>&1; t
 else
   echo "strategies repository not reachable; keeping the current strategies"
 fi
+after=$(strategies_tree)
 
 set_env() { # key value — replace the line or append it
   if grep -q "^$1=" "$ENV_FILE"; then
@@ -46,6 +51,10 @@ compose() {
 
 compose pull
 compose up -d --remove-orphans
+if [[ "$before" != "none" && "$before" != "$after" ]]; then
+  echo "strategy code changed ($before -> $after); restarting shadow"
+  compose restart shadow
+fi
 systemctl enable kaupo.service
 docker image prune -f
 compose ps
