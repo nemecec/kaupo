@@ -68,7 +68,7 @@ ignore = [
 [tool.mypy]
 python_version = "3.12"
 mypy_path = "."
-packages = ["kaupo", "examples"]
+packages = ["kaupo", "examples", "scripts"]
 strict = true
 plugins = ["pydantic.mypy"]
 
