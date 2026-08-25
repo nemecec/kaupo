@@ -32,7 +32,10 @@ else
 fi
 after=$(strategies_tree)
 
-current_tag=$(grep '^KAUPO_TAG=' "$ENV_FILE" | cut -d= -f2- || true)
+TAG_FILE=/etc/kaupo/deployed-tag
+# The workflow rewrites the env file on every deploy, so the tag of the last
+# successful deploy lives in its own file, not in the env file.
+current_tag=$(cat "$TAG_FILE" 2>/dev/null || true)
 
 set_env() { # key value — replace the line or append it
   if grep -q "^$1=" "$ENV_FILE"; then
@@ -60,6 +63,7 @@ else
   echo "image tag unchanged ($TAG); skipping pull"
 fi
 compose up -d --remove-orphans
+echo "$TAG" > "$TAG_FILE"
 if [[ "$before" != "none" && "$before" != "$after" ]]; then
   echo "strategy code changed ($before -> $after); restarting shadow"
   compose restart shadow
