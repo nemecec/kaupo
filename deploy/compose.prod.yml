@@ -62,6 +62,22 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  # Static side run: fixed flags (--no-config-from-db), not affected by settings
+  # switches. Tune via KAUPO_SOL_* in /etc/kaupo/kaupo.env on the host.
+  shadow-sol:
+    image: ${REGISTRY:-ghcr.io/nemecec}/kaupo:${KAUPO_TAG:-latest}
+    command: kaupo run shadow --no-config-from-db --strategy ${KAUPO_SOL_STRATEGY:-sma-cross} --pair ${KAUPO_SOL_PAIR:-SOL/EUR} --timeframe ${KAUPO_SOL_TIMEFRAME:-4h}
+    profiles: ["trading"]
+    environment:
+      KAUPO_DATABASE_URL: postgresql+asyncpg://kaupo:${POSTGRES_PASSWORD:?}@db:5432/kaupo
+      KAUPO_STRATEGIES_DIR: /strategies
+    volumes:
+      - ${KAUPO_STRATEGIES_HOST_DIR:-/opt/kaupo/examples/strategies}:/strategies:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   ui:
     image: ${REGISTRY:-ghcr.io/nemecec}/kaupo-ui:${KAUPO_TAG:-latest}
     depends_on:

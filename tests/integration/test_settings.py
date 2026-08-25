@@ -39,16 +39,23 @@ async def client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
     get_settings.cache_clear()
 
 
-def _add_run(session: AsyncSession, run_id: str, mode: str, status: str) -> None:
+def _add_run(
+    session: AsyncSession,
+    run_id: str,
+    mode: str,
+    status: str,
+    pair: str = "BTC/EUR",
+    strategy_id: str = "regime-switch",
+) -> None:
     session.add(
         RunRow(
             id=run_id,
             mode=mode,
-            strategy_id="s",
+            strategy_id=strategy_id,
             strategy_version="v",
             started_at=utc_now(),
             status=status,
-            config={},
+            config={"pair": pair},
         )
     )
 
@@ -182,6 +189,23 @@ async def test_put_without_changes_writes_no_event(client: AsyncClient, session:
     r = await client.put("/api/v1/settings", json={"shadow_strategy": "regime-switch"})
     assert r.status_code == 200
     assert await _control_events(session) == []
+
+
+async def test_switch_event_targets_only_runs_matching_current_settings(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    # a static side run on another pair must not be restarted by a settings switch
+    await settings_repo.upsert_settings(session, {"shadow_pair": "BTC/EUR"})
+    _add_run(session, "primary", "shadow", "running", pair="BTC/EUR")
+    _add_run(session, "side-run", "shadow", "running", pair="SOL/EUR")
+    await session.commit()
+
+    r = await client.put("/api/v1/settings", json={"shadow_strategy": "regime-switch"})
+    assert r.status_code == 200
+
+    events = await _control_events(session)
+    assert len(events) == 1
+    assert events[0].data["run_id"] == "primary"
 
 
 async def test_put_with_nothing_running_upserts_but_writes_no_event(

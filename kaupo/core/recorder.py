@@ -91,14 +91,16 @@ class DbRecorder:
                 )
             )
             if info.mode in (RunMode.SHADOW, RunMode.LIVE):
-                # Long-running modes have one live process per strategy. Rows
-                # still marked "running" for the same strategy belong to dead
-                # processes (container restarts, deploys) — halt them.
+                # Long-running modes have one live process per strategy and
+                # pair. Rows still marked "running" for the same strategy and
+                # pair belong to dead processes (restarts, deploys) — halt
+                # them. Other pairs of the same strategy run unaffected.
                 await session.execute(
                     update(RunRow)
                     .where(
                         RunRow.mode == info.mode.value,
                         RunRow.strategy_id == info.strategy_id,
+                        RunRow.config["pair"].as_string() == str(info.config.get("pair", "")),
                         RunRow.status == RunStatus.RUNNING.value,
                         RunRow.id != self.run_id,
                     )

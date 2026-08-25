@@ -369,3 +369,62 @@ def test_backtest_lint_enforced_cli(tmp_path: Path) -> None:
 def test_strategies_missing_dir() -> None:
     result = runner.invoke(cli.app, ["lint-strategies", "--strategies-dir", "/nope/nada"])
     assert result.exit_code != 0
+
+
+def test_run_shadow_static_flags_skip_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--no-config-from-db uses the flags as given and never resolves settings."""
+    import kaupo.core.runner as runner_mod
+    import kaupo.data.kraken as kraken_mod
+
+    class FakeResult:
+        status = type("S", (), {"value": "halted"})()
+        num_fills = 0
+        final_equity = 10_000
+        halt_reason = "stopped externally"
+
+    seen: dict[str, Any] = {}
+
+    async def fake_run_shadow(request: Any, sm: Any, client: Any, stop: Any = None) -> Any:
+        seen["pair"] = str(request.pair)
+        seen["timeframe"] = request.timeframe.value
+        seen["strategy"] = request.strategy.id
+        return FakeResult()
+
+    monkeypatch.setattr(kraken_mod, "KrakenClient", _FakeKrakenClient)
+    monkeypatch.setattr(runner_mod, "run_shadow", fake_run_shadow)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "shadow",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "SOL/EUR",
+            "--timeframe",
+            "4h",
+            "--no-config-from-db",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen == {"pair": "SOL/EUR", "timeframe": "4h", "strategy": "regime-switch"}
+
+
+def test_run_shadow_static_flags_require_all_three() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "shadow",
+            "--strategy",
+            "regime-switch",
+            "--no-config-from-db",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "no-config-from-db" in result.output

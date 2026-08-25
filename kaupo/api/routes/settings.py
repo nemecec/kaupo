@@ -53,19 +53,37 @@ def _validate(body: SettingsIn, settings: Settings) -> dict[str, str]:
     return changes
 
 
-async def _notify_shadow_runs(session: AsyncSession, changed: dict[str, str]) -> None:
-    """Write a 'switch' control event for each running shadow run.
+async def _notify_shadow_runs(
+    session: AsyncSession, changed: dict[str, str], current: dict[str, Any]
+) -> None:
+    """Write a 'switch' control event for each shadow run matching the CURRENT settings.
 
-    The engine treats 'switch' as a graceful halt; the container restart
-    policy then starts a new process, which reads the new settings from the
-    settings table. Backtest (and future live) runs are never targeted.
+    Only runs whose strategy and pair equal the pre-change settings are
+    targeted: static side runs (--no-config-from-db) on other pairs keep
+    running. The engine treats 'switch' as a graceful halt; the container
+    restart policy then starts a new process, which reads the new settings.
+    Backtest (and future live) runs are never targeted.
     """
+    strategy = str(
+        current.get(
+            settings_repo.SHADOW_STRATEGY_KEY,
+            settings_repo.SHADOW_DEFAULTS[settings_repo.SHADOW_STRATEGY_KEY],
+        )
+    )
+    pair = str(
+        current.get(
+            settings_repo.SHADOW_PAIR_KEY,
+            settings_repo.SHADOW_DEFAULTS[settings_repo.SHADOW_PAIR_KEY],
+        )
+    )
     runs = (
         (
             await session.execute(
                 select(RunRow).where(
                     RunRow.mode == RunMode.SHADOW.value,
                     RunRow.status == RunStatus.RUNNING.value,
+                    RunRow.strategy_id == strategy,
+                    RunRow.config["pair"].as_string() == pair,
                 )
             )
         )
@@ -109,7 +127,7 @@ async def update_settings(
     changed = {key: value for key, value in changes.items() if current.get(key) != value}
     if changed:
         await settings_repo.upsert_settings(session, changed)
-        await _notify_shadow_runs(session, changed)
+        await _notify_shadow_runs(session, changed, current)
         from kaupo.core.notify import send_alert
 
         await send_alert(f"Shadow strategy switch requested: {changed}")

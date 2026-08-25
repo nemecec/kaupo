@@ -227,15 +227,21 @@ async def test_start_halts_stale_same_strategy_shadow_runs(session: AsyncSession
 
     sm = get_sessionmaker()
 
-    def info(mode: RunMode, strategy_id: str) -> RunInfo:
+    def info(mode: RunMode, strategy_id: str, pair: str = "BTC/EUR") -> RunInfo:
         return RunInfo(
-            mode=mode, strategy_id=strategy_id, strategy_version="v", strategy_source_hash="x", config={}
+            mode=mode,
+            strategy_id=strategy_id,
+            strategy_version="v",
+            strategy_source_hash="x",
+            config={"pair": pair},
         )
 
     stale = DbRecorder(sm)
     await stale.start(info(RunMode.SHADOW, "s1"))
     other_strategy = DbRecorder(sm)
     await other_strategy.start(info(RunMode.SHADOW, "s2"))
+    other_pair = DbRecorder(sm)
+    await other_pair.start(info(RunMode.SHADOW, "s1", pair="SOL/EUR"))
     backtest_same_strategy = DbRecorder(sm)
     await backtest_same_strategy.start(info(RunMode.BACKTEST, "s1"))
     live = DbRecorder(sm)
@@ -246,5 +252,6 @@ async def test_start_halts_stale_same_strategy_shadow_runs(session: AsyncSession
     assert rows[stale.run_id].ended_at is not None
     assert rows[stale.run_id].metrics["halt_reason"] == "superseded by a newer run of the same strategy"
     assert rows[other_strategy.run_id].status == "running"
+    assert rows[other_pair.run_id].status == "running"  # same strategy, different pair
     assert rows[backtest_same_strategy.run_id].status == "running"
     assert rows[live.run_id].status == "running"

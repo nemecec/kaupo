@@ -220,6 +220,12 @@ def run_shadow_cmd(
     warmup: Annotated[
         int | None, typer.Option(help="history candles preloaded from DB (default: lookback)")
     ] = None,
+    no_config_from_db: Annotated[
+        bool,
+        typer.Option(
+            help="use the flags as given; do not read or seed the settings table (static side runs)"
+        ),
+    ] = False,
     strategies_dir: StrategiesDirOpt = None,
     verbose: VerboseOpt = False,
 ) -> None:
@@ -247,8 +253,18 @@ def run_shadow_cmd(
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
         sessionmaker = get_sessionmaker()
-        async with sm_scope(sessionmaker) as session:
-            resolved = await resolve_shadow_config(session, strategy, pair, timeframe)
+        if no_config_from_db:
+            if strategy is None or pair is None or timeframe is None:
+                err_console.print(
+                    "[red]--no-config-from-db requires --strategy, --pair, and --timeframe[/red]"
+                )
+                raise typer.Exit(1)
+            from kaupo.data.settings import ShadowSettings
+
+            resolved = ShadowSettings(strategy=strategy, pair=pair, timeframe=timeframe)
+        else:
+            async with sm_scope(sessionmaker) as session:
+                resolved = await resolve_shadow_config(session, strategy, pair, timeframe)
         if resolved.strategy not in strategies:
             err_console.print(
                 f"[red]Unknown strategy {resolved.strategy!r}[/red]. "
