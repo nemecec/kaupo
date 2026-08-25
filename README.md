@@ -112,7 +112,7 @@ The CI workflow runs the same checks. The coverage gate is 85%.
 
 - `kaupo/` — the platform package: `core`, `data`, `sdk`, `backtest`, `venues`, `risk`, `ledger`, `report`, `api`, `cli`, `db`
 - `examples/strategies/` — open-source example strategies. Your real strategies live in the private `kaupo-strategies` repository
-- `ui/` — the React and TypeScript dashboard
+- `ui/` — the React and TypeScript dashboard; its account-equity panel stitches the sequential runs of a strategy into one curve
 - `tests/` — `unit`, `behaviour` (scenario and parity), and `integration` tests
 - `docs/design.html` — the full architecture and roadmap
 

@@ -275,11 +275,13 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
   <li><code>GET /api/v1/candles?pair=&amp;timeframe=&amp;start=&amp;end=</code></li>
   <li><code>POST /api/v1/backtests</code> / <code>GET /api/v1/backtests/{id}</code> (+ equity curve, trades)</li>
   <li><code>GET /api/v1/runs?mode=…</code>, <code>GET /api/v1/runs/{id}/equity|orders|trades|positions</code></li>
+  <li><code>GET /api/v1/equity/account?mode=&amp;strategy=</code> — one equity curve stitched across the sequential runs of a strategy</li>
   <li><code>GET /api/v1/reports/daily?date=…</code></li>
   <li><code>POST /api/v1/control/pause | resume | kill</code> — kill switch (authenticated)</li>
   <li><code>GET /api/v1/settings</code>, <code>PUT /api/v1/settings</code> — instance settings (shadow strategy, pair, timeframe)</li>
   <li><code>WS /ws/live</code> — live status updates for the dashboard (token in the query string)</li>
 </ul>
+<p>The account equity endpoint rebases each run's snapshots onto the end of the previous run, so a restart does not reset the curve. The stored per-run data is unchanged: the stitch is a read-time view.</p>
 <p>A <code>PUT /api/v1/settings</code> change to the shadow configuration writes a <code>switch</code> command on the control channel. The shadow engine halts after the current candle. Docker restarts the container, and the new process reads the new settings from the <code>settings</code> table. No redeploy is necessary.</p>
 <p>Auth uses two bearer tokens. The admin token gives full access. The read-only token is for agents. There is no user management. The OpenAPI schema generates the TypeScript client for the UI.</p>
 
@@ -331,7 +333,7 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
   <li>Daily report endpoint (JSON)</li>
 </ol>
 <h3>Phase 2 — Production and agents</h3>
-<p>Hetzner deployment through GitHub Actions and SSH, GHCR images, S3 backups, Telegram alerts, and the scheduled agent review workflow in <code>kaupo-strategies</code>.</p>
+<p>Hetzner deployment through GitHub Actions and SSH, GHCR images, S3 backups, ntfy push alerts, and the scheduled agent review workflow in <code>kaupo-strategies</code>.</p>
 <h3>Phase 3 — Live trading</h3>
 <p>Kraken venue hardening, reconciliation, promotion gates, position recovery on restart, and a small amount of starting capital.</p>
 <h3>Phase 4+</h3>

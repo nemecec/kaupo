@@ -68,6 +68,20 @@ export function useStrategies() {
   })
 }
 
+/**
+ * Account-level equity: one curve stitched across the sequential runs of a
+ * strategy (see GET /api/v1/equity/account). Pass null to disable the query
+ * (e.g. no shadow run exists yet).
+ */
+export function useAccountEquity(strategy: string | null, mode = 'shadow') {
+  return useQuery({
+    queryKey: ['equity', 'account', mode, strategy],
+    queryFn: () => api.accountEquity(strategy as string, mode),
+    enabled: strategy !== null,
+    refetchInterval: 15_000,
+  })
+}
+
 export function useDailyReport(day: string) {
   return useQuery({
     queryKey: ['reports', 'daily', day],

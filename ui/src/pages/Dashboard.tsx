@@ -2,9 +2,10 @@ import { Link } from 'react-router-dom'
 import { useQueries } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { formatDateTime, formatNumber, formatSigned, shortId } from '../lib/format'
-import { useDailyReport, useRuns, useStatus } from '../hooks/queries'
+import { useAccountEquity, useDailyReport, useRuns, useStatus } from '../hooks/queries'
 import { EmptyState, ErrorState, Loading, Panel } from '../components/common'
 import { KillSwitch } from '../components/KillSwitch'
+import { EquityChart } from '../components/charts/EquityChart'
 import { MultiEquityChart, type NamedSeries } from '../components/charts/MultiEquityChart'
 import { equityToLine } from '../components/charts/utils'
 
@@ -29,6 +30,15 @@ export default function Dashboard() {
   const reportQ = useDailyReport(todayUtc())
   const runningQ = useRuns({ status: 'running', limit: 50 })
   const runningRuns = runningQ.data ?? []
+
+  // newest shadow run decides which strategy the account-level curve follows
+  const shadowQ = useRuns({ mode: 'shadow', limit: 1 })
+  const accountStrategy = shadowQ.data?.[0]?.strategy_id ?? null
+  const accountQ = useAccountEquity(accountStrategy)
+  const accountPoints = accountQ.data ?? []
+  // hidden without a shadow run or when the stitched history is empty
+  const showAccountPanel =
+    accountStrategy !== null && (accountQ.isLoading || accountQ.isError || accountPoints.length > 0)
 
   const equityQueries = useQueries({
     queries: runningRuns.map((run) => ({
@@ -115,6 +125,18 @@ export default function Dashboard() {
           <span className="ml-1 text-sm font-normal text-zinc-500">feeds</span>
         </StatCard>
       </div>
+
+      {showAccountPanel && (
+        <Panel title="Account equity">
+          {accountQ.isLoading ? (
+            <Loading />
+          ) : accountQ.isError ? (
+            <ErrorState error={accountQ.error} />
+          ) : (
+            <EquityChart points={accountPoints} />
+          )}
+        </Panel>
+      )}
 
       <Panel
         title="Running equity"
