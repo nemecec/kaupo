@@ -371,7 +371,7 @@ class _FakeKrakenClient:
 def _patch_supervisor(monkeypatch: pytest.MonkeyPatch, started: list[tuple[str, str]]) -> None:
     """Fake run_shadow: records a run row, then runs until stopped or killed."""
 
-    async def fake_run_shadow(request, sm, client, stop):
+    async def fake_run_shadow(request, sm, client, stop, funding_client=None):
         run_id = new_id()
         started.append((request.assignment_id, run_id))
         async with sm_scope(sm) as s:
@@ -399,6 +399,7 @@ def _patch_supervisor(monkeypatch: pytest.MonkeyPatch, started: list[tuple[str, 
 
     monkeypatch.setattr(sup, "run_shadow", fake_run_shadow)
     monkeypatch.setattr(sup, "KrakenClient", _FakeKrakenClient)
+    monkeypatch.setattr(sup, "BinanceClient", _FakeKrakenClient)
 
 
 async def _control_event(command: str, run_id: str | None) -> None:

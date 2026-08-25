@@ -31,10 +31,12 @@ from datetime import datetime
 from decimal import Decimal
 
 from kaupo.core.engine import RunResult, VirtualClock
+from kaupo.core.funding import EmptyFundingProvider, FundingProvider
 from kaupo.core.recorder import RunInfo, RunRecorder
 from kaupo.domain import (
     Candle,
     Fill,
+    FundingRate,
     Order,
     OrderIntent,
     OrderStatus,
@@ -113,6 +115,15 @@ class _PortfolioContext:
             )
         return list(hist)[-n:] if n < len(hist) else list(hist)
 
+    def funding(self, pair: Pair, n: int) -> Sequence[FundingRate]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        if pair not in engine.history:
+            log.warning("Strategy requested funding for pair %s outside the universe", pair)
+            return []
+        return engine._funding.latest(pair.base, n, engine.clock.now())
+
     def positions(self) -> Mapping[Pair, Position]:
         engine = self._engine
         return {pair: pos for pair in engine.config.pairs if (pos := engine.ledger.position(pair)).size != 0}
@@ -134,6 +145,7 @@ class PortfolioEngine:
         recorder: RunRecorder,
         config: PortfolioEngineConfig,
         run_info: RunInfo,
+        funding: FundingProvider | None = None,
     ) -> None:
         self.strategy = strategy
         self.venues = dict(venues)
@@ -146,6 +158,7 @@ class PortfolioEngine:
         self.history: dict[Pair, deque[Candle]] = {
             pair: deque(maxlen=config.lookback) for pair in config.pairs
         }
+        self._funding = funding if funding is not None else EmptyFundingProvider()
         self.last_closes: dict[Pair, float] = {}  # last known close per pair (stale carry)
         self._last_candle: dict[Pair, Candle] = {}
         self._step_candles: dict[Pair, Candle] = {}
@@ -247,6 +260,8 @@ class PortfolioEngine:
             return
 
         # 5-6. strategy + risk-filtered intents
+        for base in sorted({pair.base for pair in self.config.pairs}):
+            await self._funding.update(base, self.clock.now())
         self._append_history(candles)
         self._step_candles = candles
         intents = self.strategy.on_candle(self._ctx)

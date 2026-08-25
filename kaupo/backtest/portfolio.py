@@ -18,12 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.backtest.metrics import compute_metrics
 from kaupo.core.engine import RunResult
+from kaupo.core.funding import StaticFundingProvider
 from kaupo.core.portfolio_engine import PortfolioEngine, PortfolioEngineConfig, joined_steps
 from kaupo.core.recorder import CompositeRecorder, DbRecorder, InMemoryRecorder, RunInfo
 from kaupo.data.candles import get_candles
+from kaupo.data.funding import FUNDING_EXCHANGE, get_funding_rates
 from kaupo.db.models import RunRow
 from kaupo.db.session import sm_scope
-from kaupo.domain import Candle, Pair, RunId, RunMode, Timeframe
+from kaupo.domain import Candle, FundingRate, Pair, RunId, RunMode, Timeframe
 from kaupo.ledger.ledger import Ledger
 from kaupo.risk.manager import RiskConfig, RiskManager
 from kaupo.sdk.protocol import LoadedStrategy, PortfolioStrategyBase
@@ -87,16 +89,23 @@ async def run_portfolio_backtest(
     # runner — this is what keeps backtest context ≡ live context
     prefill_start = request.start - timedelta(seconds=request.timeframe.seconds * request.lookback)
     candles_by_pair: dict[Pair, list[Candle]] = {}
+    funding_by_base: dict[str, list[FundingRate]] = {}
     async with sm_scope(sessionmaker) as session:
         for pair in request.pairs:
             candles_by_pair[pair] = await get_candles(
                 session, pair, request.timeframe, prefill_start, request.end, exchange=request.exchange
             )
+        # funding (Binance perp per base asset) prefilled over the same
+        # window; served point-in-time from memory for determinism
+        for base in sorted({pair.base for pair in request.pairs}):
+            funding_by_base[base] = await get_funding_rates(
+                session, FUNDING_EXCHANGE, base, prefill_start, request.end
+            )
     for pair, candles in candles_by_pair.items():
         if not any(c.ts >= request.start for c in candles):
             raise ValueError(
                 f"No {request.exchange} candles for {pair} {request.timeframe.value} in range; "
-                "run `kaupo ingest` first"
+                "run `kaupo ingest candles` first"
             )
 
     steps = list(joined_steps(candles_by_pair))
@@ -135,6 +144,7 @@ async def run_portfolio_backtest(
             lookback=request.lookback,
             liquidate_end=request.liquidate_end,
         ),
+        funding=StaticFundingProvider(funding_by_base),
         run_info=RunInfo(
             mode=RunMode.BACKTEST,
             strategy_id=request.strategy.id,

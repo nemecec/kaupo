@@ -15,6 +15,8 @@ from kaupo.config import get_settings
 from kaupo.domain import Pair, Timeframe
 
 app = typer.Typer(name="kaupo", help="Kaupo — autonomous algorithmic trading", no_args_is_help=True)
+ingest_app = typer.Typer(help="Download historical market data into Postgres", no_args_is_help=True)
+app.add_typer(ingest_app, name="ingest")
 run_app = typer.Typer(help="Start long-running trading loops", no_args_is_help=True)
 app.add_typer(run_app, name="run")
 console = Console()
@@ -75,8 +77,8 @@ def _ensure_strategies_clean(directory: Path) -> None:
         raise typer.Exit(1)
 
 
-@app.command()
-def ingest(
+@ingest_app.command(name="candles")
+def ingest_candles(
     pair: PairOpt,
     timeframe: TimeframeOpt = "1h",
     days: Annotated[int, typer.Option(min=1)] = 365,
@@ -121,6 +123,52 @@ def ingest(
         if exchange == "kraken":
             warning += " Kraken serves at most the 720 newest candles of a timeframe."
         console.print(warning)
+
+
+@ingest_app.command(name="funding")
+def ingest_funding(
+    pair: PairOpt,
+    days: Annotated[int, typer.Option(min=1)] = 365,
+    start: StartOpt = None,
+    end: EndOpt = None,
+    exchange: ExchangeOpt = "binance",
+    verbose: VerboseOpt = False,
+) -> None:
+    """Download historical funding rates for the pair's base asset into Postgres.
+
+    Funding comes from the Binance USDT-margined perpetual of the base asset
+    (BTC/EUR -> BTC perp). Kraken funding is not supported.
+    """
+    _setup_logging(verbose)
+    from kaupo.data.binance import BinanceClient
+    from kaupo.data.funding import FUNDING_EXCHANGE, get_funding_range
+    from kaupo.data.ingest import backfill_funding
+    from kaupo.db.session import get_sessionmaker
+
+    if exchange != FUNDING_EXCHANGE:
+        raise typer.BadParameter(
+            f"funding history is only served by {FUNDING_EXCHANGE}; "
+            f"--exchange {exchange} is not supported for funding"
+        )
+
+    start_dt, end_dt = _range(days, start, end)
+    p = Pair.parse(pair)
+
+    async def _run() -> tuple[int, datetime | None, datetime | None, int]:
+        sm = get_sessionmaker()
+        async with BinanceClient() as client:
+            total = await backfill_funding(client, sm, p.base, start_dt, end_dt)
+        async with sm() as session:
+            first, last, count = await get_funding_range(session, FUNDING_EXCHANGE, p.base)
+        return total, first, last, count
+
+    total, first, last, count = asyncio.run(_run())
+    console.print(f"[green]Ingested {total} funding rates[/green] for {p.base} from {FUNDING_EXCHANGE}")
+    if first is None or last is None:
+        return
+    console.print(
+        f"Database coverage: {count} funding rates, {first:%Y-%m-%d %H:%M} → {last:%Y-%m-%d %H:%M} UTC"
+    )
 
 
 @app.command()
@@ -273,6 +321,7 @@ def run_shadow_cmd(
     """
     _setup_logging(verbose)
     from kaupo.core.runner import ShadowRequest, run_shadow
+    from kaupo.data.binance import BinanceClient
     from kaupo.data.kraken import KrakenClient
     from kaupo.data.settings import resolve_shadow_config
     from kaupo.db.session import get_sessionmaker, sm_scope
@@ -316,10 +365,11 @@ def run_shadow_cmd(
             starting_cash=cash,
             warmup=warmup,
             poll_interval_seconds=get_settings().poll_interval_seconds,
+            funding_refresh_seconds=get_settings().funding_refresh_seconds,
         )
         console.print(f"Starting shadow run: {resolved.strategy} on {resolved.pair} {resolved.timeframe}")
-        async with KrakenClient() as client:
-            return await run_shadow(request, sessionmaker, client, stop=stop)
+        async with KrakenClient() as client, BinanceClient() as funding_client:
+            return await run_shadow(request, sessionmaker, client, stop=stop, funding_client=funding_client)
 
     result = asyncio.run(_run())
     console.print(
@@ -364,6 +414,7 @@ def run_supervisor_cmd(
             stop,
             reconcile_interval_seconds=reconcile_interval,
             run_poll_interval_seconds=settings.poll_interval_seconds,
+            run_funding_refresh_seconds=settings.funding_refresh_seconds,
         )
 
     asyncio.run(_run())

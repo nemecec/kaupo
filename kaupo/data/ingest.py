@@ -7,8 +7,10 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from kaupo.data.binance import BinanceClient
 from kaupo.data.candles import upsert_candles
 from kaupo.data.ccxt_client import CcxtExchangeClient
+from kaupo.data.funding import upsert_funding_rates
 from kaupo.data.kraken import KrakenClient
 from kaupo.domain import Candle, Pair, Timeframe
 
@@ -42,6 +44,47 @@ async def backfill(
             break
         async with sessionmaker() as session:
             await upsert_candles(session, batch)
+            await session.commit()
+        total += len(batch)
+        if on_progress:
+            on_progress(total)
+
+        prev_last = last_ts
+        since = last_ts + step
+
+    return total
+
+
+async def backfill_funding(
+    client: BinanceClient,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    base_asset: str,
+    start: datetime,
+    end: datetime | None = None,
+    on_progress: Callable[[int], None] | None = None,
+) -> int:
+    """Page through funding history from ``start`` and upsert. Returns rate count.
+
+    Funding times are discrete events (no fixed grid), so paging advances a
+    millisecond past the last seen funding time instead of a fixed step.
+    """
+    end = end or datetime.now(UTC)
+    step = timedelta(milliseconds=1)
+    since = start
+    prev_last: datetime | None = None
+    total = 0
+
+    while since < end:
+        batch = await client.fetch_funding_rates(base_asset, since=since)
+        batch = [r for r in batch if r.ts < end]
+        if not batch:
+            break
+        last_ts = batch[-1].ts
+        if prev_last is not None and last_ts <= prev_last:
+            log.warning("Funding backfill made no progress at %s; stopping", since)
+            break
+        async with sessionmaker() as session:
+            await upsert_funding_rates(session, batch)
             await session.commit()
         total += len(batch)
         if on_progress:

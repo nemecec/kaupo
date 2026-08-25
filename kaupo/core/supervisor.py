@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from kaupo.core.engine import RunResult
 from kaupo.core.runner import ShadowRequest, run_shadow
 from kaupo.data.assignments import Assignment, list_assignments
+from kaupo.data.binance import BinanceClient
 from kaupo.data.kraken import KrakenClient
 from kaupo.db.models import EventRow, RunRow
 from kaupo.db.session import sm_scope
@@ -197,11 +198,12 @@ async def _run_assignment(
     sessionmaker: async_sessionmaker[AsyncSession],
     stop: asyncio.Event,
     poll_interval_seconds: float,
+    funding_refresh_seconds: float,
 ) -> RunResult:
     strategy = strategies[assignment.strategy_id]  # guarded by the supervisor's start check
     # One Kraken client per run: each run gets its own exchange rate-limit
     # bucket. A shared client may be wanted later, when runs multiply.
-    async with KrakenClient() as client:
+    async with KrakenClient() as client, BinanceClient() as funding_client:
         request = ShadowRequest(
             strategy=strategy,
             params=assignment.params,
@@ -210,8 +212,9 @@ async def _run_assignment(
             starting_cash=assignment.starting_cash or DEFAULT_STARTING_CASH,
             poll_interval_seconds=poll_interval_seconds,
             assignment_id=assignment.id,
+            funding_refresh_seconds=funding_refresh_seconds,
         )
-        return await run_shadow(request, sessionmaker, client, stop)
+        return await run_shadow(request, sessionmaker, client, stop, funding_client=funding_client)
 
 
 async def _reap_finished(
@@ -291,6 +294,7 @@ async def run_supervisor(
     reconcile_interval_seconds: float = RECONCILE_INTERVAL_SECONDS,
     restart_backoff: timedelta = RESTART_BACKOFF,
     run_poll_interval_seconds: float = 20.0,
+    run_funding_refresh_seconds: float = 1800.0,
 ) -> None:
     """Reconcile live shadow runs to the enabled assignments until ``stop`` is set."""
     live: dict[str, _LiveRun] = {}
@@ -331,7 +335,12 @@ async def run_supervisor(
                 stop_event = asyncio.Event()
                 task = asyncio.create_task(
                     _run_assignment(
-                        assignment, strategies, sessionmaker, stop_event, run_poll_interval_seconds
+                        assignment,
+                        strategies,
+                        sessionmaker,
+                        stop_event,
+                        run_poll_interval_seconds,
+                        run_funding_refresh_seconds,
                     ),
                     name=f"assignment-{aid}",
                 )

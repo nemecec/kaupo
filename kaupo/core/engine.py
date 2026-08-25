@@ -21,10 +21,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from kaupo.core.funding import EmptyFundingProvider, FundingProvider
 from kaupo.core.recorder import RunInfo, RunRecorder
 from kaupo.domain import (
     Candle,
     Fill,
+    FundingRate,
     Order,
     OrderIntent,
     OrderStatus,
@@ -101,6 +103,12 @@ class _Context:
         hist = engine.history
         return list(hist)[-n:] if n < len(hist) else list(hist)
 
+    def funding(self, n: int) -> Sequence[FundingRate]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        return engine._funding.latest(engine.config.pair.base, n, engine.clock.now())
+
     def position(self) -> Position:
         return self._engine.ledger.position(self._engine.config.pair)
 
@@ -122,6 +130,7 @@ class Engine:
         config: EngineConfig,
         run_info: RunInfo,
         control_probe: Callable[[], Awaitable[str | None]] | None = None,
+        funding: FundingProvider | None = None,
     ) -> None:
         self.strategy = strategy
         self.venue = venue
@@ -133,6 +142,7 @@ class Engine:
         self.clock = VirtualClock(config.timeframe)
         self.history: deque[Candle] = deque(maxlen=config.lookback)
         self._ctx = _Context(self)
+        self._funding = funding if funding is not None else EmptyFundingProvider()
         self._fills = 0
         self._halt_reason = ""
         self._control_probe = control_probe
@@ -246,6 +256,7 @@ class Engine:
                 return
 
         # 5-6. strategy + risk-filtered intents
+        await self._funding.update(self.config.pair.base, self.clock.now())
         self.history.append(candle)
         intents = self.strategy.on_candle(self._ctx)
         for assessment in self.risk.assess(intents, self._risk_state(candle)):

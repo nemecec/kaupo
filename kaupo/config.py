@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # Live ingestion polling
     poll_interval_seconds: float = 20.0
 
+    # Funding-rate refresh in shadow runs (Binance USDT perp; advisory signal)
+    funding_refresh_seconds: float = 1800.0
+
     # Default paper-trading economics
     default_quote_currency: str = "EUR"
     default_starting_cash: float = 10_000.0

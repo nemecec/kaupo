@@ -114,7 +114,9 @@ def test_ingest_command(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ingest_mod, "backfill", fake_backfill)
     _patch_coverage(monkeypatch, datetime(2025, 8, 24, tzinfo=UTC), datetime(2026, 8, 24, tzinfo=UTC), 8760)
 
-    result = runner.invoke(cli.app, ["ingest", "--pair", "BTC/EUR", "--timeframe", "1h", "--days", "7"])
+    result = runner.invoke(
+        cli.app, ["ingest", "candles", "--pair", "BTC/EUR", "--timeframe", "1h", "--days", "7"]
+    )
     assert result.exit_code == 0, result.output
     assert "42 candles" in result.output
     assert "Database coverage: 8760 candles" in result.output
@@ -133,7 +135,9 @@ def test_ingest_warns_on_partial_coverage(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(ingest_mod, "backfill", fake_backfill)
     _patch_coverage(monkeypatch, datetime(2026, 7, 25, tzinfo=UTC), datetime(2026, 8, 24, tzinfo=UTC), 720)
 
-    result = runner.invoke(cli.app, ["ingest", "--pair", "BTC/EUR", "--timeframe", "1h", "--days", "365"])
+    result = runner.invoke(
+        cli.app, ["ingest", "candles", "--pair", "BTC/EUR", "--timeframe", "1h", "--days", "365"]
+    )
     assert result.exit_code == 0, result.output
     assert "Database coverage: 720 candles" in result.output
     assert "720 newest candles" in result.output
@@ -158,7 +162,18 @@ def test_ingest_binance_exchange(monkeypatch: pytest.MonkeyPatch) -> None:
 
     result = runner.invoke(
         cli.app,
-        ["ingest", "--pair", "BTC/EUR", "--timeframe", "1h", "--days", "2400", "--exchange", "binance"],
+        [
+            "ingest",
+            "candles",
+            "--pair",
+            "BTC/EUR",
+            "--timeframe",
+            "1h",
+            "--days",
+            "2400",
+            "--exchange",
+            "binance",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert used["is_binance"] is True
@@ -168,9 +183,69 @@ def test_ingest_binance_exchange(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_ingest_rejects_unknown_exchange() -> None:
-    result = runner.invoke(cli.app, ["ingest", "--pair", "BTC/EUR", "--exchange", "coinbase"])
+    result = runner.invoke(cli.app, ["ingest", "candles", "--pair", "BTC/EUR", "--exchange", "coinbase"])
     assert result.exit_code == 2
     assert "binance, kraken" in result.output
+
+
+def _patch_funding_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+    first: datetime | None,
+    last: datetime | None,
+    count: int,
+    seen: dict[str, Any] | None = None,
+) -> None:
+    """Cut the DB out of the ingest funding coverage report."""
+    import kaupo.data.funding as funding_mod
+    import kaupo.db.session as session_mod
+
+    class FakeSession:
+        async def __aenter__(self) -> "FakeSession":
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            pass
+
+    monkeypatch.setattr(session_mod, "get_sessionmaker", lambda: FakeSession)
+
+    async def fake_range(session: Any, exchange: str, base_asset: str) -> tuple[Any, Any, int]:
+        if seen is not None:
+            seen["exchange"] = exchange
+            seen["base_asset"] = base_asset
+        return first, last, count
+
+    monkeypatch.setattr(funding_mod, "get_funding_range", fake_range)
+
+
+def test_ingest_funding_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kaupo.data.binance as binance_mod
+    import kaupo.data.ingest as ingest_mod
+
+    calls: dict[str, Any] = {}
+
+    async def fake_backfill(client: Any, sm: Any, base_asset: str, start: Any, end: Any) -> int:
+        calls.update(client_is_binance=isinstance(client, _FakeBinanceClient), base_asset=base_asset)
+        return 1095
+
+    monkeypatch.setattr(binance_mod, "BinanceClient", _FakeBinanceClient)
+    monkeypatch.setattr(ingest_mod, "backfill_funding", fake_backfill)
+    seen: dict[str, Any] = {}
+    _patch_funding_coverage(
+        monkeypatch, datetime(2025, 8, 24, tzinfo=UTC), datetime(2026, 8, 24, tzinfo=UTC), 1095, seen
+    )
+
+    result = runner.invoke(cli.app, ["ingest", "funding", "--pair", "BTC/EUR", "--days", "365"])
+    assert result.exit_code == 0, result.output
+    assert "Ingested 1095 funding rates for BTC from binance" in result.output
+    assert "Database coverage: 1095 funding rates" in result.output
+    assert calls == {"client_is_binance": True, "base_asset": "BTC"}  # pair supplies the base asset
+    assert seen == {"exchange": "binance", "base_asset": "BTC"}
+
+
+def test_ingest_funding_rejects_kraken() -> None:
+    result = runner.invoke(cli.app, ["ingest", "funding", "--pair", "BTC/EUR", "--exchange", "kraken"])
+    assert result.exit_code == 2
+    assert "only served by binance" in result.output
 
 
 def test_backtest_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -255,6 +330,7 @@ def test_backtest_unknown_strategy() -> None:
 
 def test_run_shadow_command(monkeypatch: pytest.MonkeyPatch) -> None:
     import kaupo.core.runner as runner_mod
+    import kaupo.data.binance as binance_mod
     import kaupo.data.kraken as kraken_mod
     import kaupo.data.settings as settings_mod
 
@@ -278,11 +354,15 @@ def test_run_shadow_command(monkeypatch: pytest.MonkeyPatch) -> None:
             timeframe=timeframe or "1h",
         )
 
-    async def fake_run_shadow(request: Any, sm: Any, client: Any, stop: Any = None) -> Any:
+    async def fake_run_shadow(
+        request: Any, sm: Any, client: Any, stop: Any = None, funding_client: Any = None
+    ) -> Any:
         assert request.pair == "BTC/EUR" or str(request.pair) == "BTC/EUR"
+        assert isinstance(funding_client, _FakeBinanceClient)
         return FakeResult()
 
     monkeypatch.setattr(kraken_mod, "KrakenClient", FakeClient)
+    monkeypatch.setattr(binance_mod, "BinanceClient", _FakeBinanceClient)
     monkeypatch.setattr(runner_mod, "run_shadow", fake_run_shadow)
     monkeypatch.setattr(settings_mod, "resolve_shadow_config", fake_resolve)
 
@@ -306,6 +386,7 @@ def test_run_shadow_command(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_run_shadow_no_flags_uses_resolved_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     """Flags are optional: with none given, the resolved DB/default config is used."""
     import kaupo.core.runner as runner_mod
+    import kaupo.data.binance as binance_mod
     import kaupo.data.kraken as kraken_mod
     import kaupo.data.settings as settings_mod
 
@@ -328,11 +409,14 @@ def test_run_shadow_no_flags_uses_resolved_defaults(monkeypatch: pytest.MonkeyPa
         captured["resolve_args"] = (strategy, pair, timeframe)
         return settings_mod.ShadowSettings(strategy="regime-switch", pair="BTC/EUR", timeframe="1h")
 
-    async def fake_run_shadow(request: Any, sm: Any, client: Any, stop: Any = None) -> Any:
+    async def fake_run_shadow(
+        request: Any, sm: Any, client: Any, stop: Any = None, funding_client: Any = None
+    ) -> Any:
         captured["strategy_id"] = request.strategy.id
         return FakeResult()
 
     monkeypatch.setattr(kraken_mod, "KrakenClient", FakeClient)
+    monkeypatch.setattr(binance_mod, "BinanceClient", _FakeBinanceClient)
     monkeypatch.setattr(runner_mod, "run_shadow", fake_run_shadow)
     monkeypatch.setattr(settings_mod, "resolve_shadow_config", fake_resolve)
 
@@ -374,6 +458,7 @@ def test_strategies_missing_dir() -> None:
 def test_run_shadow_static_flags_skip_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """--no-config-from-db uses the flags as given and never resolves settings."""
     import kaupo.core.runner as runner_mod
+    import kaupo.data.binance as binance_mod
     import kaupo.data.kraken as kraken_mod
 
     class FakeResult:
@@ -384,13 +469,16 @@ def test_run_shadow_static_flags_skip_settings(monkeypatch: pytest.MonkeyPatch) 
 
     seen: dict[str, Any] = {}
 
-    async def fake_run_shadow(request: Any, sm: Any, client: Any, stop: Any = None) -> Any:
+    async def fake_run_shadow(
+        request: Any, sm: Any, client: Any, stop: Any = None, funding_client: Any = None
+    ) -> Any:
         seen["pair"] = str(request.pair)
         seen["timeframe"] = request.timeframe.value
         seen["strategy"] = request.strategy.id
         return FakeResult()
 
     monkeypatch.setattr(kraken_mod, "KrakenClient", _FakeKrakenClient)
+    monkeypatch.setattr(binance_mod, "BinanceClient", _FakeBinanceClient)
     monkeypatch.setattr(runner_mod, "run_shadow", fake_run_shadow)
 
     result = runner.invoke(

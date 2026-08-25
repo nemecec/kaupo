@@ -26,6 +26,22 @@ class CandleRow(Base):
     volume: Mapped[float]
 
 
+class FundingRateRow(Base):
+    """Perpetual-futures funding rates, keyed by BASE ASSET (e.g. "BTC").
+
+    Funding marks crowded positioning and is used as an advisory filter
+    signal, so one dominant USDT-margined perpetual per venue is enough;
+    per-pair granularity is not needed.
+    """
+
+    __tablename__ = "funding_rates"
+
+    exchange: Mapped[str] = mapped_column(String(20), primary_key=True)
+    base_asset: Mapped[str] = mapped_column(String(20), primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    rate: Mapped[float]
+
+
 class StrategyRow(Base):
     __tablename__ = "strategies"
 

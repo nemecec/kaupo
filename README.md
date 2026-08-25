@@ -41,13 +41,18 @@ Prerequisites: uv, Docker, and Node 22 or later.
    ```
 4. Download historical candles:
    ```bash
-   uv run kaupo ingest --pair BTC/EUR --timeframe 1h --days 365
+   uv run kaupo ingest candles --pair BTC/EUR --timeframe 1h --days 365
    ```
    Kraken serves only the 720 newest candles. For deep history, backfill from Binance (public API, no key) with `--exchange binance`:
    ```bash
-   uv run kaupo ingest --exchange binance --pair BTC/EUR --timeframe 1h --days 2400
+   uv run kaupo ingest candles --exchange binance --pair BTC/EUR --timeframe 1h --days 2400
    ```
-5. Run a backtest with the example strategy:
+5. Download historical funding rates (optional, used as a filter signal):
+   ```bash
+   uv run kaupo ingest funding --pair BTC/EUR --days 365
+   ```
+   Funding rates come from perpetual futures. They mark crowded positioning. Kaupo trades spot only, so funding is an advisory signal, not a traded instrument. The data comes from the Binance USDT-margined perpetual of the pair's base asset (BTC/EUR maps to the BTC perpetual). Kraken funding is not supported.
+6. Run a backtest with the example strategy:
    ```bash
    uv run kaupo backtest --strategy regime-switch --pair BTC/EUR --timeframe 1h --days 365
    ```
@@ -56,11 +61,11 @@ Prerequisites: uv, Docker, and Node 22 or later.
    ```bash
    uv run kaupo backtest --strategy momentum-rotation --pairs BTC/EUR,SOL/EUR,ADA/EUR --timeframe 1h --days 365
    ```
-6. Start shadow trading with virtual money:
+7. Start shadow trading with virtual money:
    ```bash
    uv run kaupo run shadow --strategy regime-switch --pair BTC/EUR --timeframe 1h
    ```
-7. Start the API and the UI:
+8. Start the API and the UI:
    ```bash
    uv run uvicorn kaupo.api.app:app --reload
    cd ui && npm install && npm run dev
@@ -108,6 +113,8 @@ A strategy is a Python class with an `id`, a pydantic `params_schema`, and an `o
 
 - `StrategyBase` — one pair per run. It runs in backtest, shadow, and live modes.
 - `PortfolioStrategyBase` — a universe of pairs in one backtest run. Its context gives the candles closed at each step, per-pair history, all open positions, cash, and equity. Each order intent names its pair. Intents for pairs outside the universe are rejected.
+
+The context also gives funding rates: `ctx.funding(n)` on a single pair, `ctx.funding(pair, n)` on a portfolio. Each call returns the newest `n` funding points for the pair's base asset, oldest first. Only points with a funding time at or before `clock.now()` are returned. This holds in backtests and in live runs. The series is empty when no funding data was ingested. Funding is an advisory filter signal from Binance USDT perpetuals, keyed by base asset. One series per base asset, not per pair. Shadow runs refresh recent funding in the background every `KAUPO_FUNDING_REFRESH_SECONDS` (default 1800). A refresh failure does not stop the run.
 
 `kaupo/sdk/portfolio.py` has a rebalance helper. Give it target weights (fractions of equity, sum at most 1) and the context. It returns a plan with `sells` and `buys`. Buys use only the free cash at plan time, never the proceeds of same-plan sells. Emit the sells on one step and the buys on the next step. `examples/strategies/momentum_rotation.py` shows this pattern.
 

@@ -89,6 +89,21 @@ class Candle:
     exchange: str = "kraken"  # source venue; part of the storage key
 
 
+@dataclass(frozen=True)
+class FundingRate:
+    """Perpetual-futures funding rate for a base asset (e.g. "BTC").
+
+    Kaupo trades spot only; funding is an advisory filter signal (crowded
+    positioning), never a traded instrument. Keyed by base asset: one
+    dominant USDT perpetual per venue is enough for a filter.
+    """
+
+    exchange: str
+    base_asset: str
+    ts: datetime  # funding time, UTC
+    rate: float  # per funding interval, as a fraction (0.0001 = 1 bps)
+
+
 class Side(enum.Enum):
     BUY = "buy"
     SELL = "sell"

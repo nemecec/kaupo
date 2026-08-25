@@ -16,8 +16,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.core.engine import Engine, EngineConfig, RunResult
+from kaupo.core.funding import DbFundingProvider, EmptyFundingProvider, FundingProvider
 from kaupo.core.recorder import DbRecorder, RunInfo
+from kaupo.data.binance import BinanceClient
 from kaupo.data.candles import get_latest_candles, upsert_candles
+from kaupo.data.funding import upsert_funding_rates
 from kaupo.data.ingest import LiveCandlePoller, backfill
 from kaupo.data.kraken import KrakenClient
 from kaupo.db.models import EventRow
@@ -49,6 +52,36 @@ class ShadowRequest:
     poll_interval_seconds: float = 20.0
     # supervisor-managed runs carry their desired-state row id
     assignment_id: str | None = None
+    # seconds between funding-rate refreshes (Binance perp of the base asset)
+    funding_refresh_seconds: float = 1800.0
+
+
+# funding refresh covers the recent past; older history comes from
+# `kaupo ingest funding`
+FUNDING_REFRESH_WINDOW = timedelta(days=7)
+
+
+async def _funding_refresh_loop(
+    funding_client: BinanceClient,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    base_asset: str,
+    interval_seconds: float,
+    stop: asyncio.Event,
+) -> None:
+    """Keep recent funding for ``base_asset`` fresh until ``stop`` is set.
+
+    Funding is advisory: a failed refresh is logged and retried on the next
+    interval, never fatal to the run.
+    """
+    while not stop.is_set():
+        try:
+            since = datetime.now(UTC) - FUNDING_REFRESH_WINDOW
+            rates = await funding_client.fetch_funding_rates(base_asset, since=since)
+            async with sm_scope(sessionmaker) as session:
+                await upsert_funding_rates(session, rates)
+        except Exception:
+            log.warning("Funding refresh failed; retrying in %ss", interval_seconds, exc_info=True)
+        await asyncio.sleep(interval_seconds)
 
 
 async def _chain_persist(
@@ -123,6 +156,7 @@ async def run_shadow(
     sessionmaker: async_sessionmaker[AsyncSession],
     client: KrakenClient,
     stop: asyncio.Event | None = None,
+    funding_client: BinanceClient | None = None,
 ) -> RunResult:
     stop = stop or asyncio.Event()
     warmup = request.warmup if request.warmup is not None else request.lookback
@@ -145,7 +179,7 @@ async def run_shadow(
             )
     if len(warmup_candles) < warmup // 2:
         log.warning(
-            "Only %d of %d warm-up candles for %s %s — run `kaupo ingest` for full context",
+            "Only %d of %d warm-up candles for %s %s — run `kaupo ingest candles` for full context",
             len(warmup_candles),
             warmup,
             request.pair,
@@ -175,6 +209,11 @@ async def run_shadow(
         raise ValueError(
             f"Strategy {request.strategy.id!r} is a portfolio strategy; shadow runs are single-pair only"
         )
+    # without a funding client the run serves an empty series (funding stays
+    # advisory; the strategy must tolerate no data)
+    funding: FundingProvider = EmptyFundingProvider()
+    if funding_client is not None:
+        funding = DbFundingProvider(sessionmaker)
     engine = Engine(
         strategy=strategy,
         venue=PaperVenue(request.taker_fee_bps, request.maker_fee_bps, request.slippage_bps),
@@ -201,6 +240,7 @@ async def run_shadow(
             config=config,
         ),
         control_probe=DbControlProbe(sessionmaker, recorder.run_id),
+        funding=funding,
     )
 
     poller = LiveCandlePoller(
@@ -219,7 +259,23 @@ async def run_shadow(
         len(warmup_candles),
     )
     stream = _chain_persist(warmup_candles, poller, sessionmaker, stop)
-    result = await engine.run(stream, stop=stop, warmup=len(warmup_candles))
+    refresh_task: asyncio.Task[None] | None = None
+    if funding_client is not None:
+        refresh_task = asyncio.create_task(
+            _funding_refresh_loop(
+                funding_client,
+                sessionmaker,
+                request.pair.base,
+                request.funding_refresh_seconds,
+                stop,
+            )
+        )
+    try:
+        result = await engine.run(stream, stop=stop, warmup=len(warmup_candles))
+    finally:
+        if refresh_task is not None:
+            refresh_task.cancel()
+            await asyncio.gather(refresh_task, return_exceptions=True)
     if result.halt_reason:
         from kaupo.core.notify import record_halt
 

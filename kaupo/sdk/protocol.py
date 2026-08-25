@@ -24,7 +24,7 @@ from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel
 
-from kaupo.domain import Candle, OrderIntent, Pair, Position
+from kaupo.domain import Candle, FundingRate, OrderIntent, Pair, Position
 
 
 class EmptyParams(BaseModel):
@@ -52,6 +52,16 @@ class StrategyContext(Protocol):
         """Last ``n`` closed candles including the current one, oldest first.
 
         Returns fewer than ``n`` at the start of a run.
+        """
+        ...
+
+    def funding(self, n: int) -> Sequence[FundingRate]:
+        """Latest ``n`` funding points for the run pair's base asset, oldest first.
+
+        Point-in-time like ``history``: only funding with funding time at or
+        before ``clock.now()`` is ever returned, in backtests and live alike.
+        Empty when no funding was ingested for the base asset (funding is an
+        advisory signal sourced from Binance USDT perpetuals).
         """
         ...
 
@@ -108,6 +118,15 @@ class PortfolioContext(Protocol):
 
         Returns fewer than ``n`` at the start of a run. A pair's history
         advances only on steps where that pair has a candle.
+        """
+        ...
+
+    def funding(self, pair: Pair, n: int) -> Sequence[FundingRate]:
+        """Latest ``n`` funding points for ``pair``'s base asset, oldest first.
+
+        Point-in-time like ``history``: only funding with funding time at or
+        before ``clock.now()`` is ever returned. Empty when no funding was
+        ingested for the base asset (advisory signal, Binance USDT perpetuals).
         """
         ...
 
