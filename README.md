@@ -82,9 +82,9 @@ KAUPO_STRATEGIES_DIR=../kaupo-strategies/strategies docker compose --profile tra
 
 The shadow strategy comes from `KAUPO_SHADOW_STRATEGY` (default `regime-switch`). Set it to a strategy id from your private repository.
 
-### Switching the shadow strategy at runtime
+### Changing what runs
 
-`GET /api/v1/settings` shows the effective shadow configuration. `PUT /api/v1/settings` changes it. The current shadow run stops through the control channel, and the restarted container reads the new values from the database. No redeploy is necessary. The `KAUPO_SHADOW_STRATEGY` variable only seeds a fresh database; it does not overwrite an API change.
+The `run_assignments` table declares the desired shadow runs. `GET /api/v1/assignments` lists the rows with their live run ids. `POST`, `PUT`, and `DELETE /api/v1/assignments/{id}` manage them with the admin token. The supervisor (`kaupo run supervisor`, the `supervisor` service in the production stack) reconciles the actual runs to the enabled rows: it starts missing runs, stops disabled or changed ones, and restarts crashed ones. `PUT /api/v1/settings` still switches the main run: it updates the `primary` assignment row. For a manual side run outside the portfolio, use `kaupo run shadow --no-config-from-db` with explicit flags.
 
 To stop the stack:
 

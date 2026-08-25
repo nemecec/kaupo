@@ -48,25 +48,11 @@ services:
       retries: 5
     restart: unless-stopped
 
-  shadow:
+  # Desired-state supervisor: reconciles shadow runs to the run_assignments
+  # table (managed through /api/v1/assignments). The migration seeds the rows.
+  supervisor:
     image: ${REGISTRY:-ghcr.io/nemecec}/kaupo:${KAUPO_TAG:-latest}
-    command: kaupo run shadow --strategy ${KAUPO_SHADOW_STRATEGY:-regime-switch} --pair ${KAUPO_SHADOW_PAIR:-BTC/EUR} --timeframe ${KAUPO_SHADOW_TIMEFRAME:-1h}
-    profiles: ["trading"]
-    environment:
-      KAUPO_DATABASE_URL: postgresql+asyncpg://kaupo:${POSTGRES_PASSWORD:?}@db:5432/kaupo
-      KAUPO_STRATEGIES_DIR: /strategies
-    volumes:
-      - ${KAUPO_STRATEGIES_HOST_DIR:-/opt/kaupo/examples/strategies}:/strategies:ro
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
-
-  # Static side run: fixed flags (--no-config-from-db), not affected by settings
-  # switches. Tune via KAUPO_SOL_* in /etc/kaupo/kaupo.env on the host.
-  shadow-sol:
-    image: ${REGISTRY:-ghcr.io/nemecec}/kaupo:${KAUPO_TAG:-latest}
-    command: kaupo run shadow --no-config-from-db --strategy ${KAUPO_SOL_STRATEGY:-sma-cross} --pair ${KAUPO_SOL_PAIR:-SOL/EUR} --timeframe ${KAUPO_SOL_TIMEFRAME:-4h}
+    command: kaupo run supervisor
     profiles: ["trading"]
     environment:
       KAUPO_DATABASE_URL: postgresql+asyncpg://kaupo:${POSTGRES_PASSWORD:?}@db:5432/kaupo

@@ -428,3 +428,30 @@ def test_run_shadow_static_flags_require_all_three() -> None:
     )
     assert result.exit_code == 1
     assert "no-config-from-db" in result.output
+
+
+def test_run_supervisor_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The supervisor starts and stops cleanly with the loop faked out."""
+    import kaupo.core.supervisor as supervisor_mod
+
+    captured: dict[str, Any] = {}
+
+    async def fake_run_supervisor(sm: Any, strategies: Any, stop: Any, **kwargs: Any) -> None:
+        captured["strategies"] = sorted(strategies)
+        captured["kwargs"] = kwargs
+        assert stop is not None
+
+    monkeypatch.setattr(supervisor_mod, "run_supervisor", fake_run_supervisor)
+
+    result = runner.invoke(cli.app, ["run", "supervisor", "--strategies-dir", str(EXAMPLES_DIR)])
+    assert result.exit_code == 0, result.output
+    assert "Supervisor stopped" in result.output
+    assert captured["strategies"] == ["regime-switch"]
+    assert captured["kwargs"]["reconcile_interval_seconds"] == 15.0
+
+
+def test_run_supervisor_lint_enforced(tmp_path: Path) -> None:
+    (tmp_path / "bad.py").write_text("from time import time\nx = time()\n")
+    result = runner.invoke(cli.app, ["run", "supervisor", "--strategies-dir", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "wall-clock" in result.output

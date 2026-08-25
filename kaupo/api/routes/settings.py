@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from kaupo.api.deps import Principal, get_principal, require_admin
 from kaupo.api.schemas import SettingsIn, SettingsOut
 from kaupo.config import Settings, get_settings
+from kaupo.data import assignments as assignments_repo
 from kaupo.data import settings as settings_repo
 from kaupo.db.models import EventRow, RunRow, SettingRow
 from kaupo.db.session import get_session
@@ -104,6 +105,39 @@ async def _notify_shadow_runs(
         )
 
 
+async def _sync_primary_assignment(session: AsyncSession) -> None:
+    """Upsert the 'primary' run assignment from the effective settings.
+
+    Facade for the agent prompt that only knows PUT /settings: the desired-
+    state portfolio stays the source of truth, and the supervisor restarts
+    the run from the updated row. Uses the effective values (stored keys
+    over the built-in defaults), so all three fields are always written.
+    """
+    stored = await settings_repo.get_settings(session)
+    effective = {key: str(stored.get(key, default)) for key, default in settings_repo.SHADOW_DEFAULTS.items()}
+    strategy_id = effective[settings_repo.SHADOW_STRATEGY_KEY]
+    pair = effective[settings_repo.SHADOW_PAIR_KEY]
+    timeframe = effective[settings_repo.SHADOW_TIMEFRAME_KEY]
+    primary = await assignments_repo.get_assignment(session, assignments_repo.PRIMARY_ASSIGNMENT_ID)
+    if primary is None:
+        await assignments_repo.create_assignment(
+            session,
+            id=assignments_repo.PRIMARY_ASSIGNMENT_ID,
+            strategy_id=strategy_id,
+            pair=pair,
+            timeframe=timeframe,
+            mode=RunMode.SHADOW.value,
+        )
+    else:
+        await assignments_repo.update_assignment(
+            session,
+            assignments_repo.PRIMARY_ASSIGNMENT_ID,
+            strategy_id=strategy_id,
+            pair=pair,
+            timeframe=timeframe,
+        )
+
+
 @router.get("")
 async def read_settings(
     _: Annotated[Principal, Depends(get_principal)],
@@ -128,6 +162,7 @@ async def update_settings(
     if changed:
         await settings_repo.upsert_settings(session, changed)
         await _notify_shadow_runs(session, changed, current)
+        await _sync_primary_assignment(session)
         from kaupo.core.notify import send_alert
 
         await send_alert(f"Shadow strategy switch requested: {changed}")

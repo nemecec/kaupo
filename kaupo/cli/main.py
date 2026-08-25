@@ -290,3 +290,44 @@ def run_shadow_cmd(
         f"fills {result.num_fills}, final equity {float(result.final_equity):.2f}"
         + (f", reason: {result.halt_reason}" if result.halt_reason else "")
     )
+
+
+@run_app.command(name="supervisor")
+def run_supervisor_cmd(
+    strategies_dir: StrategiesDirOpt = None,
+    reconcile_interval: Annotated[float, typer.Option(help="seconds between reconcile passes", min=1)] = 15.0,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Reconcile shadow runs to the run_assignments table. Ctrl-C to stop.
+
+    Enabled rows are the desired state: the supervisor starts missing runs,
+    stops disabled or changed ones, and restarts crashes with a backoff.
+    Manage the rows through /api/v1/assignments.
+    """
+    _setup_logging(verbose)
+    from kaupo.core.supervisor import run_supervisor
+    from kaupo.db.session import get_sessionmaker
+    from kaupo.sdk.loader import load_strategies
+
+    settings = get_settings()
+    directory = strategies_dir or settings.strategies_dir
+    _ensure_strategies_clean(directory)
+    strategies = load_strategies(directory)
+
+    async def _run() -> None:
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        import signal
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
+        await run_supervisor(
+            get_sessionmaker(),
+            strategies,
+            stop,
+            reconcile_interval_seconds=reconcile_interval,
+            run_poll_interval_seconds=settings.poll_interval_seconds,
+        )
+
+    asyncio.run(_run())
+    console.print("[bold]Supervisor stopped[/bold]")

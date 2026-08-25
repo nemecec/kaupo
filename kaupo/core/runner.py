@@ -47,6 +47,8 @@ class ShadowRequest:
     # and backtest (prefill = lookback) see identical context (parity)
     warmup: int | None = None
     poll_interval_seconds: float = 20.0
+    # supervisor-managed runs carry their desired-state row id
+    assignment_id: str | None = None
 
 
 async def _chain_persist(
@@ -151,6 +153,23 @@ async def run_shadow(
         )
 
     recorder = DbRecorder(sessionmaker)
+    config: dict[str, Any] = {
+        "pair": str(request.pair),
+        "timeframe": request.timeframe.value,
+        "params": request.params,
+        "starting_cash": request.starting_cash,
+        "fees": {
+            "taker_bps": request.taker_fee_bps,
+            "maker_bps": request.maker_fee_bps,
+            "slippage_bps": request.slippage_bps,
+        },
+        "risk": asdict(request.risk),
+        "lookback": request.lookback,
+        "warmup": warmup,
+    }
+    if request.assignment_id is not None:
+        # lets the supervisor and the API find the run's desired-state row
+        config["assignment_id"] = request.assignment_id
     engine = Engine(
         strategy=request.strategy.create(request.params),
         venue=PaperVenue(request.taker_fee_bps, request.maker_fee_bps, request.slippage_bps),
@@ -174,20 +193,7 @@ async def run_shadow(
             strategy_id=request.strategy.id,
             strategy_version=request.strategy.version,
             strategy_source_hash=request.strategy.source_hash,
-            config={
-                "pair": str(request.pair),
-                "timeframe": request.timeframe.value,
-                "params": request.params,
-                "starting_cash": request.starting_cash,
-                "fees": {
-                    "taker_bps": request.taker_fee_bps,
-                    "maker_bps": request.maker_fee_bps,
-                    "slippage_bps": request.slippage_bps,
-                },
-                "risk": asdict(request.risk),
-                "lookback": request.lookback,
-                "warmup": warmup,
-            },
+            config=config,
         ),
         control_probe=DbControlProbe(sessionmaker, recorder.run_id),
     )

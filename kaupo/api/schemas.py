@@ -137,3 +137,37 @@ class EventOut(BaseModel):
     source: str
     message: str
     data: dict[str, Any] | None
+
+
+class AssignmentIn(BaseModel):
+    id: str | None = Field(default=None, min_length=1, max_length=100)  # generated when absent
+    strategy_id: str
+    pair: str
+    timeframe: str
+    mode: str = "shadow"
+    params: dict[str, Any] = {}
+    enabled: bool = True
+    starting_cash: float | None = Field(default=None, gt=0)
+
+
+class AssignmentUpdate(BaseModel):
+    strategy_id: str | None = None
+    pair: str | None = None
+    timeframe: str | None = None
+    params: dict[str, Any] | None = None
+    enabled: bool | None = None
+    starting_cash: float | None = Field(default=None, gt=0)  # null = leave unchanged
+
+
+class AssignmentOut(BaseModel):
+    id: str
+    strategy_id: str
+    pair: str
+    timeframe: str
+    mode: str
+    params: dict[str, Any]
+    enabled: bool
+    starting_cash: float | None
+    created_at: datetime
+    updated_at: datetime
+    run_id: str | None  # the matching live run; null when not running

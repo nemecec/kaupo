@@ -152,9 +152,9 @@ COMPOSE="docker compose --env-file /etc/kaupo/kaupo.env -f /opt/kaupo/deploy/com
 ```
 
 - Deploy: automatic after a green CI run on `main`. Manual: `gh workflow run deploy.yml`.
-- Shadow strategy: change it through `PUT /api/v1/settings` with the admin token (keys `shadow_strategy`, `shadow_pair`, `shadow_timeframe`). The switch applies at once: the run stops through the control channel and the restarted container reads the new values. The GitHub variables `KAUPO_SHADOW_STRATEGY`, `KAUPO_SHADOW_PAIR`, and `KAUPO_SHADOW_TIMEFRAME` only seed a fresh database. They never overwrite an API change. The `shadow-sol` service runs a static side run (`--no-config-from-db`, defaults `sma-cross` on SOL/EUR 4h) that settings switches do not touch; tune it with `KAUPO_SOL_*` in the host env file.
-- Update strategies: push to the `kaupo-strategies` main branch. The next deploy pulls them and restarts the shadow container only when strategy code changed. Memory and docs commits trigger nothing. To apply changes now, run `/opt/kaupo/deploy/host-deploy.sh` on the host.
-- Logs: `$COMPOSE logs -f shadow` on the host. Replace `shadow` with `api` or `db`.
+- Run assignments: the `run_assignments` table is the desired set of shadow runs. The `supervisor` service starts, stops, and restarts runs to match the enabled rows. Manage the rows through the API with the admin token: `GET` and `POST /api/v1/assignments`, `PUT` and `DELETE /api/v1/assignments/{id}` (DELETE disables the row). The migration seeds the two runs the old stack ran: `primary` (strategy, pair, and timeframe from the settings table) and `sol-4h` (`sma-cross` on SOL/EUR 4h). `PUT /api/v1/settings` still works and updates the `primary` row. A run stopped with the kill switch stays down until a `resume` control command or an assignment update.
+- Update strategies: push to the `kaupo-strategies` main branch. The next deploy pulls them and restarts the supervisor container only when strategy code changed. Memory and docs commits trigger nothing. To apply changes now, run `/opt/kaupo/deploy/host-deploy.sh` on the host.
+- Logs: `$COMPOSE logs -f supervisor` on the host. Replace `supervisor` with `api` or `db`.
 - Backup log: `/var/log/kaupo-backup.log` on the host.
 - Alerts (ntfy): the topic name is in `/etc/kaupo/kaupo.env` on the host. Subscribe to it in the ntfy app. A daily summary posts at 06:47 UTC. Halts, kill-switch use, strategy switches, and agent events post immediately.
 - Reboots: `kaupo.service` starts the stack on boot.
@@ -176,7 +176,7 @@ COMPOSE="docker compose --env-file /etc/kaupo/kaupo.env -f /opt/kaupo/deploy/com
 3. On the host, stop the writers and load the dump into a fresh database:
 
    ```bash
-   $COMPOSE stop api shadow
+   $COMPOSE stop api supervisor
    $COMPOSE exec db psql -U kaupo -d postgres -c 'DROP DATABASE kaupo;'
    $COMPOSE exec db psql -U kaupo -d postgres -c 'CREATE DATABASE kaupo;'
    $COMPOSE exec -T db psql -U kaupo -d kaupo < /tmp/restore.sql
@@ -185,4 +185,4 @@ COMPOSE="docker compose --env-file /etc/kaupo/kaupo.env -f /opt/kaupo/deploy/com
 
 ## Moving to ECS later
 
-Every service is already a container, and the images already live in a registry. The migration is: push the images to ECR, restore the latest dump into RDS, and write ECS task definitions for `api`, `shadow`, `migrate`, and the UI. The Caddy and host-specific parts do not transfer.
+Every service is already a container, and the images already live in a registry. The migration is: push the images to ECR, restore the latest dump into RDS, and write ECS task definitions for `api`, `supervisor`, `migrate`, and the UI. The Caddy and host-specific parts do not transfer.

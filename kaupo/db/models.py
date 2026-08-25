@@ -129,6 +129,21 @@ class SettingRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class RunAssignmentRow(Base):
+    __tablename__ = "run_assignments"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    strategy_id: Mapped[str] = mapped_column(Text)
+    pair: Mapped[str] = mapped_column(Text)
+    timeframe: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str] = mapped_column(Text)
+    params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    starting_cash: Mapped[float | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class EventRow(Base):
     __tablename__ = "events"
 
