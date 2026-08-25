@@ -336,6 +336,7 @@ class OrderIntent:  # what the strategy wants; risk manager decides what it gets
 <p>Kraken venue hardening, reconciliation, promotion gates, position recovery on restart, and a small amount of starting capital.</p>
 <h3>Phase 4+</h3>
 <p>Sentiment module, multi-exchange support, parameter optimization, and portfolio-level risk.</p>
+<p>Strategy isolation (considered, deferred): run the engine and the strategy as separate containers. The engine owns candles, the ledger, and run state. The strategy becomes a stateless decision service. This gives process-level isolation for agent-written code and strategy switches that keep open positions. The cost is a serialization boundary and a second execution path to keep in parity with backtests. Triggers for building it: parallel strategies, live money, or position-preserving switches.</p>
 <h3>Known gaps (tracked)</h3>
 <ul>
   <li><strong>Position recovery on restart</strong>: a restarted run starts with a fresh ledger. A position that was open at shutdown is forgotten. This is acceptable for backtests but wrong for long-running daemons. The Phase 3 fix rebuilds the ledger from the entries of the previous run.</li>

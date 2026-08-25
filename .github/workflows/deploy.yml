@@ -19,9 +19,30 @@ env:
   TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
+  changes:
+    # Deploy-relevant files only: docs and Markdown changes must not churn the
+    # shadow run. Applies to CI-triggered runs only; dispatches always deploy.
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.check.outputs.code }}
+    steps:
+      - name: Check for deploy-relevant file changes
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          files=$(gh api "repos/${{ github.repository }}/commits/$TAG" --jq '.files[].filename')
+          echo "changed files:"; echo "$files"
+          if grep -Ev '^(docs/|LICENSE$)|\.md$' <<< "$files" | grep -q .; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy:
-    # Skips until HETZNER_HOST is set. See deploy/README.md for the setup steps.
-    if: ${{ (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') && vars.HETZNER_HOST != '' }}
+    needs: changes
+    # Skips until HETZNER_HOST is set. CI-triggered runs also skip docs-only pushes.
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && needs.changes.outputs.code == 'true')) && vars.HETZNER_HOST != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
