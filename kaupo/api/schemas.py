@@ -34,6 +34,18 @@ class EquityPoint(BaseModel):
     unrealized_pnl: float
 
 
+class BenchmarkPoint(BaseModel):
+    ts: datetime
+    value: float
+
+
+class RunEquityOut(BaseModel):
+    """Per-run equity curve plus its buy-and-hold benchmark (same timestamps)."""
+
+    points: list[EquityPoint]
+    benchmark: list[BenchmarkPoint]  # empty when no candles cover the run window
+
+
 class OrderOut(BaseModel):
     id: str
     ts: datetime
@@ -151,27 +163,46 @@ class EventOut(BaseModel):
 class AssignmentIn(BaseModel):
     id: str | None = Field(default=None, min_length=1, max_length=100)  # generated when absent
     strategy_id: str
-    pair: str
+    pair: str | None = None  # single-pair run
+    pairs: list[str] | None = None  # portfolio run (>=2 pairs, one shared quote)
     timeframe: str
     mode: str = "shadow"
     params: dict[str, Any] = {}
     enabled: bool = True
     starting_cash: float | None = Field(default=None, gt=0)
 
+    @model_validator(mode="after")
+    def _check(self) -> AssignmentIn:
+        if (self.pair is None) == (self.pairs is None):
+            raise ValueError("pass exactly one of pair or pairs")
+        if self.pairs is not None and len(self.pairs) < 2:
+            raise ValueError("pairs needs at least 2 entries; use pair for one pair")
+        return self
+
 
 class AssignmentUpdate(BaseModel):
     strategy_id: str | None = None
     pair: str | None = None
+    pairs: list[str] | None = None  # setting pairs rewrites pair to the joined universe
     timeframe: str | None = None
     params: dict[str, Any] | None = None
     enabled: bool | None = None
     starting_cash: float | None = Field(default=None, gt=0)  # null = leave unchanged
+
+    @model_validator(mode="after")
+    def _check(self) -> AssignmentUpdate:
+        if self.pair is not None and self.pairs is not None:
+            raise ValueError("pass at most one of pair or pairs")
+        if self.pairs is not None and len(self.pairs) < 2:
+            raise ValueError("pairs needs at least 2 entries; use pair for one pair")
+        return self
 
 
 class AssignmentOut(BaseModel):
     id: str
     strategy_id: str
     pair: str
+    pairs: list[str] | None
     timeframe: str
     mode: str
     params: dict[str, Any]

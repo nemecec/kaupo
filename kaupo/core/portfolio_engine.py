@@ -1,8 +1,8 @@
-"""The portfolio engine: one backtest loop over a multi-pair universe.
+"""The portfolio engine: one loop over a multi-pair universe.
 
-Backtest-only sibling of the proven single-pair :class:`Engine`; live and
-shadow runs keep that loop. Same components (ledger, paper venue, risk
-manager, recorders, virtual clock), same per-step order of operations:
+Sibling of the proven single-pair :class:`Engine` with the same components
+(ledger, paper venue, risk manager, recorders, virtual clock) and the same
+per-step order of operations:
 
 1. each pair's venue executes its pending orders against the pair's candle
 2. fills are applied to the ledger and recorded
@@ -17,7 +17,9 @@ Determinism: steps iterate the sorted union of candle timestamps; within a
 step pairs are processed in sorted pair-string order (venue stepping, fill
 application, recording). One venue instance per pair keeps the single-pair
 execution semantics exact: a pair's orders only ever fill on that pair's
-candles.
+candles. Backtests feed the steps from a timestamp join of stored candles;
+shadow runs feed the same joined steps from live pollers, so strategy step
+semantics are identical across modes.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from collections.abc import AsyncIterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterable, Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -145,6 +147,7 @@ class PortfolioEngine:
         recorder: RunRecorder,
         config: PortfolioEngineConfig,
         run_info: RunInfo,
+        control_probe: Callable[[], Awaitable[str | None]] | None = None,
         funding: FundingProvider | None = None,
     ) -> None:
         self.strategy = strategy
@@ -165,6 +168,9 @@ class PortfolioEngine:
         self._ctx = _PortfolioContext(self)
         self._fills = 0
         self._halt_reason = ""
+        self._control_probe = control_probe
+        self._killed = False
+        self._kill_reason = ""
         self._last_snapshot_ts: datetime | None = None
         self._warned_history_cap: set[Pair] = set()
         missing = set(config.pairs) - set(self.venues)
@@ -172,7 +178,10 @@ class PortfolioEngine:
             raise ValueError(f"No venue for universe pairs: {sorted(str(p) for p in missing)}")
 
     async def run(
-        self, steps: AsyncIterable[tuple[datetime, dict[Pair, Candle]]], warmup: int = 0
+        self,
+        steps: AsyncIterable[tuple[datetime, dict[Pair, Candle]]],
+        stop: asyncio.Event | None = None,
+        warmup: int = 0,
     ) -> RunResult:
         """Run the loop. The first ``warmup`` steps only populate history and
         last-known prices — no orders, no snapshots."""
@@ -182,6 +191,10 @@ class PortfolioEngine:
         seen = 0
         try:
             async for ts, candles in steps:
+                if stop is not None and stop.is_set():
+                    status = RunStatus.HALTED
+                    self._halt_reason = "stopped externally"
+                    break
                 last_step = candles
                 if seen % 100 == 0:
                     await asyncio.sleep(0)  # keep the event loop responsive
@@ -191,6 +204,11 @@ class PortfolioEngine:
                 else:
                     await self._process_step(ts, candles)
                 seen += 1
+                if self._killed:
+                    status = RunStatus.HALTED
+                    self._halt_reason = self._kill_reason
+                    log.warning("Run halted via control: %s", self._kill_reason)
+                    break
                 if self.risk.halted:
                     status = RunStatus.HALTED
                     self._halt_reason = self.risk.halt_reason
@@ -258,6 +276,22 @@ class PortfolioEngine:
         # 4. risk time-based checks on the portfolio state
         if not self.risk.on_candle(self._risk_state()):
             return
+
+        # external control: kill/switch halt, pause skips strategy actions
+        if self._control_probe is not None:
+            command = await self._control_probe()
+            if command in ("kill", "switch"):
+                # a switch is a graceful kill: the supervisor brings the run
+                # back up on the new assignment row
+                self._killed = True
+                self._kill_reason = (
+                    "strategy switch requested" if command == "switch" else "killed via control API"
+                )
+                return
+            if command == "pause":
+                log.info("Run paused; skipping strategy for %s", ts)
+                self._append_history(candles)
+                return
 
         # 5-6. strategy + risk-filtered intents
         for base in sorted({pair.base for pair in self.config.pairs}):

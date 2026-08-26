@@ -96,6 +96,24 @@ The shadow strategy comes from `KAUPO_SHADOW_STRATEGY` (default `regime-switch`)
 
 The `run_assignments` table declares the desired shadow runs. `GET /api/v1/assignments` lists the rows with their live run ids. `POST`, `PUT`, and `DELETE /api/v1/assignments/{id}` manage them with the admin token. The supervisor (`kaupo run supervisor`, the `supervisor` service in the production stack) reconciles the actual runs to the enabled rows: it starts missing runs, stops disabled or changed ones, and restarts crashed ones. `PUT /api/v1/settings` still switches the main run: it updates the `primary` assignment row. For a manual side run outside the portfolio, use `kaupo run shadow --no-config-from-db` with explicit flags.
 
+### Portfolio shadow runs
+
+An assignment row with a `pairs` list instead of a `pair` declares a portfolio run. The universe follows the portfolio backtest rules: at least two pairs, no duplicates, one shared quote currency, canonical sorted order. The `pair` column stores the comma-joined universe. The strategy must derive from `PortfolioStrategyBase`. The API enforces all of this (`422` on a violation).
+
+```bash
+curl -X POST http://localhost:8100/api/v1/assignments \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"strategy_id": "momentum-rotation", "pairs": ["BTC/EUR", "SOL/EUR", "ADA/EUR"], "timeframe": "1h"}'
+```
+
+The supervisor runs the row as one shadow run over the whole universe. One poller per pair fetches the new candles. A joiner merges them into one step per timestamp, the same step sequence the portfolio backtest produces over the same candles. A pair that misses a tick skips it. The engine uses its last known close. Control commands (kill, pause, resume, switch), crash backoff, and orphan cleanup work as for single-pair runs. A change to the universe restarts the run.
+
+A portfolio shadow run accumulates the shadow days that the promotion gates require, the same as a single-pair run. For a manual portfolio shadow run outside the assignments table, pass `--pairs` with `--no-config-from-db`:
+
+```bash
+uv run kaupo run shadow --no-config-from-db --strategy momentum-rotation --pairs BTC/EUR,SOL/EUR --timeframe 1h
+```
+
 To stop the stack:
 
 ```bash
@@ -113,7 +131,7 @@ See `deploy/README.md` for the setup steps.
 A strategy is a Python class with an `id`, a pydantic `params_schema`, and an `on_candle(ctx)` method that returns order intents. Two base classes exist:
 
 - `StrategyBase` — one pair per run. It runs in backtest, shadow, and live modes.
-- `PortfolioStrategyBase` — a universe of pairs in one backtest run. Its context gives the candles closed at each step, per-pair history, all open positions, cash, and equity. Each order intent names its pair. Intents for pairs outside the universe are rejected.
+- `PortfolioStrategyBase` — a universe of pairs in one run. It runs in backtest and shadow modes. Its context gives the candles closed at each step, per-pair history, all open positions, cash, and equity. Each order intent names its pair. Intents for pairs outside the universe are rejected. A shadow run feeds the strategy the same step sequence as a backtest over the same candles: one step per universe tick.
 
 The context also gives funding rates: `ctx.funding(n)` on a single pair, `ctx.funding(pair, n)` on a portfolio. Each call returns the newest `n` funding points for the pair's base asset, oldest first. Only points with a funding time at or before `clock.now()` are returned. This holds in backtests and in live runs. The series is empty when no funding data was ingested. Funding is an advisory filter signal from Binance USDT perpetuals, keyed by base asset. One series per base asset, not per pair. Shadow runs refresh recent funding in the background every `KAUPO_FUNDING_REFRESH_SECONDS` (default 1800). A refresh failure does not stop the run.
 

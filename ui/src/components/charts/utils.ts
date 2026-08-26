@@ -7,13 +7,14 @@ import {
   type SeriesMarker,
   type UTCTimestamp,
 } from 'lightweight-charts'
-import type { Candle, EquityPoint, Trade } from '../../lib/types'
+import type { BenchmarkPoint, Candle, EquityPoint, Trade } from '../../lib/types'
 
 export const CHART_COLORS = {
   accent: '#0072ce',
   up: '#10b981',
   down: '#f43f5e',
   text: '#a1a1aa',
+  benchmark: '#71717a',
 } as const
 
 export const BASE_CHART_OPTIONS: DeepPartial<ChartOptions> = {
@@ -62,6 +63,10 @@ function toSortedUniqueLine<T extends { ts: string }>(
 
 export function equityToLine(points: EquityPoint[]): LinePoint[] {
   return toSortedUniqueLine(points, (p) => p.equity)
+}
+
+export function benchmarkToLine(points: BenchmarkPoint[]): LinePoint[] {
+  return toSortedUniqueLine(points, (p) => p.value)
 }
 
 /** Drawdown in % relative to the running equity peak (always <= 0). */

@@ -151,6 +151,9 @@ class RunAssignmentRow(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     strategy_id: Mapped[str] = mapped_column(Text)
     pair: Mapped[str] = mapped_column(Text)
+    # null = single-pair run; a list = portfolio universe (pair holds the
+    # comma-joined sorted list then, same convention as the run config)
+    pairs: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     timeframe: Mapped[str] = mapped_column(Text)
     mode: Mapped[str] = mapped_column(Text)
     params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

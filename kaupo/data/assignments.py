@@ -1,9 +1,10 @@
 """Run assignments: the desired set of trading runs, the single source of truth.
 
-Each row declares one run: strategy, pair, timeframe, mode, params. The
-supervisor reconciles live runs to the enabled rows; the API manages the
-rows. ``updated_at`` bumps on every change — the supervisor treats an update
-as a resume signal for a control-killed run.
+Each row declares one run: strategy, pair (or a portfolio ``pairs``
+universe), timeframe, mode, params. The supervisor reconciles live runs to
+the enabled rows; the API manages the rows. ``updated_at`` bumps on every
+change — the supervisor treats an update as a resume signal for a
+control-killed run.
 """
 
 from dataclasses import dataclass
@@ -14,10 +15,28 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from kaupo.db.models import RunAssignmentRow
-from kaupo.domain import RunMode, utc_now
+from kaupo.domain import Pair, RunMode, utc_now
 
 # the settings facade (PUT /api/v1/settings) keeps this row in sync
 PRIMARY_ASSIGNMENT_ID = "primary"
+
+
+def normalize_universe(pairs: list[str]) -> list[str]:
+    """Validate and canonicalize a portfolio universe; returns sorted pair strings.
+
+    Rules (same as the portfolio backtest request): at least 2 pairs, no
+    duplicates, one shared quote currency, canonical sorted order.
+    """
+    parsed = [Pair.parse(p) for p in pairs]
+    if len(parsed) < 2:
+        raise ValueError("A portfolio assignment needs at least 2 pairs; use pair for one pair")
+    unique = sorted(set(parsed), key=str)
+    if len(unique) != len(parsed):
+        raise ValueError(f"Duplicate pairs in universe: {sorted(str(p) for p in parsed)}")
+    quotes = {pair.quote for pair in unique}
+    if len(quotes) != 1:
+        raise ValueError(f"All pairs of a portfolio run must share one quote currency, got {sorted(quotes)}")
+    return [str(pair) for pair in unique]
 
 
 @dataclass(frozen=True)
@@ -25,6 +44,7 @@ class Assignment:
     id: str
     strategy_id: str
     pair: str
+    pairs: list[str] | None  # null = single-pair run; a list = portfolio universe
     timeframe: str
     mode: str
     params: dict[str, Any]
@@ -39,6 +59,7 @@ def _to_assignment(row: RunAssignmentRow) -> Assignment:
         id=row.id,
         strategy_id=row.strategy_id,
         pair=row.pair,
+        pairs=list(row.pairs) if row.pairs is not None else None,
         timeframe=row.timeframe,
         mode=row.mode,
         params=row.params or {},
@@ -74,12 +95,18 @@ async def create_assignment(
     params: dict[str, Any] | None = None,
     enabled: bool = True,
     starting_cash: float | None = None,
+    pairs: list[str] | None = None,
 ) -> Assignment:
+    if pairs is not None:
+        # portfolio assignment: pair stores the joined canonical universe
+        pairs = normalize_universe(pairs)
+        pair = ",".join(pairs)
     now = utc_now()
     row = RunAssignmentRow(
         id=id,
         strategy_id=strategy_id,
         pair=pair,
+        pairs=pairs,
         timeframe=timeframe,
         mode=mode,
         params=params or {},
@@ -96,11 +123,20 @@ async def create_assignment(
 async def update_assignment(session: AsyncSession, assignment_id: str, **changes: Any) -> Assignment | None:
     """Apply the given field changes and bump updated_at; None when absent.
 
-    Only keys matching row columns are applied; callers validate first.
+    Only keys matching row columns are applied; callers validate first. A
+    ``pairs`` change is canonicalized here and rewrites ``pair`` to the
+    joined universe. A bare ``pair`` change clears ``pairs``: the row then
+    switches back to single-pair, so ``pair`` and ``pairs`` never diverge.
     """
     row = await session.get(RunAssignmentRow, assignment_id)
     if row is None:
         return None
+    if changes.get("pairs") is not None:
+        universe = normalize_universe(changes["pairs"])
+        changes["pairs"] = universe
+        changes["pair"] = ",".join(universe)
+    elif "pair" in changes:
+        changes["pairs"] = None
     for key, value in changes.items():
         setattr(row, key, value)
     row.updated_at = utc_now()

@@ -31,6 +31,14 @@ class TestConfigHash:
         assert config_hash("sma-cross", "ETH/EUR", "1h", {}) != base
         assert config_hash("sma-cross", "BTC/EUR", "4h", {}) != base
 
+    def test_pairs_change_the_hash(self) -> None:
+        base = config_hash("momentum-rotation", "BTC/EUR,SOL/EUR", "1h", {}, ["BTC/EUR", "SOL/EUR"])
+        assert config_hash("momentum-rotation", "BTC/EUR,SOL/EUR", "1h", {}, ["BTC/EUR", "SOL/EUR"]) == base
+        # a universe change restarts the run
+        assert config_hash("momentum-rotation", "ADA/EUR,BTC/EUR", "1h", {}, ["ADA/EUR", "BTC/EUR"]) != base
+        # single-pair and portfolio runs never collide
+        assert config_hash("momentum-rotation", "BTC/EUR,SOL/EUR", "1h", {}) != base
+
 
 class TestReconcile:
     def test_starts_a_missing_run(self) -> None:

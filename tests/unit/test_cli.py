@@ -518,6 +518,119 @@ def test_run_shadow_static_flags_require_all_three() -> None:
     assert "no-config-from-db" in result.output
 
 
+def _patch_run_portfolio_shadow(monkeypatch: pytest.MonkeyPatch, seen: dict[str, Any]) -> None:
+    import kaupo.core.runner as runner_mod
+    import kaupo.data.binance as binance_mod
+    import kaupo.data.kraken as kraken_mod
+
+    class FakeResult:
+        status = type("S", (), {"value": "halted"})()
+        num_fills = 0
+        final_equity = 10_000
+        halt_reason = "stopped externally"
+
+    async def fake_run_portfolio_shadow(
+        request: Any, sm: Any, client: Any, stop: Any = None, funding_client: Any = None
+    ) -> Any:
+        seen["pairs"] = [str(p) for p in request.pairs]
+        seen["timeframe"] = request.timeframe.value
+        seen["strategy"] = request.strategy.id
+        return FakeResult()
+
+    monkeypatch.setattr(kraken_mod, "KrakenClient", _FakeKrakenClient)
+    monkeypatch.setattr(binance_mod, "BinanceClient", _FakeBinanceClient)
+    monkeypatch.setattr(runner_mod, "run_portfolio_shadow", fake_run_portfolio_shadow)
+
+
+def test_run_shadow_pairs_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+    _patch_run_portfolio_shadow(monkeypatch, seen)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "shadow",
+            "--strategy",
+            "momentum-rotation",
+            "--pairs",
+            "SOL/EUR,BTC/EUR",
+            "--timeframe",
+            "1h",
+            "--no-config-from-db",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Shadow run ended" in result.output
+    assert seen == {"pairs": ["BTC/EUR", "SOL/EUR"], "timeframe": "1h", "strategy": "momentum-rotation"}
+
+
+def test_run_shadow_pairs_requires_no_config_from_db() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "shadow",
+            "--strategy",
+            "momentum-rotation",
+            "--pairs",
+            "BTC/EUR,SOL/EUR",
+            "--timeframe",
+            "1h",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "--no-config-from-db" in result.output
+
+
+def test_run_shadow_pair_and_pairs_mutually_exclusive() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "shadow",
+            "--strategy",
+            "momentum-rotation",
+            "--pair",
+            "BTC/EUR",
+            "--pairs",
+            "BTC/EUR,SOL/EUR",
+            "--timeframe",
+            "1h",
+            "--no-config-from-db",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "exactly one" in result.output
+
+
+def test_run_shadow_pairs_requires_a_portfolio_strategy() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "shadow",
+            "--strategy",
+            "regime-switch",
+            "--pairs",
+            "BTC/EUR,SOL/EUR",
+            "--timeframe",
+            "1h",
+            "--no-config-from-db",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "not a portfolio strategy" in result.output
+
+
 def test_run_supervisor_command(monkeypatch: pytest.MonkeyPatch) -> None:
     """The supervisor starts and stops cleanly with the loop faked out."""
     import kaupo.core.supervisor as supervisor_mod

@@ -110,9 +110,13 @@ async def test_runs_endpoints(client: AsyncClient, session: AsyncSession) -> Non
 
     r = await client.get(f"/api/v1/runs/{run_id}/equity")
     assert r.status_code == 200
-    equity = r.json()
+    body = r.json()
+    equity = body["points"]
     assert len(equity) == 12
     assert equity[0]["equity"] == 10_000.0
+    # buy-and-hold over the seeded candles (closes 100..111, starting_cash 10_000)
+    assert [p["ts"] for p in body["benchmark"]] == [p["ts"] for p in equity]
+    assert [p["value"] for p in body["benchmark"]] == [10_000.0 + 100.0 * i for i in range(12)]
 
     r = await client.get(f"/api/v1/runs/{run_id}/orders")
     assert r.status_code == 200
@@ -671,8 +675,9 @@ async def test_equity_endpoint_returns_latest_n(client: AsyncClient, session: As
     r = await client.get(f"/api/v1/runs/{run_id}/equity", params={"limit": 3})
     assert r.status_code == 200
     body = r.json()
-    assert len(body) == 3
-    assert [p["equity"] for p in body] == [1007.0, 1008.0, 1009.0]  # latest 3, ascending
+    assert len(body["points"]) == 3
+    assert [p["equity"] for p in body["points"]] == [1007.0, 1008.0, 1009.0]  # latest 3, ascending
+    assert body["benchmark"] == []  # config has no pair, so there is nothing to benchmark
 
 
 async def test_report_first_day_baseline_uses_starting_cash(

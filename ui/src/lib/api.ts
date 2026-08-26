@@ -12,6 +12,7 @@ import type {
   Order,
   Position,
   Run,
+  RunEquityResponse,
   StatusResponse,
   Strategy,
   Trade,
@@ -131,7 +132,7 @@ export const api = {
   run: (id: string) => request<Run>(`/api/v1/runs/${id}`),
 
   runEquity: (id: string) =>
-    request<EquityPoint[]>(`/api/v1/runs/${id}/equity${qs({ limit: EQUITY_LIMIT })}`),
+    request<RunEquityResponse>(`/api/v1/runs/${id}/equity${qs({ limit: EQUITY_LIMIT })}`),
 
   runOrders: (id: string) =>
     request<Order[]>(`/api/v1/runs/${id}/orders${qs({ limit: ORDERS_LIMIT })}`),

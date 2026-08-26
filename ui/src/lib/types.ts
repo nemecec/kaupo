@@ -30,6 +30,17 @@ export interface EquityPoint {
   unrealized_pnl: number
 }
 
+export interface BenchmarkPoint {
+  ts: string
+  value: number
+}
+
+export interface RunEquityResponse {
+  points: EquityPoint[]
+  /** Buy-and-hold benchmark on the same timestamps as `points`; empty when no candles. */
+  benchmark: BenchmarkPoint[]
+}
+
 export interface Order {
   id: string
   ts: string

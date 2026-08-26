@@ -50,12 +50,12 @@ export default function Dashboard() {
 
   const seriesList: NamedSeries[] = runningRuns.flatMap((run, i) => {
     const data = equityQueries[i]?.data
-    if (!data || data.length === 0) return []
+    if (!data || data.points.length === 0) return []
     return [
       {
         name: shortId(run.id),
         color: SERIES_PALETTE[i % SERIES_PALETTE.length],
-        points: equityToLine(data),
+        points: equityToLine(data.points),
       },
     ]
   })

@@ -1,7 +1,8 @@
 """Desired-state supervisor: reconciles live shadow runs to run_assignments rows.
 
 Enabled rows are the desired state. Each runs as an in-process asyncio task
-(``run_shadow`` with its own stop event and its own Kraken client). The poll
+(``run_shadow``, or ``run_portfolio_shadow`` for a row with a ``pairs``
+universe, with its own stop event and its own Kraken client). The poll
 loop diffs desired rows against the live tasks: it starts what is missing,
 stops what is disabled, deleted, or config-changed, and restarts crashes
 after a backoff. A run killed through the control channel stays down until a
@@ -22,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.core.engine import RunResult
-from kaupo.core.runner import ShadowRequest, run_shadow
+from kaupo.core.runner import PortfolioShadowRequest, ShadowRequest, run_portfolio_shadow, run_shadow
 from kaupo.data.assignments import Assignment, list_assignments
 from kaupo.data.binance import BinanceClient
 from kaupo.data.kraken import KrakenClient
@@ -38,14 +39,26 @@ RESTART_BACKOFF = timedelta(seconds=60)
 DEFAULT_STARTING_CASH = 10_000.0
 
 
-def config_hash(strategy_id: str, pair: str, timeframe: str, params: dict[str, Any]) -> str:
+def config_hash(
+    strategy_id: str,
+    pair: str,
+    timeframe: str,
+    params: dict[str, Any],
+    pairs: list[str] | None = None,
+) -> str:
     """Stable hash of the run-defining fields of an assignment.
 
-    A change in strategy, pair, timeframe, or params restarts the run;
-    anything else (enabled flag, starting cash) does not.
+    A change in strategy, pair, universe (``pairs``), timeframe, or params
+    restarts the run; anything else (enabled flag, starting cash) does not.
     """
     canonical = json.dumps(
-        {"strategy": strategy_id, "pair": pair, "timeframe": timeframe, "params": params},
+        {
+            "strategy": strategy_id,
+            "pair": pair,
+            "pairs": pairs,
+            "timeframe": timeframe,
+            "params": params,
+        },
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -204,6 +217,20 @@ async def _run_assignment(
     # One Kraken client per run: each run gets its own exchange rate-limit
     # bucket. A shared client may be wanted later, when runs multiply.
     async with KrakenClient() as client, BinanceClient() as funding_client:
+        if assignment.pairs is not None:
+            portfolio_request = PortfolioShadowRequest(
+                strategy=strategy,
+                params=assignment.params,
+                pairs=[Pair.parse(p) for p in assignment.pairs],
+                timeframe=Timeframe.parse(assignment.timeframe),
+                starting_cash=assignment.starting_cash or DEFAULT_STARTING_CASH,
+                poll_interval_seconds=poll_interval_seconds,
+                assignment_id=assignment.id,
+                funding_refresh_seconds=funding_refresh_seconds,
+            )
+            return await run_portfolio_shadow(
+                portfolio_request, sessionmaker, client, stop, funding_client=funding_client
+            )
         request = ShadowRequest(
             strategy=strategy,
             params=assignment.params,
@@ -316,18 +343,30 @@ async def run_supervisor(
             held_down = set(killed) | {
                 aid for aid, failed_at in backoff.items() if in_backoff(failed_at, utc_now(), restart_backoff)
             }
-            desired = {a.id: config_hash(a.strategy_id, a.pair, a.timeframe, a.params) for a in rows}
+            desired = {a.id: config_hash(a.strategy_id, a.pair, a.timeframe, a.params, a.pairs) for a in rows}
             plan = reconcile(desired, {aid: lr.config_hash for aid, lr in live.items()}, held_down)
             for aid in plan.stop:
                 log.info("Stopping run for assignment %s (disabled, deleted, or changed)", aid)
                 live[aid].stop.set()
             for aid in plan.start:
                 assignment = by_id[aid]
-                if assignment.strategy_id not in strategies:
+                loaded = strategies.get(assignment.strategy_id)
+                if loaded is None:
                     log.error(
                         "Assignment %s: unknown strategy %r; not starting",
                         aid,
                         assignment.strategy_id,
+                    )
+                    backoff[aid] = utc_now()  # no hot retry loop
+                    continue
+                if (assignment.pairs is not None) != loaded.is_portfolio:
+                    log.error(
+                        "Assignment %s: strategy %r (portfolio=%s) does not match the assignment "
+                        "(pairs=%s); not starting",
+                        aid,
+                        assignment.strategy_id,
+                        loaded.is_portfolio,
+                        assignment.pairs is not None,
                     )
                     backoff[aid] = utc_now()  # no hot retry loop
                     continue

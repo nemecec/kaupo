@@ -126,7 +126,8 @@ export default function RunDetailPage() {
 
   // Equity timestamps define the simulation window (backtest equity uses simulated
   // time), so they are a more reliable candle range than run started/ended.
-  const equity = equityQ.data ?? []
+  const equity = equityQ.data?.points ?? []
+  const benchmark = equityQ.data?.benchmark ?? []
   const candlesQ = useCandles(
     pair && equity.length > 0
       ? {
@@ -185,7 +186,7 @@ export default function RunDetailPage() {
         ) : equity.length === 0 ? (
           <EmptyState text="No equity snapshots yet" />
         ) : (
-          <EquityChart points={equity} markers={equityMarkerData} />
+          <EquityChart points={equity} benchmark={benchmark} markers={equityMarkerData} />
         )}
       </Panel>
 

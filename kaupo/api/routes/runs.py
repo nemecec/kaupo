@@ -7,9 +7,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from kaupo.api.deps import Principal, get_principal
-from kaupo.api.schemas import EquityPoint, FillOut, OrderOut, PositionOut, RunOut
+from kaupo.api.schemas import (
+    BenchmarkPoint,
+    EquityPoint,
+    FillOut,
+    OrderOut,
+    PositionOut,
+    RunEquityOut,
+    RunOut,
+)
 from kaupo.db.models import CandleRow, EquitySnapshotRow, FillRow, OrderRow, RunRow
 from kaupo.db.session import get_session
+from kaupo.report.benchmark import run_benchmark
 
 router = APIRouter(prefix="/api/v1/runs", tags=["runs"])
 
@@ -68,8 +77,8 @@ async def run_equity(
     session: Annotated[AsyncSession, Depends(get_session)],
     run_id: str,
     limit: int = Query(5000, ge=1, le=50_000),
-) -> list[EquityPoint]:
-    await _get_run(session, run_id)
+) -> RunEquityOut:
+    run = await _get_run(session, run_id)
     rows = list(
         (
             await session.execute(
@@ -83,7 +92,13 @@ async def run_equity(
         .all()
     )
     rows.reverse()  # latest N, ascending for charting
-    return [EquityPoint(ts=r.ts, equity=r.equity, cash=r.cash, unrealized_pnl=r.unrealized_pnl) for r in rows]
+    benchmark = await run_benchmark(session, run, [r.ts for r in rows])
+    return RunEquityOut(
+        points=[
+            EquityPoint(ts=r.ts, equity=r.equity, cash=r.cash, unrealized_pnl=r.unrealized_pnl) for r in rows
+        ],
+        benchmark=[BenchmarkPoint(ts=ts, value=value) for ts, value in benchmark],
+    )
 
 
 @router.get("/{run_id}/orders")

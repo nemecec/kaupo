@@ -1,7 +1,8 @@
 """Strategy plugin contract.
 
 A strategy is a class deriving from :class:`StrategyBase` (single pair) or
-:class:`PortfolioStrategyBase` (multi-pair universe, backtest-only) with:
+:class:`PortfolioStrategyBase` (multi-pair universe, backtest and shadow)
+with:
 
 - ``id``: unique strategy identifier
 - ``params_schema``: a pydantic model class; the engine validates user params
@@ -144,7 +145,7 @@ class PortfolioContext(Protocol):
 
 
 class PortfolioStrategyBase(ABC):
-    """Contract for multi-pair strategies (backtest-only for now)."""
+    """Contract for multi-pair strategies (backtest and shadow modes)."""
 
     id: ClassVar[str]
     params_schema: ClassVar[type[BaseModel]] = EmptyParams

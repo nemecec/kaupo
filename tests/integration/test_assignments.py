@@ -158,6 +158,60 @@ async def test_delete_disables(session: AsyncSession) -> None:
     assert await assignments_repo.delete_assignment(session, "missing") is None
 
 
+async def test_create_portfolio_assignment_derives_the_joined_pair(session: AsyncSession) -> None:
+    created = await assignments_repo.create_assignment(
+        session,
+        id="pf",
+        strategy_id="momentum-rotation",
+        pair="",  # derived from the universe
+        timeframe="1h",
+        pairs=["sol/eur", "BTC/EUR"],  # unsorted, unnormalized on purpose
+    )
+    await session.commit()
+    assert created.pairs == ["BTC/EUR", "SOL/EUR"]  # canonical sorted order
+    assert created.pair == "BTC/EUR,SOL/EUR"  # joined universe, same as the run config
+
+    row = await assignments_repo.get_assignment(session, "pf")
+    assert row is not None and row.pairs == ["BTC/EUR", "SOL/EUR"]
+
+
+async def test_create_portfolio_assignment_validates_the_universe(session: AsyncSession) -> None:
+    with pytest.raises(ValueError, match="one quote currency"):
+        await assignments_repo.create_assignment(
+            session,
+            id="bad",
+            strategy_id="momentum-rotation",
+            pair="",
+            timeframe="1h",
+            pairs=["BTC/EUR", "SOL/USD"],
+        )
+
+
+async def test_update_pairs_rewrites_the_joined_pair(session: AsyncSession) -> None:
+    await assignments_repo.create_assignment(
+        session,
+        id="pf",
+        strategy_id="momentum-rotation",
+        pair="",
+        timeframe="1h",
+        pairs=["BTC/EUR", "SOL/EUR"],
+    )
+    await session.commit()
+
+    updated = await assignments_repo.update_assignment(session, "pf", pairs=["ada/eur", "BTC/EUR"])
+    await session.commit()
+    assert updated is not None
+    assert updated.pairs == ["ADA/EUR", "BTC/EUR"]
+    assert updated.pair == "ADA/EUR,BTC/EUR"
+
+    # a bare pair update switches the row back to single-pair (pair and pairs never diverge)
+    updated = await assignments_repo.update_assignment(session, "pf", pair="ETH/EUR")
+    await session.commit()
+    assert updated is not None
+    assert updated.pairs is None
+    assert updated.pair == "ETH/EUR"
+
+
 # --- API ------------------------------------------------------------------
 
 
@@ -206,6 +260,113 @@ async def test_api_create_conflict(client: AsyncClient) -> None:
     assert (await client.post("/api/v1/assignments", json=payload)).status_code == 201
     r = await client.post("/api/v1/assignments", json=payload)
     assert r.status_code == 409
+
+
+async def test_api_create_with_pairs(client: AsyncClient) -> None:
+    r = await client.post(
+        "/api/v1/assignments",
+        json={
+            "id": "pf",
+            "strategy_id": "momentum-rotation",
+            "pairs": ["SOL/EUR", "btc/eur"],  # unsorted, unnormalized on purpose
+            "timeframe": "1h",
+        },
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["pairs"] == ["BTC/EUR", "SOL/EUR"]
+    assert body["pair"] == "BTC/EUR,SOL/EUR"  # joined universe stored in pair
+    assert body["mode"] == "shadow"
+
+    rows = (await client.get("/api/v1/assignments")).json()
+    assert len(rows) == 1
+    assert rows[0]["pairs"] == ["BTC/EUR", "SOL/EUR"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # both pair and pairs
+        {
+            "strategy_id": "momentum-rotation",
+            "pair": "BTC/EUR",
+            "pairs": ["BTC/EUR", "SOL/EUR"],
+            "timeframe": "1h",
+        },
+        # neither pair nor pairs
+        {"strategy_id": "momentum-rotation", "timeframe": "1h"},
+        # a single pair is not a universe
+        {"strategy_id": "momentum-rotation", "pairs": ["BTC/EUR"], "timeframe": "1h"},
+        # one shared quote required
+        {"strategy_id": "momentum-rotation", "pairs": ["BTC/EUR", "SOL/USD"], "timeframe": "1h"},
+        # no duplicates
+        {"strategy_id": "momentum-rotation", "pairs": ["BTC/EUR", "btc/eur"], "timeframe": "1h"},
+        # a portfolio universe needs a portfolio strategy
+        {"strategy_id": "regime-switch", "pairs": ["BTC/EUR", "SOL/EUR"], "timeframe": "1h"},
+        # a portfolio strategy needs a universe
+        {"strategy_id": "momentum-rotation", "pair": "BTC/EUR", "timeframe": "1h"},
+    ],
+)
+async def test_api_create_pairs_validation(client: AsyncClient, payload: dict) -> None:
+    r = await client.post("/api/v1/assignments", json=payload)
+    assert r.status_code == 422
+    rows = (await client.get("/api/v1/assignments")).json()
+    assert rows == []
+
+
+async def test_api_update_pairs(client: AsyncClient, session: AsyncSession) -> None:
+    await assignments_repo.create_assignment(
+        session,
+        id="pf",
+        strategy_id="momentum-rotation",
+        pair="",
+        timeframe="1h",
+        pairs=["BTC/EUR", "SOL/EUR"],
+    )
+    await session.commit()
+
+    r = await client.put("/api/v1/assignments/pf", json={"pairs": ["ada/eur", "BTC/EUR"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["pairs"] == ["ADA/EUR", "BTC/EUR"]
+    assert body["pair"] == "ADA/EUR,BTC/EUR"  # joined universe rewritten
+
+    # switching strategy and pair together turns it back into a single-pair row
+    r = await client.put("/api/v1/assignments/pf", json={"strategy_id": "regime-switch", "pair": "btc/eur"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["pair"] == "BTC/EUR"
+    assert body["pairs"] is None
+
+    session.expire_all()  # the API wrote from another session
+    row = await assignments_repo.get_assignment(session, "pf")
+    assert row is not None and row.pairs is None and row.pair == "BTC/EUR"
+
+
+async def test_api_update_pairs_validation(client: AsyncClient, session: AsyncSession) -> None:
+    await assignments_repo.create_assignment(
+        session,
+        id="pf",
+        strategy_id="momentum-rotation",
+        pair="",
+        timeframe="1h",
+        pairs=["BTC/EUR", "SOL/EUR"],
+    )
+    await session.commit()
+
+    # mixed quotes
+    r = await client.put("/api/v1/assignments/pf", json={"pairs": ["BTC/EUR", "SOL/USD"]})
+    assert r.status_code == 422
+    # pair and pairs together
+    r = await client.put("/api/v1/assignments/pf", json={"pair": "BTC/EUR", "pairs": ["BTC/EUR", "SOL/EUR"]})
+    assert r.status_code == 422
+    # a universe update keeps the portfolio-strategy requirement
+    r = await client.put("/api/v1/assignments/pf", json={"strategy_id": "regime-switch"})
+    assert r.status_code == 422
+
+    session.expire_all()
+    row = await assignments_repo.get_assignment(session, "pf")
+    assert row is not None and row.pairs == ["BTC/EUR", "SOL/EUR"]  # nothing stored
 
 
 @pytest.mark.parametrize(
@@ -369,10 +530,18 @@ class _FakeKrakenClient:
 
 
 def _patch_supervisor(monkeypatch: pytest.MonkeyPatch, started: list[tuple[str, str]]) -> None:
-    """Fake run_shadow: records a run row, then runs until stopped or killed."""
+    """Fake run_shadow/run_portfolio_shadow: record a run row, then run until stopped or killed."""
 
-    async def fake_run_shadow(request, sm, client, stop, funding_client=None):
+    async def fake_run(request, sm, client, stop, funding_client=None):
         run_id = new_id()
+        if hasattr(request, "pairs"):
+            config: dict = {
+                "pair": ",".join(str(p) for p in request.pairs),
+                "pairs": [str(p) for p in request.pairs],
+            }
+        else:
+            config = {"pair": str(request.pair)}
+        config["assignment_id"] = request.assignment_id
         async with sm_scope(sm) as s:
             s.add(
                 RunRow(
@@ -382,7 +551,7 @@ def _patch_supervisor(monkeypatch: pytest.MonkeyPatch, started: list[tuple[str, 
                     strategy_version="v",
                     started_at=utc_now(),
                     status="running",
-                    config={"pair": str(request.pair), "assignment_id": request.assignment_id},
+                    config=config,
                 )
             )
         probe = DbControlProbe(sm, run_id)
@@ -400,7 +569,8 @@ def _patch_supervisor(monkeypatch: pytest.MonkeyPatch, started: list[tuple[str, 
                 row.status = "halted"
                 row.ended_at = utc_now()
 
-    monkeypatch.setattr(sup, "run_shadow", fake_run_shadow)
+    monkeypatch.setattr(sup, "run_shadow", fake_run)
+    monkeypatch.setattr(sup, "run_portfolio_shadow", fake_run)
     monkeypatch.setattr(sup, "KrakenClient", _FakeKrakenClient)
     monkeypatch.setattr(sup, "BinanceClient", _FakeKrakenClient)
 
@@ -513,6 +683,143 @@ async def test_supervisor_does_not_start_unknown_strategy(
     _patch_supervisor(monkeypatch, started)
     await assignments_repo.create_assignment(
         session, id="a1", strategy_id="not-on-disk", pair="BTC/EUR", timeframe="1h"
+    )
+    await session.commit()
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        sup.run_supervisor(
+            get_sessionmaker(),
+            load_strategies(EXAMPLES_DIR),
+            stop,
+            reconcile_interval_seconds=0.05,
+            restart_backoff=timedelta(seconds=0.2),
+        )
+    )
+    try:
+        await asyncio.sleep(0.4)  # several reconcile passes, no hot loop
+        assert started == []
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=10)
+
+
+async def test_supervisor_runs_a_portfolio_assignment_and_restarts_on_universe_change(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[tuple[str, str]] = []
+    _patch_supervisor(monkeypatch, started)
+    await assignments_repo.create_assignment(
+        session,
+        id="pf",
+        strategy_id="momentum-rotation",
+        pair="",
+        timeframe="1h",
+        pairs=["SOL/EUR", "BTC/EUR"],
+    )
+    await session.commit()
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        sup.run_supervisor(
+            get_sessionmaker(),
+            load_strategies(EXAMPLES_DIR),
+            stop,
+            reconcile_interval_seconds=0.05,
+            restart_backoff=timedelta(seconds=0.2),
+        )
+    )
+    try:
+        await _wait_for(lambda: len(started) == 1)
+        assert started[0][0] == "pf"
+
+        # the run row carries the joined universe, like a real portfolio shadow run
+        async def run_config_pair() -> str | None:
+            async with sm_scope(get_sessionmaker()) as s:
+                row = await s.get(RunRow, started[0][1])
+                return (row.config or {}).get("pair") if row is not None else None
+
+        assert await run_config_pair() == "BTC/EUR,SOL/EUR"
+
+        # a universe change stops the old run and starts a new one
+        async with sm_scope(get_sessionmaker()) as s:
+            await assignments_repo.update_assignment(s, "pf", pairs=["ADA/EUR", "BTC/EUR"])
+        await _wait_for(lambda: len(started) == 2)
+        assert await _run_status(started[0][1]) == "halted"
+
+        # disabling stops the run; nothing new starts
+        async with sm_scope(get_sessionmaker()) as s:
+            await assignments_repo.delete_assignment(s, "pf")
+
+        async def second_halted() -> bool:
+            return (await _run_status(started[1][1])) == "halted"
+
+        await _wait_for(second_halted)
+        await asyncio.sleep(0.3)  # several reconcile passes
+        assert len(started) == 2
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=10)
+
+
+async def test_supervisor_kill_and_resume_work_for_a_portfolio_assignment(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[tuple[str, str]] = []
+    _patch_supervisor(monkeypatch, started)
+    await assignments_repo.create_assignment(
+        session,
+        id="pf",
+        strategy_id="momentum-rotation",
+        pair="",
+        timeframe="1h",
+        pairs=["BTC/EUR", "SOL/EUR"],
+    )
+    await session.commit()
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        sup.run_supervisor(
+            get_sessionmaker(),
+            load_strategies(EXAMPLES_DIR),
+            stop,
+            reconcile_interval_seconds=0.05,
+            restart_backoff=timedelta(seconds=0.2),
+        )
+    )
+    try:
+        await _wait_for(lambda: len(started) == 1)
+        run_id = started[0][1]
+
+        await _control_event("kill", run_id)
+
+        async def first_halted() -> bool:
+            return (await _run_status(run_id)) == "halted"
+
+        await _wait_for(first_halted)
+        await asyncio.sleep(0.5)  # many reconcile passes: no restart
+        assert len(started) == 1
+
+        await _control_event("resume", run_id)
+        await _wait_for(lambda: len(started) == 2)
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=10)
+
+
+async def test_supervisor_does_not_start_a_pairs_assignment_with_a_single_pair_strategy(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[tuple[str, str]] = []
+    _patch_supervisor(monkeypatch, started)
+    # the API rejects this combination; a hand-written row must not hot-loop either
+    await assignments_repo.create_assignment(
+        session,
+        id="bad",
+        strategy_id="regime-switch",
+        pair="",
+        timeframe="1h",
+        pairs=["BTC/EUR", "SOL/EUR"],
     )
     await session.commit()
 

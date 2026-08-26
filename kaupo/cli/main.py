@@ -313,6 +313,13 @@ def run_shadow_cmd(
         str | None, typer.Option(help="strategy id (seeds the DB; stored setting wins)")
     ] = None,
     pair: Annotated[str | None, typer.Option(help="e.g. BTC/EUR (seeds the DB; stored setting wins)")] = None,
+    pairs: Annotated[
+        str | None,
+        typer.Option(
+            help="comma-separated universe for a portfolio shadow run, e.g. BTC/EUR,SOL/EUR "
+            "(requires --no-config-from-db)"
+        ),
+    ] = None,
     timeframe: Annotated[
         str | None, typer.Option(help="1m 5m 15m 30m 1h 4h 1d (seeds the DB; stored setting wins)")
     ] = None,
@@ -334,9 +341,11 @@ def run_shadow_cmd(
 
     Strategy, pair, and timeframe resolve from the settings table; the flags
     only seed a fresh database. Change them at runtime with PUT /api/v1/settings.
+    A portfolio run (--pairs) is always static: the settings table holds one
+    pair only.
     """
     _setup_logging(verbose)
-    from kaupo.core.runner import ShadowRequest, run_shadow
+    from kaupo.core.runner import PortfolioShadowRequest, ShadowRequest, run_portfolio_shadow, run_shadow
     from kaupo.data.binance import BinanceClient
     from kaupo.data.kraken import KrakenClient
     from kaupo.data.settings import resolve_shadow_config
@@ -355,6 +364,48 @@ def run_shadow_cmd(
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
         sessionmaker = get_sessionmaker()
+        if pairs is not None:
+            # a portfolio run is always static: settings hold one pair only
+            if pair is not None:
+                err_console.print("[red]Pass exactly one of --pair or --pairs[/red]")
+                raise typer.Exit(1)
+            if not no_config_from_db:
+                err_console.print("[red]--pairs requires --no-config-from-db[/red]")
+                raise typer.Exit(1)
+            if strategy is None or timeframe is None:
+                err_console.print("[red]--pairs requires --strategy and --timeframe[/red]")
+                raise typer.Exit(1)
+            if strategy not in strategies:
+                err_console.print(
+                    f"[red]Unknown strategy {strategy!r}[/red]. Available: {', '.join(sorted(strategies))}"
+                )
+                raise typer.Exit(1)
+            if not strategies[strategy].is_portfolio:
+                err_console.print(
+                    f"[red]Strategy {strategy!r} is not a portfolio strategy[/red] — use --pair"
+                )
+                raise typer.Exit(1)
+            try:
+                portfolio_request = PortfolioShadowRequest(
+                    strategy=strategies[strategy],
+                    params=_parse_params(param),
+                    pairs=[Pair.parse(p) for p in pairs.split(",")],
+                    timeframe=Timeframe.parse(timeframe),
+                    starting_cash=cash,
+                    warmup=warmup,
+                    poll_interval_seconds=get_settings().poll_interval_seconds,
+                    funding_refresh_seconds=get_settings().funding_refresh_seconds,
+                )
+            except ValueError as exc:
+                err_console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(1) from exc
+            console.print(
+                f"Starting portfolio shadow run: {strategy} on {portfolio_request.pairs} {timeframe}"
+            )
+            async with KrakenClient() as client, BinanceClient() as funding_client:
+                return await run_portfolio_shadow(
+                    portfolio_request, sessionmaker, client, stop=stop, funding_client=funding_client
+                )
         if no_config_from_db:
             if strategy is None or pair is None or timeframe is None:
                 err_console.print(
