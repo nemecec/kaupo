@@ -1,11 +1,17 @@
 """CLI tests: typer runner with exchange/DB calls monkeypatched out."""
 
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 from typer.testing import CliRunner
+
+# rich output wraps to the terminal width of the environment, which differs
+# between local shells and CI. Pin it before the CLI module (and its console)
+# is imported, so output assertions are deterministic.
+os.environ["COLUMNS"] = "200"
 
 import kaupo.cli.main as cli
 from kaupo.domain import RunId
@@ -403,6 +409,8 @@ def test_backtest_stability_windows(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_backtest_stability_windows_out_of_bounds() -> None:
+    # COLUMNS pinned: typer's rich error panel wraps to terminal width, and a
+    # narrow CI terminal drops the flag name from the rendered output
     result = runner.invoke(
         cli.app,
         [
@@ -416,6 +424,7 @@ def test_backtest_stability_windows_out_of_bounds() -> None:
             "--strategies-dir",
             str(EXAMPLES_DIR),
         ],
+        env={"COLUMNS": "250"},
     )
     assert result.exit_code == 2
     assert "--stability-windows" in result.output
