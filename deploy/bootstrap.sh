@@ -66,6 +66,11 @@ cat > /etc/cron.d/kaupo-backup <<'EOF'
 47 6 * * * root /opt/kaupo/deploy/notify-daily.sh >> /var/log/kaupo-notify.log 2>&1
 EOF
 
+# Kraken 1d rolling-window refresh at 04:41 UTC (venue-check data stays fresh)
+cat > /etc/cron.d/kaupo-refresh <<'EOF'
+41 4 * * * root /opt/kaupo/deploy/refresh-kraken-1d.sh >> /var/log/kaupo-refresh.log 2>&1
+EOF
+
 echo
 echo "Bootstrap done. Add this deploy key to the kaupo-strategies repository:"
 cat /root/.ssh/kaupo-strategies.pub
