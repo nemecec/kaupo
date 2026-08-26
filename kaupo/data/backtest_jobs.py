@@ -70,11 +70,14 @@ async def claim_next_queued(session: AsyncSession) -> BacktestJobRow | None:
     return row
 
 
-async def mark_completed(session: AsyncSession, job_id: str, run_id: str) -> None:
+async def mark_completed(
+    session: AsyncSession, job_id: str, run_id: str, result: dict[str, Any] | None = None
+) -> None:
     row = await session.get(BacktestJobRow, job_id)
     assert row is not None  # the worker claimed it
     row.status = STATUS_COMPLETED
     row.run_id = run_id
+    row.result = result
     row.updated_at = utc_now()
 
 

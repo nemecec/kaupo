@@ -100,6 +100,9 @@ class BacktestIn(BaseModel):
     params: dict[str, Any] = {}
     starting_cash: float = Field(default=10_000.0, gt=0)
     exchange: str = "kraken"
+    # when set, the worker also runs K equal time slices of [start, end]
+    # and the job result carries per-window metrics (overfitting check)
+    stability_windows: int | None = Field(default=None, ge=2, le=12)
     # research overrides for the backtest risk caps; null keeps the live defaults
     max_position_quote: float | None = Field(default=None, gt=0)
     max_gross_exposure_quote: float | None = Field(default=None, gt=0)

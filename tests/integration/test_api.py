@@ -253,6 +253,128 @@ async def test_backtest_job_portfolio_pairs(client: AsyncClient, session: AsyncS
     assert body["run"]["config"]["pair"] == "ADA/EUR,BTC/EUR,SOL/EUR"
 
 
+async def test_backtest_job_stability_windows(
+    client: AsyncClient, session: AsyncSession, worker: None
+) -> None:
+    candles = [
+        Candle(
+            pair=PAIR,
+            timeframe=Timeframe.H1,
+            ts=BASE + timedelta(hours=i),
+            open=100 + i,
+            high=101 + i,
+            low=99 + i,
+            close=100 + i,
+            volume=1.0,
+        )
+        for i in range(120)
+    ]
+    await upsert_candles(session, candles)
+    await session.commit()
+
+    end = BASE + timedelta(hours=120)
+    r = await client.post(
+        "/api/v1/backtests",
+        json={
+            "strategy": "regime-switch",
+            "pair": "BTC/EUR",
+            "timeframe": "1h",
+            "start": BASE.isoformat(),
+            "end": end.isoformat(),
+            "stability_windows": 3,
+        },
+    )
+    assert r.status_code == 202
+    job_id = r.json()["run_id"]
+
+    body = await _wait_for_job(client, job_id)
+    assert body["status"] == "completed"
+
+    # the full-window result is as today, plus its stability marker in the config
+    assert body["run"]["metrics"]["num_fills"] >= 0
+    assert body["run"]["config"]["stability"] == {"group": job_id, "window": "full", "of": 3}
+
+    stability = body["stability"]
+    assert stability["windows"] == 3
+    assert len(stability["slices"]) == 3
+    full_metric_keys = set(body["run"]["metrics"])
+    for i, entry in enumerate(stability["slices"]):
+        assert entry["window"] == i
+        assert "error" not in entry
+        assert entry["run_id"]
+        assert set(entry["metrics"]) == full_metric_keys  # the same compute_metrics output
+    # equal half-open slices covering [start, end]
+    step = timedelta(hours=40)
+    assert stability["slices"][0]["start"] == BASE.isoformat()
+    assert stability["slices"][0]["end"] == (BASE + step).isoformat()
+    assert stability["slices"][1]["start"] == (BASE + step).isoformat()
+    assert stability["slices"][2]["end"] == end.isoformat()
+
+    # every slice (and the full run) persists a runs row with the stability marker
+    from sqlalchemy import select
+
+    from kaupo.db.models import RunRow
+
+    rows = (await session.execute(select(RunRow))).scalars().all()
+    marked = [row for row in rows if row.config.get("stability", {}).get("group") == job_id]
+    assert len(marked) == 4
+    assert {row.config["stability"]["window"] for row in marked} == {"full", 0, 1, 2}
+    assert all(row.config["stability"]["of"] == 3 for row in marked)
+    slice_run_ids = {entry["run_id"] for entry in stability["slices"]}
+    assert {row.id for row in marked} == {body["run"]["id"]} | slice_run_ids
+
+
+async def test_backtest_job_stability_portfolio_slice_without_candles(
+    client: AsyncClient, session: AsyncSession, worker: None
+) -> None:
+    # BTC/EUR covers the whole window; SOL/EUR is listed later, so the first
+    # stability slice has no SOL candles -> error entry, but the job completes
+    for pair, first in ((Pair.parse("BTC/EUR"), 0), (Pair.parse("SOL/EUR"), 50)):
+        candles = [
+            Candle(
+                pair=pair,
+                timeframe=Timeframe.H1,
+                ts=BASE + timedelta(hours=i),
+                open=100 + i,
+                high=101 + i,
+                low=99 + i,
+                close=100 + i,
+                volume=1.0,
+            )
+            for i in range(first, 120)
+        ]
+        await upsert_candles(session, candles)
+    await session.commit()
+
+    r = await client.post(
+        "/api/v1/backtests",
+        json={
+            "strategy": "momentum-rotation",
+            "pairs": ["BTC/EUR", "SOL/EUR"],
+            "timeframe": "1h",
+            "start": BASE.isoformat(),
+            "end": (BASE + timedelta(hours=120)).isoformat(),
+            "params": {"lookback": 24, "top_k": 2, "rebalance_interval": 24},
+            "stability_windows": 3,
+        },
+    )
+    assert r.status_code == 202
+    job_id = r.json()["run_id"]
+
+    body = await _wait_for_job(client, job_id)
+    assert body["status"] == "completed"  # a slice failure never fails the job
+
+    slices = body["stability"]["slices"]
+    assert len(slices) == 3
+    assert slices[0]["error"].startswith("ValueError: No kraken candles for SOL/EUR")
+    assert "run_id" not in slices[0]
+    assert slices[0]["window"] == 0  # start/end still recorded
+    for entry in slices[1:]:
+        assert "error" not in entry
+        assert entry["run_id"]
+        assert entry["metrics"]["universe"] == ["BTC/EUR", "SOL/EUR"]
+
+
 async def test_backtest_job_risk_override(client: AsyncClient, session: AsyncSession, worker: None) -> None:
     candles = [
         Candle(

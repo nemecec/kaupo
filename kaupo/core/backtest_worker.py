@@ -12,6 +12,7 @@ rows older than the TTL are evicted once per loop.
 import asyncio
 import logging
 from contextlib import suppress
+from dataclasses import replace
 from datetime import timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -20,6 +21,7 @@ from kaupo.api.schemas import BacktestIn
 from kaupo.backtest.plan import build_backtest_request, lint_and_load_strategies
 from kaupo.backtest.portfolio import PortfolioBacktestRequest, run_portfolio_backtest
 from kaupo.backtest.run import run_backtest
+from kaupo.backtest.stability import run_stability_slices, stability_marker
 from kaupo.config import Settings
 from kaupo.data import backtest_jobs
 from kaupo.data.backtest_jobs import JOB_TTL
@@ -45,10 +47,19 @@ async def _execute(
         body = BacktestIn.model_validate(job.payload)
         strategies = lint_and_load_strategies(settings.strategies_dir)
         request = build_backtest_request(body, strategies)
+        if body.stability_windows is not None:
+            request = replace(request, stability=stability_marker(job.id, "full", body.stability_windows))
         if isinstance(request, PortfolioBacktestRequest):
             run_id, _, _ = await run_portfolio_backtest(request, sessionmaker)
         else:
             run_id, _, _ = await run_backtest(request, sessionmaker)
+        # stability windows run after the full-window run; a slice failure
+        # degrades to an error entry and never fails the job
+        result = None
+        if body.stability_windows is not None:
+            result = await run_stability_slices(
+                request, sessionmaker, group=job.id, windows=body.stability_windows
+            )
     except Exception as exc:
         log.exception("Backtest job %s failed", job.id)
         error = f"{type(exc).__name__}: {exc}"[:300]
@@ -56,7 +67,7 @@ async def _execute(
             await backtest_jobs.mark_failed(session, job.id, error)
         return
     async with sm_scope(sessionmaker) as session:
-        await backtest_jobs.mark_completed(session, job.id, run_id)
+        await backtest_jobs.mark_completed(session, job.id, run_id, result)
     log.info("Backtest job %s completed: run %s", job.id, run_id)
 
 

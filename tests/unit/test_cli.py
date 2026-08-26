@@ -328,6 +328,132 @@ def test_backtest_unknown_strategy() -> None:
     assert "Unknown strategy" in result.output
 
 
+def test_backtest_stability_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kaupo.backtest.run as bt_mod
+    import kaupo.backtest.stability as stab_mod
+
+    captured: dict[str, Any] = {}
+
+    class FakeResult:
+        status = type("S", (), {"value": "completed"})()
+
+    async def fake_run_backtest(request: Any, sm: Any) -> Any:
+        captured["full_stability"] = request.stability
+        return RunId("run-full"), FakeResult(), {"num_fills": 3, "sharpe": 1.0}
+
+    async def fake_slices(request: Any, sm: Any, *, group: str, windows: int) -> Any:
+        captured["group"] = group
+        captured["windows"] = windows
+        return {
+            "windows": windows,
+            "slices": [
+                {
+                    "window": 0,
+                    "start": "2026-01-01T00:00:00+00:00",
+                    "end": "2026-01-16T00:00:00+00:00",
+                    "run_id": "run-0",
+                    "metrics": {
+                        "sharpe": 1.2,
+                        "max_drawdown_pct": -3.4,
+                        "total_return_pct": 5.6,
+                        "num_round_trips": 7,
+                    },
+                },
+                {
+                    "window": 1,
+                    "start": "2026-01-16T00:00:00+00:00",
+                    "end": "2026-01-31T00:00:00+00:00",
+                    "error": "ValueError: No kraken candles for BTC/EUR 1h in range",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(bt_mod, "run_backtest", fake_run_backtest)
+    monkeypatch.setattr(stab_mod, "run_stability_slices", fake_slices)
+    monkeypatch.setenv("COLUMNS", "200")  # keep the wide per-window table on one line per row
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--days",
+            "30",
+            "--stability-windows",
+            "2",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "run-full" in result.output
+    # the full-window run carries the marker; the slices share its group
+    assert captured["full_stability"] == {"group": captured["group"], "window": "full", "of": 2}
+    assert captured["windows"] == 2
+    # compact per-window table after the full-window metrics
+    assert "Stability windows" in result.output
+    assert "2026-01-01T00:00" in result.output
+    assert "1.2" in result.output  # sharpe
+    assert "-3.4" in result.output  # max DD
+    assert "5.6" in result.output  # return
+    assert "error: ValueError: No kraken candles" in result.output  # degraded slice
+
+
+def test_backtest_stability_windows_out_of_bounds() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--stability-windows",
+            "1",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "--stability-windows" in result.output
+
+
+def test_backtest_no_stability_windows_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kaupo.backtest.run as bt_mod
+    import kaupo.backtest.stability as stab_mod
+
+    class FakeResult:
+        status = type("S", (), {"value": "completed"})()
+
+    async def fake_run_backtest(request: Any, sm: Any) -> Any:
+        assert request.stability is None  # no flag: today's behavior, no marker
+        return RunId("run-1"), FakeResult(), {"num_fills": 0}
+
+    async def fake_slices(request: Any, sm: Any, *, group: str, windows: int) -> Any:
+        raise AssertionError("must not run slices")
+
+    monkeypatch.setattr(bt_mod, "run_backtest", fake_run_backtest)
+    monkeypatch.setattr(stab_mod, "run_stability_slices", fake_slices)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Stability windows" not in result.output
+
+
 def test_run_shadow_command(monkeypatch: pytest.MonkeyPatch) -> None:
     import kaupo.core.runner as runner_mod
     import kaupo.data.binance as binance_mod

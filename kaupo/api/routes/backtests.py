@@ -91,4 +91,6 @@ async def get_backtest(
             config=row.config,
             metrics=row.metrics,
         ).model_dump(mode="json"),
+        # the stability-window aggregation; null when none was requested
+        "stability": job.result,
     }

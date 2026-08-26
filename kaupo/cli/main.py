@@ -186,6 +186,14 @@ def backtest(
     param: ParamOpt = [],
     cash: Annotated[float, typer.Option(help="starting quote cash", min=0.01)] = 10_000.0,
     exchange: ExchangeOpt = "kraken",
+    stability_windows: Annotated[
+        int | None,
+        typer.Option(
+            help="also run K equal time slices of the window and print per-window metrics",
+            min=2,
+            max=12,
+        ),
+    ] = None,
     max_position_quote: Annotated[
         float | None, typer.Option(help="research override: per-pair position cap (quote)")
     ] = None,
@@ -201,9 +209,13 @@ def backtest(
 ) -> None:
     """Backtest a strategy on historical candles. Pass --pair or --pairs."""
     _setup_logging(verbose)
+    from dataclasses import replace
+
     from kaupo.backtest.portfolio import PortfolioBacktestRequest, run_portfolio_backtest
     from kaupo.backtest.run import BacktestRequest, backtest_risk_config, run_backtest
+    from kaupo.backtest.stability import run_stability_slices, stability_marker
     from kaupo.db.session import get_sessionmaker
+    from kaupo.domain import new_id
     from kaupo.sdk.loader import load_strategies
 
     settings = get_settings()
@@ -266,17 +278,49 @@ def backtest(
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
 
-    async def _run() -> Any:
-        if isinstance(request, PortfolioBacktestRequest):
-            return await run_portfolio_backtest(request, get_sessionmaker())
-        return await run_backtest(request, get_sessionmaker())
+    # one group id ties the full-window run and its slices together
+    group = new_id() if stability_windows is not None else None
+    if group is not None:
+        assert stability_windows is not None
+        request = replace(request, stability=stability_marker(group, "full", stability_windows))
 
-    run_id, result, metrics = asyncio.run(_run())
+    async def _run() -> Any:
+        sm = get_sessionmaker()
+        if isinstance(request, PortfolioBacktestRequest):
+            run_id, result, metrics = await run_portfolio_backtest(request, sm)
+        else:
+            run_id, result, metrics = await run_backtest(request, sm)
+        stability = None
+        if group is not None and stability_windows is not None:
+            stability = await run_stability_slices(request, sm, group=group, windows=stability_windows)
+        return run_id, result, metrics, stability
+
+    run_id, result, metrics, stability = asyncio.run(_run())
     console.print(f"\n[bold]Backtest run {run_id}[/bold] — status {result.status.value}")
     table = Table(show_header=False)
     for key, value in metrics.items():
         table.add_row(key, str(value))
     console.print(table)
+
+    if stability is not None:
+        console.print(f"\n[bold]Stability windows[/bold] — group {group}")
+        stable = Table("window", "start", "end", "sharpe", "max DD", "return", "trips")
+        for entry in stability["slices"]:
+            start, end = entry["start"][:16], entry["end"][:16]
+            if "error" in entry:
+                stable.add_row(str(entry["window"]), start, end, f"[red]error: {entry['error']}[/red]")
+                continue
+            m = entry["metrics"]
+            stable.add_row(
+                str(entry["window"]),
+                start,
+                end,
+                str(m.get("sharpe", "—")),
+                str(m.get("max_drawdown_pct", "—")),
+                str(m.get("total_return_pct", "—")),
+                str(m.get("num_round_trips", "—")),
+            )
+        console.print(stable)
 
 
 @app.command()

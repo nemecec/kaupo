@@ -102,6 +102,8 @@ A deploy or a restart replaces each shadow run: the new run supersedes the old o
 
 Backtests submitted through `POST /api/v1/backtests` run in a separate worker process (`kaupo run backtest-worker`, the `backtest-worker` service), not in the API. The API writes one durable row per job to the `backtest_jobs` table and returns. The worker claims the oldest queued job, runs it, and stores the result. Jobs survive an API restart. When no worker runs, jobs wait queued. At startup, the worker fails jobs that a crashed worker left behind.
 
+Stability windows show whether a strategy works when it starts later: a candidate that holds only from one start date is overfitted. A request sets `stability_windows` (2 to 12) on `POST /api/v1/backtests`, or passes `--stability-windows` to `kaupo backtest`. The worker then runs the same configuration over K equal time slices of the window, after the full-window run. Each slice persists as a normal run row with a `stability` marker in its config. The completed job returns the per-window metrics in `stability.slices`. A slice without candles in its range gets an error entry and does not fail the job.
+
 ### Portfolio shadow runs
 
 An assignment row with a `pairs` list instead of a `pair` declares a portfolio run. The universe follows the portfolio backtest rules: at least two pairs, no duplicates, one shared quote currency, canonical sorted order. The `pair` column stores the comma-joined universe. The strategy must derive from `PortfolioStrategyBase`. The API enforces all of this (`422` on a violation).

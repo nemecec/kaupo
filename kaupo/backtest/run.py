@@ -43,6 +43,8 @@ class BacktestRequest:
     liquidate_end: bool = True
     persist: bool = True
     exchange: str = "kraken"  # which exchange's stored candles to run on
+    # stability-window marker for the run config: {"group", "window", "of"}
+    stability: dict[str, Any] | None = None
 
 
 def backtest_risk_config(
@@ -151,6 +153,7 @@ async def run_backtest(
                 "risk": asdict(request.risk),
                 "lookback": request.lookback,
                 "liquidate_end": request.liquidate_end,
+                **({"stability": request.stability} if request.stability is not None else {}),
             },
         ),
     )

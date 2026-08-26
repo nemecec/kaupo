@@ -160,6 +160,25 @@ class TestMarkTerminal:
         assert row.status == STATUS_COMPLETED
         assert row.run_id == "run-1"
 
+    async def test_completed_stores_stability_result(
+        self, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        aggregation = {"windows": 2, "slices": [{"window": 0, "run_id": "r0", "metrics": {"sharpe": 1.0}}]}
+        async with sm_scope(sessionmaker) as session:
+            job_id = await enqueue(session, {})
+        async with sm_scope(sessionmaker) as session:
+            await mark_completed(session, job_id, "run-1", aggregation)
+        row = await _get(sessionmaker, job_id)
+        assert row.status == STATUS_COMPLETED
+        assert row.result == aggregation
+
+    async def test_completed_result_null(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        async with sm_scope(sessionmaker) as session:
+            job_id = await enqueue(session, {})
+        async with sm_scope(sessionmaker) as session:
+            await mark_completed(session, job_id, "run-1")
+        assert (await _get(sessionmaker, job_id)).result is None
+
     async def test_failed_sets_error(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
         async with sm_scope(sessionmaker) as session:
             job_id = await enqueue(session, {})
