@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
 # rich output wraps to the terminal width of the environment, which differs
@@ -384,7 +385,9 @@ def test_backtest_stability_windows(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(bt_mod, "run_backtest", fake_run_backtest)
     monkeypatch.setattr(stab_mod, "run_stability_slices", fake_slices)
-    monkeypatch.setenv("COLUMNS", "200")  # keep the wide per-window table on one line per row
+    # rich renders to the environment's terminal; pin the console width so
+    # table content is never truncated or wrapped mid-token
+    monkeypatch.setattr(cli, "console", Console(width=200))
 
     result = runner.invoke(
         cli.app,
@@ -408,18 +411,20 @@ def test_backtest_stability_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     # the full-window run carries the marker; the slices share its group
     assert captured["full_stability"] == {"group": captured["group"], "window": "full", "of": 2}
     assert captured["windows"] == 2
-    # compact per-window table after the full-window metrics; assert values,
-    # not layout (rich truncates table cells to the environment's width)
+    # compact per-window table after the full-window metrics (console width
+    # is pinned above, so full content renders)
     assert "Stability windows" in out
+    assert "2026-01-01T00:00" in out
     assert "1.2" in out  # sharpe
     assert "-3.4" in out  # max DD
     assert "5.6" in out  # return
     assert "error: ValueError: No kraken candles" in out  # degraded slice
 
 
-def test_backtest_stability_windows_out_of_bounds() -> None:
-    # COLUMNS pinned: typer's rich error panel wraps to terminal width, and a
-    # narrow CI terminal drops the flag name from the rendered output
+def test_backtest_stability_windows_out_of_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    # typer's error panel width comes from typer.rich_utils.MAX_WIDTH; pin it
+    # so the flag name never wraps across styled fragments
+    monkeypatch.setattr("typer.rich_utils.MAX_WIDTH", 200)
     result = runner.invoke(
         cli.app,
         [
@@ -433,7 +438,6 @@ def test_backtest_stability_windows_out_of_bounds() -> None:
             "--strategies-dir",
             str(EXAMPLES_DIR),
         ],
-        env={"COLUMNS": "250"},
     )
     assert result.exit_code == 2
     assert "--stability-windows" in _plain(result.output)
