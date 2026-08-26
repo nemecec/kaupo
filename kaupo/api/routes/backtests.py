@@ -55,7 +55,7 @@ async def _execute(job_id: str, request: BacktestRequest | PortfolioBacktestRequ
         job.run_id = run_id
     except Exception as exc:
         log.exception("Backtest job %s failed", job_id)
-        job.error = f"{type(exc).__name__} (details in server logs)"
+        job.error = f"{type(exc).__name__}: {exc}"[:300]
 
 
 @router.post("", status_code=202)

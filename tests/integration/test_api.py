@@ -167,6 +167,30 @@ async def test_backtest_job(client: AsyncClient, session: AsyncSession) -> None:
     assert r.status_code == 404
 
 
+async def test_backtest_job_failure_surfaces_message(client: AsyncClient) -> None:
+    # no candles ingested for this pair: the job error must carry the reason,
+    # so a data gap is distinguishable from a strategy bug
+    r = await client.post(
+        "/api/v1/backtests",
+        json={
+            "strategy": "regime-switch",
+            "pair": "ETH/EUR",
+            "timeframe": "1h",
+            "start": BASE.isoformat(),
+            "end": (BASE + timedelta(hours=48)).isoformat(),
+        },
+    )
+    assert r.status_code == 202
+    job_id = r.json()["run_id"]
+
+    for _ in range(100):
+        r = await client.get(f"/api/v1/backtests/{job_id}")
+        if r.json()["status"] != "running":
+            break
+    assert r.json()["status"] == "failed"
+    assert r.json()["error"].startswith("ValueError: No kraken candles for ETH/EUR 1h in range")
+
+
 async def test_backtest_job_portfolio_pairs(client: AsyncClient, session: AsyncSession) -> None:
     for j, pair in enumerate(("ADA/EUR", "BTC/EUR", "SOL/EUR")):
         candles = [
