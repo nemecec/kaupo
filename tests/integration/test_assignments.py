@@ -373,7 +373,6 @@ def _patch_supervisor(monkeypatch: pytest.MonkeyPatch, started: list[tuple[str, 
 
     async def fake_run_shadow(request, sm, client, stop, funding_client=None):
         run_id = new_id()
-        started.append((request.assignment_id, run_id))
         async with sm_scope(sm) as s:
             s.add(
                 RunRow(
@@ -387,6 +386,10 @@ def _patch_supervisor(monkeypatch: pytest.MonkeyPatch, started: list[tuple[str, 
                 )
             )
         probe = DbControlProbe(sm, run_id)
+        # advertise the run only after the probe exists: the probe ignores
+        # commands older than its creation time, so a control event that
+        # lands earlier is lost forever (CI flake under slow DB inserts)
+        started.append((request.assignment_id, run_id))
         while not stop.is_set():
             if await probe() in ("kill", "switch"):
                 break
