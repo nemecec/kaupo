@@ -7,12 +7,15 @@ fills, so shadow-day accumulation and backtest-vs-shadow calibration reset
 on every deploy.
 
 Resume rule: a new run resumes when the latest ended run row of its slot
-(the assignment row id when supervised, else strategy + pair) was
-superseded and runs the SAME config: the config hash (strategy, pair or
-universe, timeframe, params) and the strategy version must match. A run
-halted by the risk rail, killed via control, stopped externally, or failed
-does NOT resume — deliberate stops stay stopped and the successor starts
-fresh at starting_cash.
+(the assignment row id when supervised, else strategy + pair) ended by
+supersession or by a graceful stop, and runs the SAME config: the config
+hash (strategy, pair or universe, timeframe, params) and the strategy
+version must match. A graceful stop ends the row as completed with no
+halt reason — a shadow run never completes on its own (the candle stream
+is infinite), so completed means the stop event unwound the run (deploy,
+shutdown, CLI stop) before the process died. A run halted by the risk
+rail, killed via control, or failed does NOT resume — deliberate stops
+stay stopped and the successor starts fresh at starting_cash.
 
 What carries: cash and open positions only, rebuilt by replaying the whole
 chain's recorded fills through a fresh Ledger — the same apply_fill that
@@ -87,15 +90,24 @@ def run_config_hash(row: RunRow) -> str:
 
 
 def is_resumable(row: RunRow, *, new_config_hash: str, new_strategy_version: str) -> bool:
-    """True when the run row is a superseded predecessor running the same config.
+    """True when the run row is a resumable predecessor running the same config.
 
-    Only a run halted by supersession qualifies: a risk-rail halt, a
-    control kill, an external stop, and a failure all leave a different
-    (or no) halt reason, and resuming them would defeat deliberate stops.
+    Two endings qualify: a supersession (the row was still "running" when
+    its successor claimed the slot) and a graceful stop — a shadow run
+    never completes on its own (the candle stream is infinite), so
+    completed with no halt reason means the stop event unwound the run
+    (deploy, shutdown, CLI stop) before the process died. A risk-rail
+    halt, a control kill, and a failure leave a different status or a
+    halt reason, and resuming them would defeat deliberate stops.
     """
-    if row.status != RunStatus.HALTED.value or row.ended_at is None:
+    if row.ended_at is None:
         return False
-    if (row.metrics or {}).get("halt_reason") != SUPERSEDED_HALT_REASON:
+    halt_reason = (row.metrics or {}).get("halt_reason")
+    superseded = row.status == RunStatus.HALTED.value and halt_reason == SUPERSEDED_HALT_REASON
+    gracefully_stopped = (
+        row.mode == RunMode.SHADOW.value and row.status == RunStatus.COMPLETED.value and halt_reason is None
+    )
+    if not (superseded or gracefully_stopped):
         return False
     if row.strategy_version != new_strategy_version:
         return False

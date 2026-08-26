@@ -227,6 +227,41 @@ async def test_superseded_run_resumes_ledger_state_and_chain(session: AsyncSessi
     assert snaps3[0].equity == snaps2[0].equity
 
 
+async def test_gracefully_stopped_run_resumes(session: AsyncSession, tmp_path: Path) -> None:
+    """A shadow run unwound to completed by the stop event (a graceful deploy
+    or shutdown) is resumed by its successor, same as a superseded one."""
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    history = hourly_history(BTC, now - timedelta(hours=2), 100.0)
+    await upsert_candles(session, history)
+    await session.commit()
+    (tmp_path / "buyer.py").write_text(STRATEGY)
+    c1, c2, c3 = (candle(BTC, now + timedelta(hours=i - 1), 100.0) for i in range(3))
+
+    # run 1: the stop event lands while the engine waits for the next candle,
+    # so the stream dries up and the run unwinds to completed (no halt reason)
+    result1 = await _run_shadow(tmp_path, ScriptedClient(history, [[c1], [c2]], asyncio.Event()))
+    assert result1.status.value == "completed"
+    assert result1.num_fills == 1
+    run1 = (await _runs(session))[0]
+    assert run1.status == "completed"
+    assert run1.metrics is None
+    snaps1 = await _snapshots(session, run1.id)
+    assert snaps1[-1].cash < 10_000  # the fill tied up cash
+
+    # run 2, same config: resumes run 1 without superseding it
+    result2 = await _run_shadow(tmp_path, ScriptedClient([*history, c1, c2], [[c3]], asyncio.Event()))
+    assert result2.num_fills == 0  # the carried position suppresses the strategy's entry
+    run1, run2 = await _runs(session)
+    assert run1.status == "completed"  # untouched: the slot was free
+    assert run2.config["resumed_from"] == run1.id
+    assert run2.config["chain_started_at"] == run1.started_at.isoformat()
+    snaps2 = await _snapshots(session, run2.id)
+    assert len(snaps2) == 1
+    assert snaps2[0].cash == snaps1[-1].cash
+    assert snaps2[0].unrealized_pnl == snaps1[-1].unrealized_pnl
+    assert snaps2[0].equity == snaps1[-1].equity
+
+
 async def test_config_changed_successor_starts_fresh(session: AsyncSession, tmp_path: Path) -> None:
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     history = hourly_history(BTC, now - timedelta(hours=2), 100.0)

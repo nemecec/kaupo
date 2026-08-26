@@ -56,8 +56,18 @@ class TestIsResumable:
     def test_running_row_is_not_resumable(self) -> None:
         assert not resumable(run_row(status="running", ended_at=None, metrics=None))
 
-    def test_completed_row_is_not_resumable(self) -> None:
-        assert not resumable(run_row(status="completed", metrics=None))
+    def test_gracefully_stopped_shadow_row_is_resumable(self) -> None:
+        # a shadow run never completes on its own: completed with no halt
+        # reason means a graceful external stop (deploy, shutdown, CLI stop)
+        assert resumable(run_row(status="completed", metrics=None))
+
+    def test_completed_with_halt_reason_is_not_resumable(self) -> None:
+        row = run_row(status="completed", metrics={"halt_reason": "killed via control API"})
+        assert not resumable(row)
+
+    def test_backtest_completed_is_not_resumable(self) -> None:
+        # completed is the normal backtest ending, never a resume source
+        assert not resumable(run_row(mode="backtest", status="completed", metrics=None))
 
     def test_failed_row_is_not_resumable(self) -> None:
         assert not resumable(run_row(status="failed", metrics=None))
