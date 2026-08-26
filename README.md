@@ -61,6 +61,7 @@ Prerequisites: uv, Docker, and Node 22 or later.
    ```bash
    uv run kaupo backtest --strategy momentum-rotation --pairs BTC/EUR,SOL/EUR,ADA/EUR --timeframe 1h --days 365
    ```
+   Backtests use the live risk caps by default: 1000 quote per pair, 2000 quote gross exposure, 200 quote daily loss. These caps clamp research strategies that target a larger book. Three flags relax the caps for one backtest run: `--max-position-quote`, `--max-gross-exposure-quote`, and `--max-daily-loss-quote`. Values must be positive. The API accepts the same three fields on `POST /api/v1/backtests`. The overrides apply to backtests only. Live and shadow guardrails do not change.
 7. Start shadow trading with virtual money:
    ```bash
    uv run kaupo run shadow --strategy regime-switch --pair BTC/EUR --timeframe 1h

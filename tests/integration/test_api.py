@@ -4,6 +4,7 @@ import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -232,6 +233,67 @@ async def test_backtest_job_portfolio_pairs(client: AsyncClient, session: AsyncS
     assert metrics["universe"] == ["ADA/EUR", "BTC/EUR", "SOL/EUR"]
     assert set(metrics["per_pair"]) == {"ADA/EUR", "BTC/EUR", "SOL/EUR"}
     assert r.json()["run"]["config"]["pair"] == "ADA/EUR,BTC/EUR,SOL/EUR"
+
+
+async def _wait_for_job(client: AsyncClient, job_id: str) -> dict[str, Any]:
+    for _ in range(100):
+        r = await client.get(f"/api/v1/backtests/{job_id}")
+        if r.json()["status"] != "running":
+            break
+    return r.json()
+
+
+async def test_backtest_job_risk_override(client: AsyncClient, session: AsyncSession) -> None:
+    candles = [
+        Candle(
+            pair=PAIR,
+            timeframe=Timeframe.H1,
+            ts=BASE + timedelta(hours=i),
+            open=100 + i,
+            high=101 + i,
+            low=99 + i,
+            close=100 + i,
+            volume=1.0,
+        )
+        for i in range(120)
+    ]
+    await upsert_candles(session, candles)
+    await session.commit()
+
+    async def submit(extra: dict[str, Any]) -> dict[str, Any]:
+        r = await client.post(
+            "/api/v1/backtests",
+            json={
+                "strategy": "regime-switch",
+                "pair": "BTC/EUR",
+                "timeframe": "1h",
+                "start": BASE.isoformat(),
+                "end": (BASE + timedelta(hours=120)).isoformat(),
+                **extra,
+            },
+        )
+        assert r.status_code == 202
+        return await _wait_for_job(client, r.json()["run_id"])
+
+    default = await submit({})
+    assert default["status"] == "completed"
+    assert default["run"]["config"]["risk"]["max_position_quote"] == 1000.0
+
+    override = await submit({"max_position_quote": 50.0})
+    assert override["status"] == "completed"
+    risk = override["run"]["config"]["risk"]  # the runs row records asdict(request.risk)
+    assert risk["max_position_quote"] == 50.0
+    assert risk["max_gross_exposure_quote"] == 2000.0  # default kept
+    assert risk["max_daily_loss_quote"] == 200.0  # default kept
+
+
+async def test_backtest_risk_override_validation(client: AsyncClient) -> None:
+    for field in ("max_position_quote", "max_gross_exposure_quote", "max_daily_loss_quote"):
+        r = await client.post(
+            "/api/v1/backtests",
+            json={"strategy": "regime-switch", "pair": "BTC/EUR", field: -1},
+        )
+        assert r.status_code == 422, field
 
 
 async def test_backtest_pairs_routing_validation(client: AsyncClient) -> None:

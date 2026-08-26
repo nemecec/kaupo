@@ -88,6 +88,10 @@ class BacktestIn(BaseModel):
     params: dict[str, Any] = {}
     starting_cash: float = Field(default=10_000.0, gt=0)
     exchange: str = "kraken"
+    # research overrides for the backtest risk caps; null keeps the live defaults
+    max_position_quote: float | None = Field(default=None, gt=0)
+    max_gross_exposure_quote: float | None = Field(default=None, gt=0)
+    max_daily_loss_quote: float | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _check(self) -> BacktestIn:

@@ -186,6 +186,15 @@ def backtest(
     param: ParamOpt = [],
     cash: Annotated[float, typer.Option(help="starting quote cash", min=0.01)] = 10_000.0,
     exchange: ExchangeOpt = "kraken",
+    max_position_quote: Annotated[
+        float | None, typer.Option(help="research override: per-pair position cap (quote)")
+    ] = None,
+    max_gross_exposure_quote: Annotated[
+        float | None, typer.Option(help="research override: total exposure cap (quote)")
+    ] = None,
+    max_daily_loss_quote: Annotated[
+        float | None, typer.Option(help="research override: daily loss halt (quote)")
+    ] = None,
     strategies_dir: StrategiesDirOpt = None,
     no_persist: Annotated[bool, typer.Option(help="do not store the run in Postgres")] = False,
     verbose: VerboseOpt = False,
@@ -193,7 +202,7 @@ def backtest(
     """Backtest a strategy on historical candles. Pass --pair or --pairs."""
     _setup_logging(verbose)
     from kaupo.backtest.portfolio import PortfolioBacktestRequest, run_portfolio_backtest
-    from kaupo.backtest.run import BacktestRequest, run_backtest
+    from kaupo.backtest.run import BacktestRequest, backtest_risk_config, run_backtest
     from kaupo.db.session import get_sessionmaker
     from kaupo.sdk.loader import load_strategies
 
@@ -211,6 +220,11 @@ def backtest(
     start_dt, end_dt = _range(days, start, end)
     request: BacktestRequest | PortfolioBacktestRequest
     try:
+        risk = backtest_risk_config(
+            max_position_quote=max_position_quote,
+            max_gross_exposure_quote=max_gross_exposure_quote,
+            max_daily_loss_quote=max_daily_loss_quote,
+        )
         if pair is not None and pairs is None:
             if loaded.is_portfolio:
                 err_console.print(f"[red]Strategy {strategy!r} is a portfolio strategy[/red] — use --pairs")
@@ -224,6 +238,7 @@ def backtest(
                 end=end_dt,
                 starting_cash=cash,
                 exchange=exchange,
+                risk=risk,
                 persist=not no_persist,
             )
         elif pairs is not None and pair is None:
@@ -241,6 +256,7 @@ def backtest(
                 end=end_dt,
                 starting_cash=cash,
                 exchange=exchange,
+                risk=risk,
                 persist=not no_persist,
             )
         else:

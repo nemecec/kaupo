@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from kaupo.api.deps import Principal, get_principal, require_admin
 from kaupo.api.schemas import BacktestAccepted, BacktestIn, RunOut
 from kaupo.backtest.portfolio import PortfolioBacktestRequest, run_portfolio_backtest
-from kaupo.backtest.run import BacktestRequest, run_backtest
+from kaupo.backtest.run import BacktestRequest, backtest_risk_config, run_backtest
 from kaupo.config import Settings, get_settings
 from kaupo.db.models import RunRow
 from kaupo.db.session import get_session, get_sessionmaker
@@ -94,6 +94,11 @@ async def submit_backtest(
 
     request: BacktestRequest | PortfolioBacktestRequest
     try:
+        risk = backtest_risk_config(
+            max_position_quote=body.max_position_quote,
+            max_gross_exposure_quote=body.max_gross_exposure_quote,
+            max_daily_loss_quote=body.max_daily_loss_quote,
+        )
         timeframe = Timeframe.parse(body.timeframe)
         if body.pairs is not None:
             if not loaded.is_portfolio:
@@ -110,6 +115,7 @@ async def submit_backtest(
                 end=end,
                 starting_cash=body.starting_cash,
                 exchange=body.exchange,
+                risk=risk,
             )
         else:
             if loaded.is_portfolio:
@@ -127,6 +133,7 @@ async def submit_backtest(
                 end=end,
                 starting_cash=body.starting_cash,
                 exchange=body.exchange,
+                risk=risk,
             )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

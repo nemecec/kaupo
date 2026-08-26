@@ -45,6 +45,33 @@ class BacktestRequest:
     exchange: str = "kraken"  # which exchange's stored candles to run on
 
 
+def backtest_risk_config(
+    *,
+    max_position_quote: float | None = None,
+    max_gross_exposure_quote: float | None = None,
+    max_daily_loss_quote: float | None = None,
+) -> RiskConfig:
+    """Risk config for a backtest request: research overrides over the live
+    defaults. None keeps the default. Backtest-only — live/shadow guardrails
+    never go through here."""
+    given = (
+        ("max_position_quote", max_position_quote),
+        ("max_gross_exposure_quote", max_gross_exposure_quote),
+        ("max_daily_loss_quote", max_daily_loss_quote),
+    )
+    for name, value in given:
+        if value is not None and value <= 0:
+            raise ValueError(f"{name} must be positive, got {value}")
+    risk = RiskConfig()
+    if max_position_quote is not None:
+        risk = replace(risk, max_position_quote=max_position_quote)
+    if max_gross_exposure_quote is not None:
+        risk = replace(risk, max_gross_exposure_quote=max_gross_exposure_quote)
+    if max_daily_loss_quote is not None:
+        risk = replace(risk, max_daily_loss_quote=max_daily_loss_quote)
+    return risk
+
+
 async def _aiter(candles: list[Candle]) -> AsyncIterator[Candle]:
     for candle in candles:
         yield candle

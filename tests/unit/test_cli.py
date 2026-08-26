@@ -649,3 +649,142 @@ def test_backtest_pairs_rejects_mixed_quotes() -> None:
     )
     assert result.exit_code == 1
     assert "one quote currency" in result.output
+
+
+def _capture_backtest_request(monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any]) -> None:
+    import kaupo.backtest.run as bt_mod
+
+    class FakeResult:
+        status = type("S", (), {"value": "completed"})()
+
+    async def fake_run_backtest(request: Any, sm: Any) -> Any:
+        captured["risk"] = request.risk
+        return RunId("run-1"), FakeResult(), {"num_fills": 0}
+
+    monkeypatch.setattr(bt_mod, "run_backtest", fake_run_backtest)
+
+
+def test_backtest_risk_override_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kaupo.risk.manager import RiskConfig
+
+    captured: dict[str, Any] = {}
+    _capture_backtest_request(monkeypatch, captured)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--days",
+            "30",
+            "--max-position-quote",
+            "5000",
+            "--max-gross-exposure-quote",
+            "20000",
+            "--max-daily-loss-quote",
+            "1500",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    risk = captured["risk"]
+    assert isinstance(risk, RiskConfig)
+    assert risk.max_position_quote == 5000.0
+    assert risk.max_gross_exposure_quote == 20000.0
+    assert risk.max_daily_loss_quote == 1500.0
+    # the other caps keep the live defaults
+    assert risk.min_order_quote == 10.0
+    assert risk.max_consecutive_losses == 5
+
+
+def test_backtest_risk_override_flags_pairs(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kaupo.backtest.portfolio as pf_mod
+
+    captured: dict[str, Any] = {}
+
+    class FakeResult:
+        status = type("S", (), {"value": "completed"})()
+
+    async def fake_run(request: Any, sm: Any) -> Any:
+        captured["risk"] = request.risk
+        return RunId("run-2"), FakeResult(), {"num_fills": 0}
+
+    monkeypatch.setattr(pf_mod, "run_portfolio_backtest", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "momentum-rotation",
+            "--pairs",
+            "BTC/EUR,SOL/EUR",
+            "--days",
+            "30",
+            "--max-gross-exposure-quote",
+            "100000",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    risk = captured["risk"]
+    assert risk.max_gross_exposure_quote == 100000.0
+    assert risk.max_position_quote == 1000.0  # default kept
+
+
+def test_backtest_risk_defaults_when_no_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kaupo.risk.manager import RiskConfig
+
+    captured: dict[str, Any] = {}
+    _capture_backtest_request(monkeypatch, captured)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--days",
+            "30",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["risk"] == RiskConfig()
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--max-position-quote", "-1"),
+        ("--max-gross-exposure-quote", "0"),
+        ("--max-daily-loss-quote", "-0.5"),
+    ],
+)
+def test_backtest_risk_override_rejects_non_positive(flag: str, value: str) -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--days",
+            "30",
+            flag,
+            value,
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "must be positive" in result.output

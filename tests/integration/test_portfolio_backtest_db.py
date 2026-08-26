@@ -9,10 +9,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from kaupo.backtest.portfolio import PortfolioBacktestRequest, run_portfolio_backtest
+from kaupo.backtest.run import backtest_risk_config
 from kaupo.data.candles import upsert_candles
 from kaupo.db.models import EquitySnapshotRow, FillRow, OrderRow, RunRow
 from kaupo.db.session import get_sessionmaker
 from kaupo.domain import Candle, Pair, Timeframe
+from kaupo.risk.manager import RiskConfig
 from kaupo.sdk.loader import load_strategies
 
 pytestmark = pytest.mark.integration
@@ -124,6 +126,66 @@ async def test_portfolio_backtest_persists_full_run(session: AsyncSession, tmp_p
         .all()
     )
     assert len(equity) == 12  # one snapshot per joined step
+
+
+BIG_BUYER = textwrap.dedent(
+    """
+    from kaupo.sdk.protocol import PortfolioStrategyBase
+    from kaupo.domain import OrderIntent, Pair, Side
+
+    UNIVERSE = [Pair.parse("ADA/EUR"), Pair.parse("BTC/EUR"), Pair.parse("SOL/EUR")]
+
+    class BigBuyer(PortfolioStrategyBase):
+        id = "big-buyer"
+        def __init__(self, params):
+            super().__init__(params)
+            self.n = 0
+        def on_candle(self, ctx):
+            self.n += 1
+            # one ~900-quote buy per step: one per pair, then a second round
+            if 1 <= self.n <= 6:
+                return [OrderIntent(pair=UNIVERSE[(self.n - 1) % 3], side=Side.BUY, size=9.0)]
+            return []
+    """
+)
+
+
+async def test_portfolio_backtest_risk_override_lifts_gross_cap(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    for pair in PAIRS:
+        await upsert_candles(session, _candles(pair, 100.0, 12))
+    await session.commit()
+
+    (tmp_path / "s.py").write_text(BIG_BUYER)
+    strategy = load_strategies(tmp_path)["big-buyer"]
+
+    def request(risk: RiskConfig) -> PortfolioBacktestRequest:
+        return PortfolioBacktestRequest(
+            strategy=strategy,
+            params={},
+            pairs=PAIRS,
+            timeframe=Timeframe.H1,
+            start=BASE,
+            end=BASE + timedelta(hours=12),
+            risk=risk,
+        )
+
+    # the live defaults cap gross exposure at 2000: the later buys are rejected
+    _, _, metrics_default = await run_portfolio_backtest(request(RiskConfig()), get_sessionmaker())
+    assert metrics_default["risk_rejections"] > 0
+
+    # the research override lifts the gross cap: every intent fits the risk budget
+    run_id, _, metrics_override = await run_portfolio_backtest(
+        request(backtest_risk_config(max_gross_exposure_quote=100_000.0)),
+        get_sessionmaker(),
+    )
+    assert metrics_override["risk_rejections"] == 0
+    assert metrics_override["num_fills"] > metrics_default["num_fills"]
+
+    run = (await session.execute(select(RunRow).where(RunRow.id == run_id))).scalar_one()
+    assert run.config["risk"]["max_gross_exposure_quote"] == 100000.0
+    assert run.config["risk"]["max_position_quote"] == 1000.0  # default kept
 
 
 async def test_portfolio_backtest_without_candles_fails_clearly(
