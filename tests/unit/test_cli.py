@@ -385,9 +385,10 @@ def test_backtest_stability_windows(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(bt_mod, "run_backtest", fake_run_backtest)
     monkeypatch.setattr(stab_mod, "run_stability_slices", fake_slices)
-    # rich renders to the environment's terminal; pin the console width so
-    # table content is never truncated or wrapped mid-token
-    monkeypatch.setattr(cli, "console", Console(width=200))
+    # rich renders to the detected terminal size when the console counts as
+    # a terminal (FORCE_COLOR / PY_COLORS in CI), ignoring width= and COLUMNS.
+    # A non-terminal console with explicit width renders deterministically.
+    monkeypatch.setattr(cli, "console", Console(width=200, force_terminal=False))
 
     result = runner.invoke(
         cli.app,
@@ -422,8 +423,10 @@ def test_backtest_stability_windows(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_backtest_stability_windows_out_of_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
-    # typer's error panel width comes from typer.rich_utils.MAX_WIDTH; pin it
-    # so the flag name never wraps across styled fragments
+    # typer's error panel console: force it non-terminal so its width setting
+    # is honored (a "terminal" console renders to the detected size instead,
+    # wrapping styled text mid-token in CI)
+    monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", False)
     monkeypatch.setattr("typer.rich_utils.MAX_WIDTH", 200)
     result = runner.invoke(
         cli.app,
