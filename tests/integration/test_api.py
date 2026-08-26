@@ -1,5 +1,6 @@
 """API contract tests against a real Postgres (httpx ASGI transport, no server)."""
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from kaupo.backtest.run import BacktestRequest, run_backtest
 from kaupo.config import get_settings
+from kaupo.core.backtest_worker import run_backtest_worker
 from kaupo.data.candles import upsert_candles
 from kaupo.db.session import dispose_engine, get_sessionmaker
 from kaupo.domain import Candle, Pair, RunId, Timeframe
@@ -44,6 +46,27 @@ async def client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
         else:
             os.environ[key] = value
     get_settings.cache_clear()
+
+
+@pytest.fixture
+async def worker(client: AsyncClient) -> AsyncIterator[None]:
+    """Run the backtest worker loop in a task, like the production container."""
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        run_backtest_worker(get_sessionmaker(), get_settings(), stop, poll_interval_seconds=0.05)
+    )
+    yield
+    stop.set()
+    await task
+
+
+async def _wait_for_job(client: AsyncClient, job_id: str) -> dict[str, Any]:
+    for _ in range(200):
+        r = await client.get(f"/api/v1/backtests/{job_id}")
+        if r.json()["status"] != "running":
+            break
+        await asyncio.sleep(0.05)
+    return r.json()
 
 
 async def _seed_run(session: AsyncSession) -> RunId:
@@ -131,7 +154,7 @@ async def test_runs_endpoints(client: AsyncClient, session: AsyncSession) -> Non
     assert r.status_code == 404
 
 
-async def test_backtest_job(client: AsyncClient, session: AsyncSession) -> None:
+async def test_backtest_job(client: AsyncClient, session: AsyncSession, worker: None) -> None:
     candles = [
         Candle(
             pair=PAIR,
@@ -161,18 +184,15 @@ async def test_backtest_job(client: AsyncClient, session: AsyncSession) -> None:
     assert r.status_code == 202
     job_id = r.json()["run_id"]
 
-    for _ in range(100):
-        r = await client.get(f"/api/v1/backtests/{job_id}")
-        if r.json()["status"] != "running":
-            break
-    assert r.json()["status"] == "completed"
-    assert r.json()["run"]["metrics"]["num_fills"] >= 0
+    body = await _wait_for_job(client, job_id)
+    assert body["status"] == "completed"
+    assert body["run"]["metrics"]["num_fills"] >= 0
 
     r = await client.post("/api/v1/backtests", json={"strategy": "nope", "pair": "BTC/EUR"})
     assert r.status_code == 404
 
 
-async def test_backtest_job_failure_surfaces_message(client: AsyncClient) -> None:
+async def test_backtest_job_failure_surfaces_message(client: AsyncClient, worker: None) -> None:
     # no candles ingested for this pair: the job error must carry the reason,
     # so a data gap is distinguishable from a strategy bug
     r = await client.post(
@@ -188,15 +208,12 @@ async def test_backtest_job_failure_surfaces_message(client: AsyncClient) -> Non
     assert r.status_code == 202
     job_id = r.json()["run_id"]
 
-    for _ in range(100):
-        r = await client.get(f"/api/v1/backtests/{job_id}")
-        if r.json()["status"] != "running":
-            break
-    assert r.json()["status"] == "failed"
-    assert r.json()["error"].startswith("ValueError: No kraken candles for ETH/EUR 1h in range")
+    body = await _wait_for_job(client, job_id)
+    assert body["status"] == "failed"
+    assert body["error"].startswith("ValueError: No kraken candles for ETH/EUR 1h in range")
 
 
-async def test_backtest_job_portfolio_pairs(client: AsyncClient, session: AsyncSession) -> None:
+async def test_backtest_job_portfolio_pairs(client: AsyncClient, session: AsyncSession, worker: None) -> None:
     for j, pair in enumerate(("ADA/EUR", "BTC/EUR", "SOL/EUR")):
         candles = [
             Candle(
@@ -228,26 +245,15 @@ async def test_backtest_job_portfolio_pairs(client: AsyncClient, session: AsyncS
     assert r.status_code == 202
     job_id = r.json()["run_id"]
 
-    for _ in range(100):
-        r = await client.get(f"/api/v1/backtests/{job_id}")
-        if r.json()["status"] != "running":
-            break
-    assert r.json()["status"] == "completed"
-    metrics = r.json()["run"]["metrics"]
+    body = await _wait_for_job(client, job_id)
+    assert body["status"] == "completed"
+    metrics = body["run"]["metrics"]
     assert metrics["universe"] == ["ADA/EUR", "BTC/EUR", "SOL/EUR"]
     assert set(metrics["per_pair"]) == {"ADA/EUR", "BTC/EUR", "SOL/EUR"}
-    assert r.json()["run"]["config"]["pair"] == "ADA/EUR,BTC/EUR,SOL/EUR"
+    assert body["run"]["config"]["pair"] == "ADA/EUR,BTC/EUR,SOL/EUR"
 
 
-async def _wait_for_job(client: AsyncClient, job_id: str) -> dict[str, Any]:
-    for _ in range(100):
-        r = await client.get(f"/api/v1/backtests/{job_id}")
-        if r.json()["status"] != "running":
-            break
-    return r.json()
-
-
-async def test_backtest_job_risk_override(client: AsyncClient, session: AsyncSession) -> None:
+async def test_backtest_job_risk_override(client: AsyncClient, session: AsyncSession, worker: None) -> None:
     candles = [
         Candle(
             pair=PAIR,

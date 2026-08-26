@@ -176,7 +176,7 @@ COMPOSE="docker compose --env-file /etc/kaupo/kaupo.env -f /opt/kaupo/deploy/com
 3. On the host, stop the writers and load the dump into a fresh database:
 
    ```bash
-   $COMPOSE stop api supervisor
+   $COMPOSE stop api supervisor backtest-worker
    $COMPOSE exec db psql -U kaupo -d postgres -c 'DROP DATABASE kaupo;'
    $COMPOSE exec db psql -U kaupo -d postgres -c 'CREATE DATABASE kaupo;'
    $COMPOSE exec -T db psql -U kaupo -d kaupo < /tmp/restore.sql
@@ -185,4 +185,4 @@ COMPOSE="docker compose --env-file /etc/kaupo/kaupo.env -f /opt/kaupo/deploy/com
 
 ## Moving to ECS later
 
-Every service is already a container, and the images already live in a registry. The migration is: push the images to ECR, restore the latest dump into RDS, and write ECS task definitions for `api`, `supervisor`, `migrate`, and the UI. The Caddy and host-specific parts do not transfer.
+Every service is already a container, and the images already live in a registry. The migration is: push the images to ECR, restore the latest dump into RDS, and write ECS task definitions for `api`, `supervisor`, `backtest-worker`, `migrate`, and the UI. The Caddy and host-specific parts do not transfer.

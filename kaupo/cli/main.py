@@ -486,3 +486,36 @@ def run_supervisor_cmd(
 
     asyncio.run(_run())
     console.print("[bold]Supervisor stopped[/bold]")
+
+
+@run_app.command(name="backtest-worker")
+def run_backtest_worker_cmd(
+    poll_interval: Annotated[float, typer.Option(help="seconds between queue polls", min=0.1)] = 5.0,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Execute queued backtest jobs from the database. Ctrl-C to stop.
+
+    The API enqueues a job per POST /api/v1/backtests; this worker claims
+    the oldest queued one, runs it, and stores the result. Jobs wait
+    queued while no worker runs, and survive restarts of either process.
+    """
+    _setup_logging(verbose)
+    from kaupo.core.backtest_worker import run_backtest_worker
+    from kaupo.db.session import get_sessionmaker
+
+    async def _run() -> None:
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        import signal
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
+        await run_backtest_worker(
+            get_sessionmaker(),
+            get_settings(),
+            stop,
+            poll_interval_seconds=poll_interval,
+        )
+
+    asyncio.run(_run())
+    console.print("[bold]Backtest worker stopped[/bold]")

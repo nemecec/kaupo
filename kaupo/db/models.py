@@ -163,6 +163,20 @@ class RunAssignmentRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class BacktestJobRow(Base):
+    __tablename__ = "backtest_jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(10))  # queued/running/completed/failed
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)  # the validated BacktestIn body
+    run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # the runs row id
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (Index("ix_backtest_jobs_status_created", "status", "created_at"),)
+
+
 class EventRow(Base):
     __tablename__ = "events"
 

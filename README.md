@@ -96,6 +96,10 @@ The shadow strategy comes from `KAUPO_SHADOW_STRATEGY` (default `regime-switch`)
 
 The `run_assignments` table declares the desired shadow runs. `GET /api/v1/assignments` lists the rows with their live run ids. `POST`, `PUT`, and `DELETE /api/v1/assignments/{id}` manage them with the admin token. The supervisor (`kaupo run supervisor`, the `supervisor` service in the production stack) reconciles the actual runs to the enabled rows: it starts missing runs, stops disabled or changed ones, and restarts crashed ones. `PUT /api/v1/settings` still switches the main run: it updates the `primary` assignment row. For a manual side run outside the portfolio, use `kaupo run shadow --no-config-from-db` with explicit flags.
 
+### Backtest jobs
+
+Backtests submitted through `POST /api/v1/backtests` run in a separate worker process (`kaupo run backtest-worker`, the `backtest-worker` service), not in the API. The API writes one durable row per job to the `backtest_jobs` table and returns. The worker claims the oldest queued job, runs it, and stores the result. Jobs survive an API restart. When no worker runs, jobs wait queued. At startup, the worker fails jobs that a crashed worker left behind.
+
 ### Portfolio shadow runs
 
 An assignment row with a `pairs` list instead of a `pair` declares a portfolio run. The universe follows the portfolio backtest rules: at least two pairs, no duplicates, one shared quote currency, canonical sorted order. The `pair` column stores the comma-joined universe. The strategy must derive from `PortfolioStrategyBase`. The API enforces all of this (`422` on a violation).

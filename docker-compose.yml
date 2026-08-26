@@ -62,6 +62,19 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  backtest-worker:
+    build: .
+    command: kaupo run backtest-worker
+    environment:
+      KAUPO_DATABASE_URL: postgresql+asyncpg://kaupo:kaupo@db:5432/kaupo
+      KAUPO_STRATEGIES_DIR: /strategies
+    volumes:
+      - ${KAUPO_STRATEGIES_DIR:-./examples/strategies}:/strategies:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   ui:
     build:
       context: ./ui
