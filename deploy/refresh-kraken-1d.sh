@@ -7,7 +7,7 @@ set -uo pipefail
 
 PAIRS="BTC/EUR ETH/EUR SOL/EUR XRP/EUR ADA/EUR LINK/EUR DOGE/EUR LTC/EUR AVAX/EUR DOT/EUR ATOM/EUR"
 
-cd /opt/kaupo
+cd /opt/kaupo || exit 1
 fail=0
 for pair in $PAIRS; do
   if ! docker compose --env-file /etc/kaupo/kaupo.env -f deploy/compose.prod.yml --profile trading \
