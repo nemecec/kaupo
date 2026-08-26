@@ -5,6 +5,7 @@ equity snapshots to Postgres. Money math uses Decimal; market prices come
 in as floats and are converted at the boundary.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -38,13 +39,31 @@ def _dec(value: float | Decimal) -> Decimal:
 
 
 class Ledger:
-    def __init__(self, quote_asset: str, starting_cash: float, ts: datetime) -> None:
+    def __init__(
+        self,
+        quote_asset: str,
+        starting_cash: float | Decimal,
+        ts: datetime,
+        *,
+        positions: Mapping[Pair, Position] | None = None,
+    ) -> None:
         self._quote = quote_asset
         self._cash = _dec(starting_cash)
-        self._positions: dict[Pair, Position] = {}
+        self._positions: dict[Pair, Position] = {
+            pair: Position(pair=pos.pair, size=pos.size, avg_entry=pos.avg_entry)
+            for pair, pos in (positions or {}).items()
+            if pos.size != 0
+        }
         self.entries: list[LedgerEntry] = []  # unpersisted entries
         self.realized_pnl: Decimal = Decimal(0)
-        self._record(ts, quote_asset, self._cash, "deposit", None)
+        if positions is None:
+            self._record(ts, quote_asset, self._cash, "deposit", None)
+        else:
+            # a resumed run: the opening balance carries in from the
+            # predecessor run's chain, it is not a fresh deposit
+            self._record(ts, quote_asset, self._cash, "carry-in", None)
+            for pair, pos in self._positions.items():
+                self._record(ts, pair.base, _dec(pos.size), "carry-in", None)
 
     def _record(self, ts: datetime, asset: str, amount: Decimal, reason: str, ref_id: str | None) -> None:
         balance = self._cash if asset == self._quote else _dec(self.position_for(asset).size)
@@ -61,6 +80,15 @@ class Ledger:
     @property
     def cash(self) -> Decimal:
         return self._cash
+
+    @property
+    def open_positions(self) -> dict[Pair, Position]:
+        """All open positions (copies), keyed by pair — the state a resume carries."""
+        return {
+            pair: Position(pair=pos.pair, size=pos.size, avg_entry=pos.avg_entry)
+            for pair, pos in self._positions.items()
+            if pos.size != 0
+        }
 
     def position(self, pair: Pair) -> Position:
         # a copy: the SDK contract promises strategies a read-only view

@@ -1,9 +1,11 @@
 """Account-level equity: one curve stitched across the sequential runs of a strategy.
 
-Every deploy/restart starts a new run with a fresh ledger, so a per-run equity
-curve resets. Stitching rebases each run's snapshots onto the end of the
-previous run, giving one continuous account-level series. The stored per-run
-snapshots are unchanged — the rebase is a read-time view.
+A deploy/restart starts a new run. When the new run resumes its predecessor
+(shadow state carry), its ledger continues the chain and its curve already
+aligns; a fresh run starts at starting_cash and its curve resets. Stitching
+rebases each run's snapshots onto the end of the previous run, giving one
+continuous account-level series. The stored per-run snapshots are unchanged
+— the rebase is a read-time view.
 """
 
 from dataclasses import dataclass

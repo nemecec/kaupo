@@ -11,18 +11,16 @@ resume command targets it or its assignment row is updated.
 
 import asyncio
 import enum
-import hashlib
-import json
 import logging
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.core.engine import RunResult
+from kaupo.core.resume import config_hash as config_hash
 from kaupo.core.runner import PortfolioShadowRequest, ShadowRequest, run_portfolio_shadow, run_shadow
 from kaupo.data.assignments import Assignment, list_assignments
 from kaupo.data.binance import BinanceClient
@@ -37,32 +35,6 @@ log = logging.getLogger(__name__)
 RECONCILE_INTERVAL_SECONDS = 15.0
 RESTART_BACKOFF = timedelta(seconds=60)
 DEFAULT_STARTING_CASH = 10_000.0
-
-
-def config_hash(
-    strategy_id: str,
-    pair: str,
-    timeframe: str,
-    params: dict[str, Any],
-    pairs: list[str] | None = None,
-) -> str:
-    """Stable hash of the run-defining fields of an assignment.
-
-    A change in strategy, pair, universe (``pairs``), timeframe, or params
-    restarts the run; anything else (enabled flag, starting cash) does not.
-    """
-    canonical = json.dumps(
-        {
-            "strategy": strategy_id,
-            "pair": pair,
-            "pairs": pairs,
-            "timeframe": timeframe,
-            "params": params,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 class EndKind(enum.Enum):

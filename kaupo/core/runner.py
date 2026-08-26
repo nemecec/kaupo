@@ -21,6 +21,7 @@ from kaupo.core.engine import Engine, EngineConfig, RunResult
 from kaupo.core.funding import DbFundingProvider, EmptyFundingProvider, FundingProvider
 from kaupo.core.portfolio_engine import PortfolioEngine, PortfolioEngineConfig, joined_steps
 from kaupo.core.recorder import CompositeRecorder, DbRecorder, InMemoryRecorder, RunInfo
+from kaupo.core.resume import prepare_resume
 from kaupo.data.binance import BinanceClient
 from kaupo.data.candles import get_latest_candles, upsert_candles
 from kaupo.data.funding import upsert_funding_rates
@@ -211,6 +212,22 @@ async def run_shadow(
     if request.assignment_id is not None:
         # lets the supervisor and the API find the run's desired-state row
         config["assignment_id"] = request.assignment_id
+    # a superseded predecessor with an unchanged config passes on its final
+    # ledger state (and the run row its lineage); anything else starts fresh
+    resume = await prepare_resume(
+        sessionmaker,
+        strategy_id=request.strategy.id,
+        strategy_version=request.strategy.version,
+        pair=str(request.pair),
+        pairs=None,
+        timeframe=request.timeframe.value,
+        params=request.params,
+        quote_asset=request.pair.quote,
+        assignment_id=request.assignment_id,
+    )
+    if resume is not None:
+        config["resumed_from"] = resume.predecessor_run_id
+        config["chain_started_at"] = resume.chain_started_at
     strategy = request.strategy.create(request.params)
     if not isinstance(strategy, StrategyBase):
         raise ValueError(
@@ -221,6 +238,11 @@ async def run_shadow(
     funding: FundingProvider = EmptyFundingProvider()
     if funding_client is not None:
         funding = DbFundingProvider(sessionmaker)
+    ledger = (
+        Ledger(request.pair.quote, resume.cash, datetime.now(UTC), positions=resume.positions)
+        if resume is not None
+        else Ledger(request.pair.quote, request.starting_cash, datetime.now(UTC))
+    )
     engine = Engine(
         strategy=strategy,
         venue=PaperVenue(request.taker_fee_bps, request.maker_fee_bps, request.slippage_bps),
@@ -231,7 +253,7 @@ async def run_shadow(
                 slippage_bps=request.slippage_bps,
             )
         ),
-        ledger=Ledger(request.pair.quote, request.starting_cash, datetime.now(UTC)),
+        ledger=ledger,
         recorder=recorder,
         config=EngineConfig(
             pair=request.pair,
@@ -513,6 +535,22 @@ async def run_portfolio_shadow(
     if request.assignment_id is not None:
         # lets the supervisor and the API find the run's desired-state row
         config["assignment_id"] = request.assignment_id
+    # a superseded predecessor with an unchanged config passes on its final
+    # ledger state (and the run row its lineage); anything else starts fresh
+    resume = await prepare_resume(
+        sessionmaker,
+        strategy_id=request.strategy.id,
+        strategy_version=request.strategy.version,
+        pair=config["pair"],
+        pairs=universe,
+        timeframe=request.timeframe.value,
+        params=request.params,
+        quote_asset=request.pairs[0].quote,
+        assignment_id=request.assignment_id,
+    )
+    if resume is not None:
+        config["resumed_from"] = resume.predecessor_run_id
+        config["chain_started_at"] = resume.chain_started_at
     strategy = request.strategy.create(request.params)
     if not isinstance(strategy, PortfolioStrategyBase):
         raise ValueError(
@@ -523,6 +561,11 @@ async def run_portfolio_shadow(
     funding: FundingProvider = EmptyFundingProvider()
     if funding_client is not None:
         funding = DbFundingProvider(sessionmaker)
+    ledger = (
+        Ledger(request.pairs[0].quote, resume.cash, datetime.now(UTC), positions=resume.positions)
+        if resume is not None
+        else Ledger(request.pairs[0].quote, request.starting_cash, datetime.now(UTC))
+    )
     engine = PortfolioEngine(
         strategy=strategy,
         venues={
@@ -536,7 +579,7 @@ async def run_portfolio_shadow(
                 slippage_bps=request.slippage_bps,
             )
         ),
-        ledger=Ledger(request.pairs[0].quote, request.starting_cash, datetime.now(UTC)),
+        ledger=ledger,
         recorder=recorder,
         config=PortfolioEngineConfig(
             pairs=tuple(request.pairs),

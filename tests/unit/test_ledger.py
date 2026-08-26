@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from kaupo.domain import Fill, OrderId, Pair, Side
+from kaupo.domain import Fill, OrderId, Pair, Position, Side
 from kaupo.ledger.ledger import InsufficientFunds, InsufficientPosition, Ledger
 
 PAIR = Pair.parse("BTC/EUR")
@@ -94,3 +94,46 @@ def test_drain_entries() -> None:
     entries = ledger.drain_entries()
     assert len(entries) == 3  # deposit + 2 trade entries
     assert ledger.drain_entries() == []
+
+
+def test_seeded_with_carried_positions() -> None:
+    positions = {PAIR: Position(pair=PAIR, size=0.06, avg_entry=107.73)}
+    ledger = Ledger("EUR", Decimal("9984.298"), TS, positions=positions)
+
+    assert ledger.cash == Decimal("9984.298")
+    pos = ledger.position(PAIR)
+    assert pos.size == 0.06
+    assert pos.avg_entry == 107.73
+    # the opening balance and position are logged as carry-in, not a deposit
+    assert [(e.asset, e.reason) for e in ledger.entries] == [("EUR", "carry-in"), ("BTC", "carry-in")]
+    assert ledger.entries[0].balance_after == Decimal("9984.298")
+    assert ledger.entries[1].balance_after == Decimal("0.06")
+
+
+def test_seeded_positions_are_copies() -> None:
+    positions = {PAIR: Position(pair=PAIR, size=1.0, avg_entry=100.0)}
+    ledger = Ledger("EUR", 900.0, TS, positions=positions)
+    positions[PAIR].size = 5.0
+    assert ledger.position(PAIR).size == 1.0
+
+
+def test_seeded_ledger_continues_accounting() -> None:
+    positions = {PAIR: Position(pair=PAIR, size=1.0, avg_entry=100.0)}
+    ledger = Ledger("EUR", Decimal("900"), TS, positions=positions)
+    ledger.apply_fill(fill(Side.BUY, 200.0, 1.0))
+    pos = ledger.position(PAIR)
+    assert pos.size == 2.0
+    assert pos.avg_entry == pytest.approx(150.0)
+    assert ledger.cash == Decimal("700")
+
+
+def test_open_positions_property() -> None:
+    ledger = Ledger("EUR", 1000.0, TS)
+    assert ledger.open_positions == {}
+    ledger.apply_fill(fill(Side.BUY, 100.0, 2.0))
+    opened = ledger.open_positions
+    assert opened[PAIR].size == 2.0
+    opened[PAIR].size = 9.0  # mutating the copy leaves the ledger alone
+    assert ledger.position(PAIR).size == 2.0
+    ledger.apply_fill(fill(Side.SELL, 100.0, 2.0))
+    assert ledger.open_positions == {}  # closed positions drop out
