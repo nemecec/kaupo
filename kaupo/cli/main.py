@@ -688,3 +688,33 @@ def run_backtest_worker_cmd(
 
     asyncio.run(_run())
     console.print("[bold]Backtest worker stopped[/bold]")
+
+
+@run_app.command(name="book-collector")
+def run_book_collector_cmd(
+    verbose: VerboseOpt = False,
+) -> None:
+    """Collect top-of-book snapshots for the pair-quality universe. Ctrl-C to stop.
+
+    Each cycle polls the best bid/ask (with sizes) of every universe pair on
+    Kraken and stores one row per observation. Rows older than
+    KAUPO_BOOK_RETENTION_DAYS (default 30) are pruned after each cycle. No
+    public API serves historical books, so collection is forward only.
+    """
+    _setup_logging(verbose)
+    from kaupo.core.book_collector import run_book_collector
+    from kaupo.data.kraken import KrakenClient
+    from kaupo.db.session import get_sessionmaker
+
+    async def _run() -> None:
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        import signal
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
+        async with KrakenClient() as client:
+            await run_book_collector(get_sessionmaker(), get_settings(), stop, client=client)
+
+    asyncio.run(_run())
+    console.print("[bold]Book collector stopped[/bold]")

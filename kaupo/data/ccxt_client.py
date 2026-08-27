@@ -10,7 +10,7 @@ from typing import Any, Self
 
 import ccxt.async_support as ccxt
 
-from kaupo.domain import Candle, Pair, Timeframe, TradeTick
+from kaupo.domain import BookSnapshot, Candle, Pair, Timeframe, TradeTick
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +23,13 @@ TRADES_PAGE_SIZE = 1000  # Kraken and Binance serve at most 1000 trades per call
 def _normalized_side(entry: dict[str, Any]) -> str | None:
     side = entry.get("side")
     return side if side in ("buy", "sell") else None
+
+
+def _size_or_zero(value: Any) -> float:
+    """Book sizes: a missing or malformed volume means unknown depth, stored as 0."""
+    if value is None or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        return 0.0
+    return float(value)
 
 
 def parse_trade_ticks(
@@ -176,3 +183,38 @@ class CcxtExchangeClient:
         since_ms = int(since.timestamp() * 1000) if since else None
         raw = await self._exchange.fetch_trades(str(pair), since=since_ms, limit=limit)
         return parse_trade_ticks(raw, self.exchange_id, pair, side_of=self._trade_side)
+
+    async def fetch_book_top(self, pair: Pair) -> BookSnapshot | None:
+        """Top of book (best bid/ask with sizes) from the public ticker.
+
+        Returns None when the ticker has no usable bid or ask (missing,
+        zero, or negative). The observation time is the ticker timestamp,
+        with the poll time as fallback; a missing size means unknown depth
+        and is stored as 0.
+        """
+        ticker = await self._exchange.fetch_ticker(str(pair))
+        bid = ticker.get("bid")
+        ask = ticker.get("ask")
+        if (
+            bid is None
+            or not math.isfinite(bid)
+            or bid <= 0
+            or ask is None
+            or not math.isfinite(ask)
+            or ask <= 0
+        ):
+            log.warning(
+                "Dropping book top without a usable bid/ask %s %s: %s", self.exchange_id, pair, ticker
+            )
+            return None
+        ts_ms = ticker.get("timestamp")
+        ts = datetime.fromtimestamp(ts_ms / 1000, tz=UTC) if ts_ms else self._now()
+        return BookSnapshot(
+            exchange=self.exchange_id,
+            pair=str(pair),
+            ts=ts,
+            bid=float(bid),
+            ask=float(ask),
+            bid_size=_size_or_zero(ticker.get("bidVolume")),
+            ask_size=_size_or_zero(ticker.get("askVolume")),
+        )

@@ -92,6 +92,43 @@ async def test_readonly_can_get_trades(authed_client: AsyncClient, session: Asyn
     assert body[0]["side"] == "buy"
 
 
+async def test_readonly_can_get_book(authed_client: AsyncClient, session: AsyncSession) -> None:
+    from kaupo.data.book import upsert_book_snapshots
+    from kaupo.domain import BookSnapshot
+
+    now = utc_now()
+    snapshots = [
+        BookSnapshot(
+            exchange="kraken",
+            pair="BTC/EUR",
+            ts=now - timedelta(minutes=i + 1),
+            bid=100.0 + i,
+            ask=100.5 + i,
+            bid_size=1.0,
+            ask_size=2.0,
+        )
+        for i in range(3)
+    ]
+    await upsert_book_snapshots(session, snapshots)
+    await session.commit()
+
+    headers = {"Authorization": "Bearer readonly-secret"}
+    r = await authed_client.get(
+        "/api/v1/book",
+        params={
+            "pair": "BTC/EUR",
+            "start": (now - timedelta(hours=1)).isoformat(),
+            "end": now.isoformat(),
+        },
+        headers=headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 3
+    assert body[0]["pair"] == "BTC/EUR"
+    assert [row["bid"] for row in body] == [102.0, 101.0, 100.0]  # ascending by ts
+
+
 async def test_settings_readonly_get_admin_put(authed_client: AsyncClient) -> None:
     readonly = {"Authorization": "Bearer readonly-secret"}
     r = await authed_client.get("/api/v1/settings", headers=readonly)

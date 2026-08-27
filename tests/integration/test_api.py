@@ -736,6 +736,66 @@ async def test_trades_endpoint(client: AsyncClient, session: AsyncSession) -> No
     assert r.status_code == 422
 
 
+async def test_book_endpoint(client: AsyncClient, session: AsyncSession) -> None:
+    from kaupo.data.book import upsert_book_snapshots
+    from kaupo.domain import BookSnapshot
+
+    snapshots = [
+        BookSnapshot(
+            exchange="kraken",
+            pair="BTC/EUR",
+            ts=BASE + timedelta(minutes=i),
+            bid=100.0 + i,
+            ask=100.5 + i,
+            bid_size=1.0 + i,
+            ask_size=2.0 + i,
+        )
+        for i in range(5)
+    ]
+    await upsert_book_snapshots(session, snapshots)
+    await session.commit()
+
+    r = await client.get(
+        "/api/v1/book",
+        params={
+            "pair": "BTC/EUR",
+            "start": BASE.isoformat(),
+            "end": (BASE + timedelta(minutes=5)).isoformat(),
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 5
+    assert body[0] == {
+        "exchange": "kraken",
+        "pair": "BTC/EUR",
+        "ts": body[0]["ts"],
+        "bid": 100.0,
+        "ask": 100.5,
+        "bid_size": 1.0,
+        "ask_size": 2.0,
+    }
+
+    # limit returns the latest snapshots of the range, still ascending
+    r = await client.get(
+        "/api/v1/book",
+        params={
+            "pair": "BTC/EUR",
+            "start": BASE.isoformat(),
+            "end": (BASE + timedelta(minutes=5)).isoformat(),
+            "limit": 2,
+        },
+    )
+    assert r.status_code == 200
+    assert [row["bid"] for row in r.json()] == [103.0, 104.0]
+
+    r = await client.get(
+        "/api/v1/book",
+        params={"pair": "bogus", "start": BASE.isoformat(), "end": (BASE + timedelta(minutes=5)).isoformat()},
+    )
+    assert r.status_code == 422
+
+
 async def test_control_writes_command_events(client: AsyncClient, session: AsyncSession) -> None:
     from sqlalchemy import select
 

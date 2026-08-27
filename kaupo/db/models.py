@@ -62,6 +62,25 @@ class TradeTickRow(Base):
     side: Mapped[str] = mapped_column(String(4), primary_key=True)
 
 
+class BookSnapshotRow(Base):
+    """Top-of-book snapshots (best bid/ask with sizes), keyed by observation.
+
+    Identity is (exchange, pair, ts): two polls that see the same ticker
+    timestamp collapse to one row, the natural dedupe for forward
+    collection. Bounded by retention pruning after each collector cycle.
+    """
+
+    __tablename__ = "book_snapshots"
+
+    exchange: Mapped[str] = mapped_column(String(20), primary_key=True)
+    pair: Mapped[str] = mapped_column(String(20), primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    bid: Mapped[float]
+    ask: Mapped[float]
+    bid_size: Mapped[float]
+    ask_size: Mapped[float]
+
+
 class StrategyRow(Base):
     __tablename__ = "strategies"
 

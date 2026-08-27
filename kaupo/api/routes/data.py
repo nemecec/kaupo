@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.api.deps import Principal, get_principal, require_admin
 from kaupo.api.schemas import (
+    BookSnapshotOut,
     CandleOut,
     ControlIn,
     ControlOut,
@@ -17,6 +18,7 @@ from kaupo.api.schemas import (
     ReportOut,
     TradeTickOut,
 )
+from kaupo.data.book import get_book_snapshots
 from kaupo.data.candles import get_candles
 from kaupo.data.funding import get_funding_rates
 from kaupo.data.trades import get_trade_ticks
@@ -129,6 +131,45 @@ async def trades(
     return [
         TradeTickOut(exchange=t.exchange, pair=t.pair, ts=t.ts, price=t.price, size=t.size, side=t.side)
         for t in rows
+    ]
+
+
+@router.get("/book")
+async def book(
+    _: Annotated[Principal, Depends(get_principal)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    pair: str = Query(...),
+    start: datetime = Query(...),
+    end: datetime = Query(...),
+    limit: int = Query(5000, ge=1, le=50_000),
+    exchange: str = Query("kraken"),
+) -> list[BookSnapshotOut]:
+    """Top-of-book snapshots (best bid/ask with sizes) for the pair,
+    ascending. Forward-collected by the book collector and bounded by its
+    retention window, so history starts when the collector started."""
+    try:
+        parsed_pair = Pair.parse(pair)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    rows = await get_book_snapshots(
+        session,
+        exchange,
+        str(parsed_pair),
+        _aware(start),
+        _aware(end),
+        limit=limit,
+    )
+    return [
+        BookSnapshotOut(
+            exchange=s.exchange,
+            pair=s.pair,
+            ts=s.ts,
+            bid=s.bid,
+            ask=s.ask,
+            bid_size=s.bid_size,
+            ask_size=s.ask_size,
+        )
+        for s in rows
     ]
 
 

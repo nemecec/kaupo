@@ -121,6 +121,25 @@ class TradeTick:
     side: str  # "buy" | "sell" (taker side)
 
 
+@dataclass(frozen=True)
+class BookSnapshot:
+    """One top-of-book observation (best bid/ask with sizes) of a pair.
+
+    Input for maker-fill fidelity analysis and spread/depth features. No
+    public API serves historical books, so rows come from forward polling
+    only; identity is (exchange, pair, ts), so an unchanged book top between
+    two polls dedupes to one row.
+    """
+
+    exchange: str
+    pair: str  # unified pair string, e.g. "BTC/EUR"
+    ts: datetime  # observation time, UTC (ticker time; poll time as fallback)
+    bid: float
+    ask: float
+    bid_size: float  # in base currency; 0 when the venue serves no size
+    ask_size: float
+
+
 class Side(enum.Enum):
     BUY = "buy"
     SELL = "sell"

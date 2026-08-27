@@ -81,6 +81,21 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  # Top-of-book collector: forward-collects best bid/ask (with sizes) of the
+  # pair-quality universe; no public API serves historical books. Advisory
+  # data: the stack runs the same while the collector is down. No strategies
+  # mount: the collector never loads strategy code.
+  book-collector:
+    image: ${REGISTRY:-ghcr.io/nemecec}/kaupo:${KAUPO_TAG:-latest}
+    command: kaupo run book-collector
+    profiles: ["trading"]
+    environment:
+      KAUPO_DATABASE_URL: postgresql+asyncpg://kaupo:${POSTGRES_PASSWORD:?}@db:5432/kaupo
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   ui:
     image: ${REGISTRY:-ghcr.io/nemecec}/kaupo-ui:${KAUPO_TAG:-latest}
     depends_on:

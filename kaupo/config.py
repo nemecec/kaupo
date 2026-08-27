@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # Trade-tick retention: rows older than this are pruned after each ingest
     trades_retention_days: int = 30
 
+    # Top-of-book collection (book-collector loop): poll interval and retention
+    book_poll_seconds: float = 60.0
+    book_retention_days: int = 30
+
     # Default paper-trading economics
     default_quote_currency: str = "EUR"
     default_starting_cash: float = 10_000.0

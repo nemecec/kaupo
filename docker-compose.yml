@@ -75,6 +75,19 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  # Top-of-book collector: forward-collects best bid/ask (with sizes) of the
+  # pair-quality universe. Advisory data: the stack runs the same while it
+  # is down.
+  book-collector:
+    build: .
+    command: kaupo run book-collector
+    environment:
+      KAUPO_DATABASE_URL: postgresql+asyncpg://kaupo:kaupo@db:5432/kaupo
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   ui:
     build:
       context: ./ui

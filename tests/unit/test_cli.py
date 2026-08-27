@@ -890,6 +890,24 @@ def test_run_supervisor_lint_enforced(tmp_path: Path) -> None:
     assert "wall-clock" in result.output
 
 
+def test_run_book_collector_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The book collector starts and stops cleanly with the loop faked out."""
+    import kaupo.core.book_collector as collector_mod
+
+    captured: dict[str, Any] = {}
+
+    async def fake_run_book_collector(sm: Any, settings: Any, stop: Any, **kwargs: Any) -> None:
+        captured["client"] = type(kwargs["client"]).__name__
+        assert stop is not None
+
+    monkeypatch.setattr(collector_mod, "run_book_collector", fake_run_book_collector)
+
+    result = runner.invoke(cli.app, ["run", "book-collector"])
+    assert result.exit_code == 0, result.output
+    assert "Book collector stopped" in result.output
+    assert captured["client"] == "KrakenClient"
+
+
 def test_backtest_pairs_command(monkeypatch: pytest.MonkeyPatch) -> None:
     import kaupo.backtest.portfolio as pf_mod
 

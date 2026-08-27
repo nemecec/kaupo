@@ -107,6 +107,16 @@ class TradeTickOut(BaseModel):
     side: str
 
 
+class BookSnapshotOut(BaseModel):
+    exchange: str
+    pair: str
+    ts: datetime
+    bid: float
+    ask: float
+    bid_size: float
+    ask_size: float
+
+
 class BacktestIn(BaseModel):
     strategy: str
     pair: str | None = None  # single-pair backtest

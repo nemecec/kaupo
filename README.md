@@ -111,6 +111,10 @@ Stability windows show whether a strategy works when it starts later: a candidat
 
 A parameter sweep maps a parameter surface with one submission instead of one job per point. A request sets `sweep` on `POST /api/v1/backtests`, or passes `--sweep key=v1,v2,v3` (repeatable) to `kaupo backtest`: a map of strategy param names to lists of scalar values. The grid is the cartesian product of the lists, capped at 50 points, expanded in declaration order with the last key varying fastest. Each point runs with the base `params` plus its grid values and persists as a normal run row with a `sweep` marker (`group`, `point`) in its config. A point that fails (no candles, a value the strategy schema rejects) gets an error entry and does not fail the job. The completed job returns one entry per point — params, run id, and metrics, or the error — in `sweep`; `run` is the first successful point's run (null when every point fails). A sweep does not combine with stability windows.
 
+### Top-of-book collection
+
+The `book-collector` service (`kaupo run book-collector`, in the trading profile) stores the top of book of each pair of the pair-quality universe: the best bid and ask on Kraken, with their sizes. One cycle polls every pair, stores one row per observation, and waits `KAUPO_BOOK_POLL_SECONDS` (default 60). No public API serves historical book data, so collection is forward only: rows accumulate while the collector runs. The data makes maker-fill fidelity analysis and spread/depth features possible. It is advisory: the stack runs the same while the collector is down. After each cycle, rows older than `KAUPO_BOOK_RETENTION_DAYS` (default 30) are deleted, so the table stays bounded. `GET /api/v1/book` serves the stored snapshots.
+
 ### Portfolio shadow runs
 
 An assignment row with a `pairs` list instead of a `pair` declares a portfolio run. The universe follows the portfolio backtest rules: at least two pairs, no duplicates, one shared quote currency, canonical sorted order. The `pair` column stores the comma-joined universe. The strategy must derive from `PortfolioStrategyBase`. The API enforces all of this (`422` on a violation).
