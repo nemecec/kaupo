@@ -53,6 +53,8 @@ class PortfolioBacktestRequest:
     exchange: str = "kraken"  # which exchange's stored candles to run on
     # stability-window marker for the run config: {"group", "window", "of"}
     stability: dict[str, Any] | None = None
+    # sweep marker for the run config: {"group", "point"}
+    sweep: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if len(self.pairs) < 2:
@@ -172,6 +174,7 @@ async def run_portfolio_backtest(
                 "lookback": request.lookback,
                 "liquidate_end": request.liquidate_end,
                 **({"stability": request.stability} if request.stability is not None else {}),
+                **({"sweep": request.sweep} if request.sweep is not None else {}),
             },
         ),
     )

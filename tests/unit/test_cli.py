@@ -1052,3 +1052,164 @@ def test_backtest_risk_override_rejects_non_positive(flag: str, value: str) -> N
     )
     assert result.exit_code == 1
     assert "must be positive" in result.output
+
+
+def test_parse_sweep() -> None:
+    assert cli._parse_sweep(["a=1,2", "b=x,true,0.5"]) == {"a": [1, 2], "b": ["x", True, 0.5]}
+
+
+def test_parse_sweep_bad() -> None:
+    import typer
+
+    with pytest.raises(typer.BadParameter):
+        cli._parse_sweep(["no-equals-sign"])
+    with pytest.raises(typer.BadParameter):
+        cli._parse_sweep(["a=1", "a=2"])  # one spec per key
+
+
+def _patch_sweep_runs(monkeypatch: pytest.MonkeyPatch, seen: list[Any], fail_on: int | None = None) -> None:
+    import kaupo.backtest.sweep as sweep_mod
+
+    async def fake_run_backtest(request: Any, sm: Any) -> Any:
+        seen.append(request)
+        if fail_on is not None and len(seen) == fail_on:
+            raise ValueError("No kraken candles for BTC/EUR 1h in range")
+        metrics = {
+            "sharpe": 1.2,
+            "max_drawdown_pct": -3.4,
+            "total_return_pct": 5.6,
+            "num_round_trips": 7,
+        }
+        return RunId(f"run-{len(seen)}"), None, metrics
+
+    monkeypatch.setattr(sweep_mod, "run_backtest", fake_run_backtest)
+    # deterministic rendering (see test_backtest_stability_windows)
+    monkeypatch.setattr(cli, "console", Console(width=200, force_terminal=False))
+
+
+def test_backtest_sweep_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Any] = []
+    _patch_sweep_runs(monkeypatch, seen)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--days",
+            "30",
+            "--param",
+            "adx_period=7",
+            "--sweep",
+            "adx_threshold=20,30",
+            "--sweep",
+            "entry_z_score=1,2",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    out = _plain(result.output)
+    # the grid: declaration order, the last key varying fastest; the swept
+    # values override the base --param values per point
+    assert [r.params for r in seen] == [
+        {"adx_period": 7, "adx_threshold": 20.0, "entry_z_score": 1.0},
+        {"adx_period": 7, "adx_threshold": 20.0, "entry_z_score": 2.0},
+        {"adx_period": 7, "adx_threshold": 30.0, "entry_z_score": 1.0},
+        {"adx_period": 7, "adx_threshold": 30.0, "entry_z_score": 2.0},
+    ]
+    assert "Sweep" in out
+    assert "4 points" in out
+    assert "first run run-1" in out
+    for needle in ("adx_threshold", "entry_z_score", "1.2", "-3.4", "5.6", "7"):
+        assert needle in out
+
+
+def test_backtest_sweep_point_error_is_marked(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Any] = []
+    _patch_sweep_runs(monkeypatch, seen, fail_on=2)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--days",
+            "30",
+            "--sweep",
+            "adx_period=7,14,21",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 0, result.output  # a bad point does not fail the command
+    out = _plain(result.output)
+    assert len(seen) == 3
+    assert "error: ValueError: No kraken candles" in out
+    assert "first run run-1" in out
+
+
+def test_backtest_sweep_conflicts_with_stability_windows() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--sweep",
+            "adx_period=7,14",
+            "--stability-windows",
+            "2",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "--sweep cannot be combined with --stability-windows" in _plain(result.output)
+
+
+def test_backtest_sweep_over_cap_rejected() -> None:
+    values = ",".join(str(i) for i in range(51))
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--sweep",
+            f"adx_period={values}",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "the cap is 50" in result.output
+
+
+def test_backtest_sweep_unknown_key_rejected() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "--strategy",
+            "regime-switch",
+            "--pair",
+            "BTC/EUR",
+            "--sweep",
+            "nope=1,2",
+            "--strategies-dir",
+            str(EXAMPLES_DIR),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Unknown params" in result.output

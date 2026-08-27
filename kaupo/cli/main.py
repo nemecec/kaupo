@@ -54,6 +54,25 @@ def _parse_params(params: list[str]) -> dict[str, Any]:
     return out
 
 
+def _parse_sweep(sweeps: list[str]) -> dict[str, list[Any]]:
+    """--sweep key=v1,v2,v3 into a spec; values parse like --param scalars."""
+    out: dict[str, list[Any]] = {}
+    for s in sweeps:
+        key, sep, raw = s.partition("=")
+        if not sep or not key:
+            raise typer.BadParameter(f"--sweep must be key=v1,v2,..., got {s!r}")
+        if key in out:
+            raise typer.BadParameter(f"--sweep given twice for {key!r}")
+        values: list[Any] = []
+        for part in raw.split(","):
+            try:
+                values.append(json.loads(part))
+            except json.JSONDecodeError:
+                values.append(part)  # plain string
+        out[key] = values
+    return out
+
+
 def _parse_dt(value: str) -> datetime:
     """ISO datetime; naive input is treated as UTC (never host-local)."""
     dt = datetime.fromisoformat(value)
@@ -184,6 +203,13 @@ def backtest(
     start: StartOpt = None,
     end: EndOpt = None,
     param: ParamOpt = [],
+    sweep: Annotated[
+        list[str],
+        typer.Option(
+            help="sweep a strategy param: key=v1,v2,v3 (repeatable, <=50 points; "
+            "not with --stability-windows)"
+        ),
+    ] = [],
     cash: Annotated[float, typer.Option(help="starting quote cash", min=0.01)] = 10_000.0,
     exchange: ExchangeOpt = "kraken",
     stability_windows: Annotated[
@@ -214,6 +240,7 @@ def backtest(
     from kaupo.backtest.portfolio import PortfolioBacktestRequest, run_portfolio_backtest
     from kaupo.backtest.run import BacktestRequest, backtest_risk_config, run_backtest
     from kaupo.backtest.stability import run_stability_slices, stability_marker
+    from kaupo.backtest.sweep import run_sweep, validate_sweep_keys, validate_sweep_spec
     from kaupo.db.session import get_sessionmaker
     from kaupo.domain import new_id
     from kaupo.sdk.loader import load_strategies
@@ -229,6 +256,19 @@ def backtest(
         raise typer.Exit(1)
     loaded = strategies[strategy]
 
+    base_params = _parse_params(param)
+    if sweep and stability_windows is not None:
+        err_console.print("[red]--sweep cannot be combined with --stability-windows[/red]")
+        raise typer.Exit(1)
+    sweep_spec = _parse_sweep(sweep) if sweep else None
+    if sweep_spec is not None:
+        try:
+            validate_sweep_spec(sweep_spec)
+            validate_sweep_keys(loaded, base_params, sweep_spec)
+        except ValueError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+
     start_dt, end_dt = _range(days, start, end)
     request: BacktestRequest | PortfolioBacktestRequest
     try:
@@ -243,7 +283,7 @@ def backtest(
                 raise typer.Exit(1)
             request = BacktestRequest(
                 strategy=loaded,
-                params=_parse_params(param),
+                params=base_params,
                 pair=Pair.parse(pair),
                 timeframe=Timeframe.parse(timeframe),
                 start=start_dt,
@@ -261,7 +301,7 @@ def backtest(
                 raise typer.Exit(1)
             request = PortfolioBacktestRequest(
                 strategy=loaded,
-                params=_parse_params(param),
+                params=base_params,
                 pairs=[Pair.parse(p) for p in pairs.split(",")],
                 timeframe=Timeframe.parse(timeframe),
                 start=start_dt,
@@ -278,11 +318,41 @@ def backtest(
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
 
-    # one group id ties the full-window run and its slices together
-    group = new_id() if stability_windows is not None else None
-    if group is not None:
-        assert stability_windows is not None
+    # one group id ties a stability or sweep run set together
+    group = new_id() if stability_windows is not None or sweep_spec is not None else None
+    if stability_windows is not None:
+        assert group is not None
         request = replace(request, stability=stability_marker(group, "full", stability_windows))
+
+    if sweep_spec is not None:
+        assert group is not None
+
+        async def _run_sweep() -> Any:
+            sm = get_sessionmaker()
+            return await run_sweep(request, sm, group=group, spec=sweep_spec)
+
+        first_run_id, aggregation = asyncio.run(_run_sweep())
+        entries = aggregation["sweep"]
+        header = f"\n[bold]Sweep {group}[/bold] — {len(entries)} points"
+        if first_run_id is not None:
+            header += f" (first run {first_run_id})"
+        console.print(header)
+        surface = Table(*sweep_spec, "sharpe", "max DD", "return", "trips")
+        for entry in entries:
+            cells = [str(entry["params"][key]) for key in sweep_spec]
+            if "error" in entry:
+                surface.add_row(*cells, f"[red]error: {entry['error']}[/red]")
+                continue
+            m = entry["metrics"]
+            surface.add_row(
+                *cells,
+                str(m.get("sharpe", "—")),
+                str(m.get("max_drawdown_pct", "—")),
+                str(m.get("total_return_pct", "—")),
+                str(m.get("num_round_trips", "—")),
+            )
+        console.print(surface)
+        return
 
     async def _run() -> Any:
         sm = get_sessionmaker()

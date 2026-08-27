@@ -13,6 +13,7 @@ from pathlib import Path
 from kaupo.api.schemas import BacktestIn
 from kaupo.backtest.portfolio import PortfolioBacktestRequest
 from kaupo.backtest.run import BacktestRequest, backtest_risk_config
+from kaupo.backtest.sweep import validate_sweep_keys
 from kaupo.domain import Pair, Timeframe
 from kaupo.sdk.loader import load_strategies
 from kaupo.sdk.protocol import LoadedStrategy
@@ -52,6 +53,8 @@ def build_backtest_request(
     loaded = strategies.get(body.strategy)
     if loaded is None:
         raise UnknownStrategyError(f"unknown strategy {body.strategy!r}; available: {sorted(strategies)}")
+    if body.sweep is not None:
+        validate_sweep_keys(loaded, body.params, body.sweep)
 
     def aware(dt: datetime) -> datetime:
         return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt

@@ -5,8 +5,11 @@ backtests never compete with the API or the supervisor. The loop claims
 the oldest queued job (skip-locked), rebuilds the request from the stored
 payload through the same validation path as the API, executes it, and
 marks the job completed with the runs row id or failed with the error.
-On startup, jobs left 'running' by a dead worker are failed; finished
-rows older than the TTL are evicted once per loop.
+A job with a sweep spec runs one backtest per grid point and stores the
+per-point aggregation in the job result; a job with stability windows
+runs the slices after the full-window run. On startup, jobs left
+'running' by a dead worker are failed; finished rows older than the TTL
+are evicted once per loop.
 """
 
 import asyncio
@@ -22,6 +25,7 @@ from kaupo.backtest.plan import build_backtest_request, lint_and_load_strategies
 from kaupo.backtest.portfolio import PortfolioBacktestRequest, run_portfolio_backtest
 from kaupo.backtest.run import run_backtest
 from kaupo.backtest.stability import run_stability_slices, stability_marker
+from kaupo.backtest.sweep import run_sweep
 from kaupo.config import Settings
 from kaupo.data import backtest_jobs
 from kaupo.data.backtest_jobs import JOB_TTL
@@ -47,19 +51,26 @@ async def _execute(
         body = BacktestIn.model_validate(job.payload)
         strategies = lint_and_load_strategies(settings.strategies_dir)
         request = build_backtest_request(body, strategies)
-        if body.stability_windows is not None:
-            request = replace(request, stability=stability_marker(job.id, "full", body.stability_windows))
-        if isinstance(request, PortfolioBacktestRequest):
-            run_id, _, _ = await run_portfolio_backtest(request, sessionmaker)
-        else:
-            run_id, _, _ = await run_backtest(request, sessionmaker)
-        # stability windows run after the full-window run; a slice failure
-        # degrades to an error entry and never fails the job
+        run_id: str | None
         result = None
-        if body.stability_windows is not None:
-            result = await run_stability_slices(
-                request, sessionmaker, group=job.id, windows=body.stability_windows
-            )
+        if body.sweep is not None:
+            # one run per grid point; a failing point degrades to an error
+            # entry in the aggregation and never fails the job
+            run_id, result = await run_sweep(request, sessionmaker, group=job.id, spec=body.sweep)
+        else:
+            if body.stability_windows is not None:
+                request = replace(request, stability=stability_marker(job.id, "full", body.stability_windows))
+            if isinstance(request, PortfolioBacktestRequest):
+                full_run_id, _, _ = await run_portfolio_backtest(request, sessionmaker)
+            else:
+                full_run_id, _, _ = await run_backtest(request, sessionmaker)
+            run_id = str(full_run_id)
+            # stability windows run after the full-window run; a slice failure
+            # degrades to an error entry and never fails the job
+            if body.stability_windows is not None:
+                result = await run_stability_slices(
+                    request, sessionmaker, group=job.id, windows=body.stability_windows
+                )
     except Exception as exc:
         log.exception("Backtest job %s failed", job.id)
         error = f"{type(exc).__name__}: {exc}"[:300]

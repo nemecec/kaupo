@@ -71,8 +71,10 @@ async def claim_next_queued(session: AsyncSession) -> BacktestJobRow | None:
 
 
 async def mark_completed(
-    session: AsyncSession, job_id: str, run_id: str, result: dict[str, Any] | None = None
+    session: AsyncSession, job_id: str, run_id: str | None, result: dict[str, Any] | None = None
 ) -> None:
+    """run_id is None only for a sweep where every point failed (the entries
+    in ``result`` carry the per-point errors)."""
     row = await session.get(BacktestJobRow, job_id)
     assert row is not None  # the worker claimed it
     row.status = STATUS_COMPLETED

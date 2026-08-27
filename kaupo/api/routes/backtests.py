@@ -74,23 +74,32 @@ async def get_backtest(
     if job.status == backtest_jobs.STATUS_FAILED:
         return {"job_id": job_id, "status": "failed", "error": job.error}
 
-    row = await session.get(RunRow, job.run_id)
-    if row is None:
+    sweep = (job.result or {}).get("sweep")
+    row = await session.get(RunRow, job.run_id) if job.run_id is not None else None
+    if row is None and sweep is None:
         return {"job_id": job_id, "status": "failed", "error": "run row missing"}
     return {
         "job_id": job_id,
         "status": "completed",
-        "run": RunOut(
-            id=row.id,
-            mode=row.mode,
-            strategy_id=row.strategy_id,
-            strategy_version=row.strategy_version,
-            started_at=row.started_at,
-            ended_at=row.ended_at,
-            status=row.status,
-            config=row.config,
-            metrics=row.metrics,
-        ).model_dump(mode="json"),
+        # sweep jobs: the first successful point's run, for shape
+        # compatibility (null when every point failed)
+        "run": (
+            RunOut(
+                id=row.id,
+                mode=row.mode,
+                strategy_id=row.strategy_id,
+                strategy_version=row.strategy_version,
+                started_at=row.started_at,
+                ended_at=row.ended_at,
+                status=row.status,
+                config=row.config,
+                metrics=row.metrics,
+            ).model_dump(mode="json")
+            if row is not None
+            else None
+        ),
         # the stability-window aggregation; null when none was requested
-        "stability": job.result,
+        "stability": None if sweep is not None else job.result,
+        # the sweep aggregation: one entry per grid point, in grid order
+        "sweep": sweep,
     }

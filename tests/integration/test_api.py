@@ -375,6 +375,152 @@ async def test_backtest_job_stability_portfolio_slice_without_candles(
         assert entry["metrics"]["universe"] == ["BTC/EUR", "SOL/EUR"]
 
 
+async def test_backtest_job_sweep(client: AsyncClient, session: AsyncSession, worker: None) -> None:
+    candles = [
+        Candle(
+            pair=PAIR,
+            timeframe=Timeframe.H1,
+            ts=BASE + timedelta(hours=i),
+            open=100 + i,
+            high=101 + i,
+            low=99 + i,
+            close=100 + i,
+            volume=1.0,
+        )
+        for i in range(120)
+    ]
+    await upsert_candles(session, candles)
+    await session.commit()
+
+    r = await client.post(
+        "/api/v1/backtests",
+        json={
+            "strategy": "regime-switch",
+            "pair": "BTC/EUR",
+            "timeframe": "1h",
+            "start": BASE.isoformat(),
+            "end": (BASE + timedelta(hours=120)).isoformat(),
+            "params": {"adx_period": 7},
+            "sweep": {"adx_threshold": [20.0, 30.0], "entry_z_score": [1.0, 2.0]},
+        },
+    )
+    assert r.status_code == 202
+    job_id = r.json()["run_id"]
+
+    body = await _wait_for_job(client, job_id)
+    assert body["status"] == "completed"
+    assert body["stability"] is None
+
+    # the grid, in declaration order with the last key varying fastest
+    points = [
+        {"adx_threshold": 20.0, "entry_z_score": 1.0},
+        {"adx_threshold": 20.0, "entry_z_score": 2.0},
+        {"adx_threshold": 30.0, "entry_z_score": 1.0},
+        {"adx_threshold": 30.0, "entry_z_score": 2.0},
+    ]
+    sweep = body["sweep"]
+    assert [entry["params"] for entry in sweep] == points
+    for entry in sweep:
+        assert "error" not in entry
+        assert entry["run_id"]
+        assert set(entry["metrics"]) == set(body["run"]["metrics"])
+    # run is the first point's run, for shape compatibility
+    assert body["run"]["id"] == sweep[0]["run_id"]
+
+    # every point persists a runs row with the sweep marker and merged params
+    from sqlalchemy import select
+
+    from kaupo.db.models import RunRow
+
+    rows = (await session.execute(select(RunRow))).scalars().all()
+    marked = [row for row in rows if row.config.get("sweep", {}).get("group") == job_id]
+    assert len(marked) == 4
+    assert {row.id for row in marked} == {entry["run_id"] for entry in sweep}
+    for row in marked:
+        assert row.config["sweep"]["point"] in points
+        assert row.config["params"] == {"adx_period": 7, **row.config["sweep"]["point"]}
+
+
+async def test_backtest_job_sweep_point_error(
+    client: AsyncClient, session: AsyncSession, worker: None
+) -> None:
+    candles = [
+        Candle(
+            pair=PAIR,
+            timeframe=Timeframe.H1,
+            ts=BASE + timedelta(hours=i),
+            open=100 + i,
+            high=101 + i,
+            low=99 + i,
+            close=100 + i,
+            volume=1.0,
+        )
+        for i in range(120)
+    ]
+    await upsert_candles(session, candles)
+    await session.commit()
+
+    # adx_period must be > 0: the second point's params fail the strategy
+    # schema at run time and degrade to an error entry
+    r = await client.post(
+        "/api/v1/backtests",
+        json={
+            "strategy": "regime-switch",
+            "pair": "BTC/EUR",
+            "timeframe": "1h",
+            "start": BASE.isoformat(),
+            "end": (BASE + timedelta(hours=120)).isoformat(),
+            "sweep": {"adx_period": [14, 0]},
+        },
+    )
+    assert r.status_code == 202
+    job_id = r.json()["run_id"]
+
+    body = await _wait_for_job(client, job_id)
+    assert body["status"] == "completed"  # a point failure never fails the job
+
+    ok, bad = body["sweep"]
+    assert ok["params"] == {"adx_period": 14}
+    assert ok["run_id"] == body["run"]["id"]
+    assert ok["metrics"]
+    assert bad["params"] == {"adx_period": 0}
+    assert "adx_period" in bad["error"]
+    assert "run_id" not in bad and "metrics" not in bad
+
+
+async def test_backtest_sweep_validation(client: AsyncClient) -> None:
+    base = {"strategy": "regime-switch", "pair": "BTC/EUR"}
+    # the cartesian product cap is 50
+    r = await client.post(
+        "/api/v1/backtests",
+        json={
+            **base,
+            "sweep": {
+                "adx_period": [7, 14, 21, 28, 35, 42, 49, 56],
+                "adx_threshold": [1, 2, 3, 4, 5, 6, 7, 8],
+            },
+        },
+    )
+    assert r.status_code == 422
+    assert "cap" in r.text
+    # an empty value list
+    r = await client.post("/api/v1/backtests", json={**base, "sweep": {"adx_period": []}})
+    assert r.status_code == 422
+    # a param the strategy schema does not know
+    r = await client.post("/api/v1/backtests", json={**base, "sweep": {"nope": [1, 2]}})
+    assert r.status_code == 422
+    assert "Unknown params" in r.json()["detail"]
+    # a non-scalar value
+    r = await client.post("/api/v1/backtests", json={**base, "sweep": {"adx_period": [[7]]}})
+    assert r.status_code == 422
+    # sweep and stability windows are mutually exclusive
+    r = await client.post(
+        "/api/v1/backtests", json={**base, "sweep": {"adx_period": [7]}, "stability_windows": 2}
+    )
+    assert r.status_code == 422
+    assert "cannot be combined" in r.text
+
+
 async def test_backtest_job_risk_override(client: AsyncClient, session: AsyncSession, worker: None) -> None:
     candles = [
         Candle(

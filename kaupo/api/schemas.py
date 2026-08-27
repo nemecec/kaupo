@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from kaupo.backtest.sweep import validate_sweep_spec
+
 
 class StatusOut(BaseModel):
     status: Literal["ok"] = "ok"
@@ -110,6 +112,11 @@ class BacktestIn(BaseModel):
     # when set, the worker also runs K equal time slices of [start, end]
     # and the job result carries per-window metrics (overfitting check)
     stability_windows: int | None = Field(default=None, ge=2, le=12)
+    # when set, the worker runs one backtest per point of the grid (the
+    # cartesian product, <= 50 points) and the job result carries per-point
+    # metrics; keys are strategy param names, values scalars; not combinable
+    # with stability_windows
+    sweep: dict[str, list[Any]] | None = None
     # research overrides for the backtest risk caps; null keeps the live defaults
     max_position_quote: float | None = Field(default=None, gt=0)
     max_gross_exposure_quote: float | None = Field(default=None, gt=0)
@@ -123,6 +130,10 @@ class BacktestIn(BaseModel):
             raise ValueError("pass exactly one of pair or pairs")
         if self.pairs is not None and len(self.pairs) < 2:
             raise ValueError("pairs needs at least 2 entries; use pair for one pair")
+        if self.sweep is not None:
+            validate_sweep_spec(self.sweep)
+            if self.stability_windows is not None:
+                raise ValueError("sweep and stability_windows cannot be combined")
         return self
 
 
