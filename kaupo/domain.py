@@ -104,6 +104,23 @@ class FundingRate:
     rate: float  # per funding interval, as a fraction (0.0001 = 1 bps)
 
 
+@dataclass(frozen=True)
+class TradeTick:
+    """One public trade print (tick) from an exchange.
+
+    Order-flow data: who traded how much in which direction. Kraken serves
+    no trade id for public trades, so identity is the full
+    (exchange, pair, ts, price, size, side) tuple.
+    """
+
+    exchange: str
+    pair: str  # unified pair string, e.g. "BTC/EUR"
+    ts: datetime  # trade time, UTC (ms precision — ccxt truncates)
+    price: float
+    size: float  # in base currency
+    side: str  # "buy" | "sell" (taker side)
+
+
 class Side(enum.Enum):
     BUY = "buy"
     SELL = "sell"

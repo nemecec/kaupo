@@ -678,6 +678,64 @@ async def test_funding_endpoint(client: AsyncClient, session: AsyncSession) -> N
     assert r.status_code == 422
 
 
+async def test_trades_endpoint(client: AsyncClient, session: AsyncSession) -> None:
+    from kaupo.data.trades import upsert_trade_ticks
+    from kaupo.domain import TradeTick
+
+    ticks = [
+        TradeTick(
+            exchange="kraken",
+            pair="BTC/EUR",
+            ts=BASE + timedelta(minutes=i),
+            price=100.0 + i,
+            size=0.1 * (i + 1),
+            side="buy" if i % 2 == 0 else "sell",
+        )
+        for i in range(5)
+    ]
+    await upsert_trade_ticks(session, ticks)
+    await session.commit()
+
+    r = await client.get(
+        "/api/v1/trades",
+        params={
+            "pair": "BTC/EUR",
+            "start": BASE.isoformat(),
+            "end": (BASE + timedelta(minutes=5)).isoformat(),
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 5
+    assert body[0] == {
+        "exchange": "kraken",
+        "pair": "BTC/EUR",
+        "ts": body[0]["ts"],
+        "price": 100.0,
+        "size": 0.1,
+        "side": "buy",
+    }
+
+    # limit returns the latest ticks of the range, still ascending
+    r = await client.get(
+        "/api/v1/trades",
+        params={
+            "pair": "BTC/EUR",
+            "start": BASE.isoformat(),
+            "end": (BASE + timedelta(minutes=5)).isoformat(),
+            "limit": 2,
+        },
+    )
+    assert r.status_code == 200
+    assert [row["price"] for row in r.json()] == [103.0, 104.0]
+
+    r = await client.get(
+        "/api/v1/trades",
+        params={"pair": "bogus", "start": BASE.isoformat(), "end": (BASE + timedelta(minutes=5)).isoformat()},
+    )
+    assert r.status_code == 422
+
+
 async def test_control_writes_command_events(client: AsyncClient, session: AsyncSession) -> None:
     from sqlalchemy import select
 

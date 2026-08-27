@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # Funding-rate refresh in shadow runs (Binance USDT perp; advisory signal)
     funding_refresh_seconds: float = 1800.0
 
+    # Trade-tick retention: rows older than this are pruned after each ingest
+    trades_retention_days: int = 30
+
     # Default paper-trading economics
     default_quote_currency: str = "EUR"
     default_starting_cash: float = 10_000.0

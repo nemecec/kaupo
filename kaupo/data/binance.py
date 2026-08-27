@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import ccxt.async_support as ccxt
 
@@ -18,6 +19,19 @@ BINANCE_PAGE_SIZE = 1500  # Binance returns at most 1500 klines per call
 BINANCE_FUNDING_PAGE_SIZE = 1000  # Binance returns at most 1000 funding entries per call
 
 
+def _agg_side(entry: dict[str, Any]) -> str | None:
+    """Side of an aggTrade from the buyer-is-maker flag (m).
+
+    The aggressor (taker) sets the tick side: when the buyer is the maker,
+    the seller is the aggressor, so the tick is a "sell".
+    """
+    info = entry.get("info")
+    if isinstance(info, dict) and "m" in info:
+        return "sell" if info["m"] else "buy"
+    side = entry.get("side")
+    return side if side in ("buy", "sell") else None
+
+
 class BinanceClient(CcxtExchangeClient):
     """Binance candles; serves deep history (paginates forward from ``since``).
 
@@ -25,8 +39,15 @@ class BinanceClient(CcxtExchangeClient):
     ``binanceusdm`` market (one dominant USDT perpetual per base asset).
     """
 
+    # one aggTrades page covers a one-hour window (ccxt sets endTime = since + 1h)
+    trades_page_window = timedelta(hours=1)
+
     def __init__(self, now: Callable[[], datetime] | None = None) -> None:
         super().__init__("binance", BINANCE_PAGE_SIZE, now)
+        # aggTrades supports startTime-based paging; recent-trades does not
+        self._exchange.options["fetchTradesMethod"] = "publicGetAggTrades"
+        # aggTrade side comes from the buyer-is-maker flag (m), not ccxt's field
+        self._trade_side = _agg_side
         self._futures = ccxt.binanceusdm({"enableRateLimit": True})
 
     async def close(self) -> None:

@@ -98,6 +98,15 @@ class FundingOut(BaseModel):
     rate: float
 
 
+class TradeTickOut(BaseModel):
+    exchange: str
+    pair: str
+    ts: datetime
+    price: float
+    size: float
+    side: str
+
+
 class BacktestIn(BaseModel):
     strategy: str
     pair: str | None = None  # single-pair backtest

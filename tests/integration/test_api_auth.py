@@ -56,6 +56,42 @@ async def test_readonly_can_get_not_post(authed_client: AsyncClient) -> None:
     assert r.status_code == 403
 
 
+async def test_readonly_can_get_trades(authed_client: AsyncClient, session: AsyncSession) -> None:
+    from kaupo.data.trades import upsert_trade_ticks
+    from kaupo.domain import TradeTick
+
+    now = utc_now()
+    ticks = [
+        TradeTick(
+            exchange="kraken",
+            pair="BTC/EUR",
+            ts=now - timedelta(minutes=i + 1),
+            price=100.0 + i,
+            size=0.1,
+            side="buy",
+        )
+        for i in range(3)
+    ]
+    await upsert_trade_ticks(session, ticks)
+    await session.commit()
+
+    headers = {"Authorization": "Bearer readonly-secret"}
+    r = await authed_client.get(
+        "/api/v1/trades",
+        params={
+            "pair": "BTC/EUR",
+            "start": (now - timedelta(hours=1)).isoformat(),
+            "end": now.isoformat(),
+        },
+        headers=headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 3
+    assert body[0]["pair"] == "BTC/EUR"
+    assert body[0]["side"] == "buy"
+
+
 async def test_settings_readonly_get_admin_put(authed_client: AsyncClient) -> None:
     readonly = {"Authorization": "Bearer readonly-secret"}
     r = await authed_client.get("/api/v1/settings", headers=readonly)

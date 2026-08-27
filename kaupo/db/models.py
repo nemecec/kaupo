@@ -42,6 +42,26 @@ class FundingRateRow(Base):
     rate: Mapped[float]
 
 
+class TradeTickRow(Base):
+    """Public trade prints (order flow), keyed by the full tick tuple.
+
+    Kraken serves no trade id for public trades, so identical trades at the
+    same ms with the same price and size collapse to one row. This dedupe
+    heuristic can drop true same-ms duplicates; that is accepted for
+    order-flow analytics (not audit-grade). Bounded by retention pruning
+    after each ingest run.
+    """
+
+    __tablename__ = "trade_ticks"
+
+    exchange: Mapped[str] = mapped_column(String(20), primary_key=True)
+    pair: Mapped[str] = mapped_column(String(20), primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    price: Mapped[float] = mapped_column(primary_key=True)
+    size: Mapped[float] = mapped_column(primary_key=True)
+    side: Mapped[str] = mapped_column(String(4), primary_key=True)
+
+
 class StrategyRow(Base):
     __tablename__ = "strategies"
 

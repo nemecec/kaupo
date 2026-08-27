@@ -52,7 +52,12 @@ Prerequisites: uv, Docker, and Node 22 or later.
    uv run kaupo ingest funding --pair BTC/EUR --days 365
    ```
    Funding rates come from perpetual futures. They mark crowded positioning. Kaupo trades spot only, so funding is an advisory signal, not a traded instrument. The data comes from the Binance USDT-margined perpetual of the pair's base asset (BTC/EUR maps to the BTC perpetual). Kraken funding is not supported.
-6. Run a backtest with the example strategy:
+6. Download recent trade prints (optional, order-flow data):
+   ```bash
+   uv run kaupo ingest trades --pair BTC/EUR --days 3
+   ```
+   Trade prints are the public trades of a pair. They show the order flow: the time, price, size, and taker side of each trade. Kraken gives no trade id, so the store uses the full print (time, price, size, side) as the key. Two identical prints at the same millisecond become one row. This can drop true duplicates. That is accepted: the data is for order-flow analytics, not for an audit. The window stays small on purpose. `--days` defaults to 3 and is capped at 31. After each ingest run, rows older than `KAUPO_TRADES_RETENTION_DAYS` (default 30) are deleted. The table stays bounded.
+7. Run a backtest with the example strategy:
    ```bash
    uv run kaupo backtest --strategy regime-switch --pair BTC/EUR --timeframe 1h --days 365
    ```
@@ -62,11 +67,11 @@ Prerequisites: uv, Docker, and Node 22 or later.
    uv run kaupo backtest --strategy momentum-rotation --pairs BTC/EUR,SOL/EUR,ADA/EUR --timeframe 1h --days 365
    ```
    Backtests use the live risk caps by default: 1000 quote per pair, 2000 quote gross exposure, 200 quote daily loss. These caps clamp research strategies that target a larger book. Three flags relax the caps for one backtest run: `--max-position-quote`, `--max-gross-exposure-quote`, and `--max-daily-loss-quote`. Values must be positive. The API accepts the same three fields on `POST /api/v1/backtests`. The overrides apply to backtests only. Live and shadow guardrails do not change.
-7. Start shadow trading with virtual money:
+8. Start shadow trading with virtual money:
    ```bash
    uv run kaupo run shadow --strategy regime-switch --pair BTC/EUR --timeframe 1h
    ```
-8. Start the API and the UI:
+9. Start the API and the UI:
    ```bash
    uv run uvicorn kaupo.api.app:app --reload
    cd ui && npm install && npm run dev

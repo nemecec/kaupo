@@ -263,6 +263,87 @@ def test_ingest_funding_rejects_kraken() -> None:
     assert "only served by binance" in result.output
 
 
+def _patch_trades_db(
+    monkeypatch: pytest.MonkeyPatch,
+    first: datetime | None,
+    last: datetime | None,
+    count: int,
+    pruned: int = 0,
+    seen: dict[str, Any] | None = None,
+) -> None:
+    """Cut the DB out of the ingest trades coverage report and prune."""
+    import kaupo.data.trades as trades_mod
+    import kaupo.db.session as session_mod
+
+    class FakeSession:
+        async def __aenter__(self) -> "FakeSession":
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            pass
+
+        async def commit(self) -> None:
+            pass
+
+    monkeypatch.setattr(session_mod, "get_sessionmaker", lambda: FakeSession)
+
+    async def fake_range(session: Any, exchange: str, pair: str) -> tuple[Any, Any, int]:
+        if seen is not None:
+            seen["exchange"] = exchange
+            seen["pair"] = pair
+        return first, last, count
+
+    async def fake_prune(session: Any, exchange: str, pair: str, older_than: Any) -> int:
+        if seen is not None:
+            seen["pruned_pair"] = pair
+        return pruned
+
+    monkeypatch.setattr(trades_mod, "get_trade_range", fake_range)
+    monkeypatch.setattr(trades_mod, "prune_trade_ticks", fake_prune)
+
+
+def test_ingest_trades_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kaupo.data.ingest as ingest_mod
+    import kaupo.data.kraken as kraken_mod
+
+    calls: dict[str, Any] = {}
+
+    async def fake_backfill(client: Any, sm: Any, pair: Any, start: Any, end: Any) -> int:
+        calls.update(client_is_kraken=isinstance(client, _FakeKrakenClient), pair=str(pair))
+        return 12_345
+
+    monkeypatch.setattr(kraken_mod, "KrakenClient", _FakeKrakenClient)
+    monkeypatch.setattr(ingest_mod, "backfill_trades", fake_backfill)
+    seen: dict[str, Any] = {}
+    _patch_trades_db(
+        monkeypatch,
+        datetime(2026, 8, 24, tzinfo=UTC),
+        datetime(2026, 8, 27, tzinfo=UTC),
+        12_345,
+        pruned=7,
+        seen=seen,
+    )
+
+    result = runner.invoke(cli.app, ["ingest", "trades", "--pair", "BTC/EUR", "--days", "3"])
+    assert result.exit_code == 0, result.output
+    assert "Ingested 12345 trade ticks for BTC/EUR from kraken" in result.output
+    assert "Database coverage: 12345 trade ticks" in result.output
+    assert "Pruned 7 trade ticks older than 30 days" in result.output
+    assert calls == {"client_is_kraken": True, "pair": "BTC/EUR"}
+    assert seen == {"exchange": "kraken", "pair": "BTC/EUR", "pruned_pair": "BTC/EUR"}
+
+
+def test_ingest_trades_days_cap() -> None:
+    result = runner.invoke(cli.app, ["ingest", "trades", "--pair", "BTC/EUR", "--days", "40"])
+    assert result.exit_code == 2
+
+
+def test_ingest_trades_rejects_unknown_exchange() -> None:
+    result = runner.invoke(cli.app, ["ingest", "trades", "--pair", "BTC/EUR", "--exchange", "coinbase"])
+    assert result.exit_code == 2
+    assert "binance, kraken" in result.output
+
+
 def test_backtest_command(monkeypatch: pytest.MonkeyPatch) -> None:
     import kaupo.backtest.run as bt_mod
 

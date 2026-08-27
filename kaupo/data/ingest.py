@@ -12,6 +12,7 @@ from kaupo.data.candles import upsert_candles
 from kaupo.data.ccxt_client import CcxtExchangeClient
 from kaupo.data.funding import upsert_funding_rates
 from kaupo.data.kraken import KrakenClient
+from kaupo.data.trades import upsert_trade_ticks
 from kaupo.domain import Candle, Pair, Timeframe
 
 log = logging.getLogger(__name__)
@@ -91,6 +92,67 @@ async def backfill_funding(
             on_progress(total)
 
         prev_last = last_ts
+        since = last_ts + step
+
+    return total
+
+
+async def backfill_trades(
+    client: CcxtExchangeClient,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    pair: Pair,
+    start: datetime,
+    end: datetime | None = None,
+    on_progress: Callable[[int], None] | None = None,
+) -> int:
+    """Page through public trades from ``start`` and upsert. Returns tick count.
+
+    Paging mirrors the other backfills, with two venue differences proven by
+    the pair-quality spike (scripts/pair_quality.py). Kraken pages by its
+    nanosecond response cursor (ccxt's ``since`` is broken there); the client
+    exposes it as ``trades_cursor`` and gets it back on the next call. The
+    cursor is inclusive — the previous page's tail trades are re-served on
+    the next one — so re-served duplicates are skipped, and a page with
+    nothing new means the live edge. Binance serves aggTrades in one-hour
+    windows, so an empty page can mean an empty hour rather than the live
+    edge; the window is skipped forward instead of stopping.
+    """
+    end = end or datetime.now(UTC)
+    step = timedelta(milliseconds=1)
+    since = start
+    cursor: str | None = None
+    prev_last: datetime | None = None
+    prev_tail: set[tuple[datetime, float, float, str]] = set()
+    total = 0
+
+    while since < end:
+        sent_cursor = cursor
+        page = await client.fetch_trades(pair, since=since, cursor=cursor)
+        cursor = client.trades_cursor
+        batch = [t for t in page if t.ts < end]
+        if not batch:
+            window = client.trades_page_window
+            if not page and window is not None and since + window < end:
+                since += window  # empty window (e.g. a quiet hour), not the live edge
+                continue
+            break
+        new = [t for t in batch if (t.ts, t.price, t.size, t.side) not in prev_tail]
+        if not new:
+            break  # only re-served duplicates: caught up to the live edge
+        last_ts = new[-1].ts
+        cursor_advanced = sent_cursor is not None and cursor is not None and cursor != sent_cursor
+        if prev_last is not None and last_ts <= prev_last and not cursor_advanced:
+            log.warning("Trade backfill made no progress at %s; stopping", since)
+            break
+        async with sessionmaker() as session:
+            await upsert_trade_ticks(session, new)
+            await session.commit()
+        total += len(new)
+        if on_progress:
+            on_progress(total)
+
+        prev_last = last_ts
+        prev_tail = {(t.ts, t.price, t.size, t.side) for t in new if t.ts == last_ts}
         since = last_ts + step
 
     return total

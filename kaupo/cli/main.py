@@ -190,6 +190,61 @@ def ingest_funding(
     )
 
 
+TRADE_INGEST_MAX_DAYS = 31  # tick volume is large; one run stays bounded
+
+
+@ingest_app.command(name="trades")
+def ingest_trades(
+    pair: PairOpt,
+    days: Annotated[int, typer.Option(min=1, max=TRADE_INGEST_MAX_DAYS)] = 3,
+    start: StartOpt = None,
+    end: EndOpt = None,
+    exchange: ExchangeOpt = "kraken",
+    verbose: VerboseOpt = False,
+) -> None:
+    """Download recent public trade prints (order flow) for the pair into Postgres.
+
+    Tick volume is large, so the window is capped at 31 days per run. After
+    the ingest, the pair's rows older than KAUPO_TRADES_RETENTION_DAYS
+    (default 30) are pruned, keeping the table bounded by construction.
+    """
+    _setup_logging(verbose)
+    from kaupo.data.binance import BinanceClient
+    from kaupo.data.ingest import backfill_trades
+    from kaupo.data.kraken import KrakenClient
+    from kaupo.data.trades import get_trade_range, prune_trade_ticks
+    from kaupo.db.session import get_sessionmaker
+
+    clients = {"kraken": KrakenClient, "binance": BinanceClient}
+    if exchange not in clients:
+        raise typer.BadParameter(f"--exchange must be one of: {', '.join(sorted(clients))}")
+
+    start_dt, end_dt = _range(days, start, end)
+    if end_dt - start_dt > timedelta(days=TRADE_INGEST_MAX_DAYS):
+        raise typer.BadParameter(f"trade ingest is capped at {TRADE_INGEST_MAX_DAYS} days per run")
+    p = Pair.parse(pair)
+    retention_days = get_settings().trades_retention_days
+
+    async def _run() -> tuple[int, int, datetime | None, datetime | None, int]:
+        sm = get_sessionmaker()
+        async with clients[exchange]() as client:
+            total = await backfill_trades(client, sm, p, start_dt, end_dt)
+        cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+        async with sm() as session:
+            pruned = await prune_trade_ticks(session, exchange, str(p), cutoff)
+            await session.commit()
+            first, last, count = await get_trade_range(session, exchange, str(p))
+        return total, pruned, first, last, count
+
+    total, pruned, first, last, count = asyncio.run(_run())
+    console.print(f"[green]Ingested {total} trade ticks[/green] for {p} from {exchange}")
+    if first is not None and last is not None:
+        console.print(
+            f"Database coverage: {count} trade ticks, {first:%Y-%m-%d %H:%M} → {last:%Y-%m-%d %H:%M} UTC"
+        )
+    console.print(f"Pruned {pruned} trade ticks older than {retention_days} days")
+
+
 @app.command()
 def backtest(
     strategy: StrategyOpt,
