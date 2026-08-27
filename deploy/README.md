@@ -156,7 +156,7 @@ COMPOSE="docker compose --env-file /etc/kaupo/kaupo.env -f /opt/kaupo/deploy/com
 - Update strategies: push to the `kaupo-strategies` main branch. The next deploy pulls them and restarts the supervisor container only when strategy code changed. Memory and docs commits trigger nothing. To apply changes now, run `/opt/kaupo/deploy/host-deploy.sh` on the host.
 - Logs: `$COMPOSE logs -f supervisor` on the host. Replace `supervisor` with `api` or `db`.
 - Backup log: `/var/log/kaupo-backup.log` on the host.
-- Alerts (ntfy): the topic name is in `/etc/kaupo/kaupo.env` on the host. Subscribe to it in the ntfy app. A daily summary posts at 06:47 UTC. Halts, kill-switch use, strategy switches, and agent events post immediately.
+- Alerts (ntfy): the topic name is in `/etc/kaupo/kaupo.env` on the host. Subscribe to it in the ntfy app. A daily summary posts at 06:47 UTC. The rolling-origin digest (shadow reality vs fresh backtest per assignment) posts weekly, Sunday 05:13 UTC; its log is `/var/log/kaupo-rolling.log`. Halts, kill-switch use, strategy switches, and agent events post immediately.
 - Reboots: `kaupo.service` starts the stack on boot.
 
 ## Restore from a backup

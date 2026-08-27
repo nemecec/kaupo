@@ -171,7 +171,9 @@ class ReportRow(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    period: Mapped[str] = mapped_column(String(10), unique=True)  # e.g. "2026-08-23"
+    # daily rows key on the day ("2026-08-23"); typed reports key on
+    # "<type>-<period>" ("rolling-origin-2026-W35") — one upsert per period
+    period: Mapped[str] = mapped_column(String(40), unique=True)
     run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     body: Mapped[dict[str, Any]] = mapped_column(JSON)
 

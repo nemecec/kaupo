@@ -1312,3 +1312,54 @@ def test_backtest_sweep_unknown_key_rejected() -> None:
     )
     assert result.exit_code == 1
     assert "Unknown params" in result.output
+
+
+def test_report_rolling_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kaupo.report.rolling as rolling
+
+    body: dict[str, Any] = {
+        "type": "rolling-origin",
+        "period": "2026-W35",
+        "window_days": 7,
+        "generated_at": "2026-08-27T12:00:00+00:00",
+        "assignments": [
+            {
+                "id": "a1",
+                "strategy_id": "holder",
+                "pair": "BTC/EUR",
+                "timeframe": "1h",
+                "backtest": {"run_id": "r1", "sharpe": 1.0, "num_round_trips": 1},
+                "shadow": {"sharpe": 0.9, "num_fills": 2},
+                "verdict": "tracks",
+            },
+            {
+                "id": "a2",
+                "strategy_id": "ghost",
+                "pair": "SOL/EUR",
+                "timeframe": "4h",
+                "error": "unknown strategy 'ghost'",
+                "verdict": "error",
+            },
+        ],
+    }
+    calls: dict[str, Any] = {}
+
+    async def fake_build(sm: Any, **kw: Any) -> Any:
+        calls.update(kw)
+        return body
+
+    async def fake_digest(b: Any) -> None:
+        calls["digest"] = b
+
+    monkeypatch.setattr(rolling, "build_rolling_origin_report", fake_build)
+    monkeypatch.setattr(rolling, "send_digest", fake_digest)
+    result = runner.invoke(cli.app, ["report", "rolling-origin", "--days", "7"])
+    assert result.exit_code == 0, result.output
+    out = _plain(result.output)
+    assert calls["days"] == 7
+    assert calls["digest"] == body  # the digest goes out after the build
+    assert "Rolling-origin report 2026-W35" in out
+    assert "sharpe 1.0 (1 trips)" in out
+    assert "sharpe 0.9 (2 fills)" in out
+    assert "tracks" in out
+    assert "error: unknown strategy 'ghost'" in out

@@ -19,6 +19,8 @@ ingest_app = typer.Typer(help="Download historical market data into Postgres", n
 app.add_typer(ingest_app, name="ingest")
 run_app = typer.Typer(help="Start long-running trading loops", no_args_is_help=True)
 app.add_typer(run_app, name="run")
+report_app = typer.Typer(help="Build performance reports", no_args_is_help=True)
+app.add_typer(report_app, name="report")
 console = Console()
 err_console = Console(stderr=True)
 
@@ -718,3 +720,47 @@ def run_book_collector_cmd(
 
     asyncio.run(_run())
     console.print("[bold]Book collector stopped[/bold]")
+
+
+@report_app.command(name="rolling-origin")
+def report_rolling_origin(
+    days: Annotated[int, typer.Option(help="window length in days", min=1)] = 30,
+    strategies_dir: StrategiesDirOpt = None,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Re-backtest every enabled shadow assignment over the last --days days.
+
+    Compares each assignment's fresh backtest with its shadow chain's actual
+    equity and fills over the same window, prints the digest table, persists
+    one row per ISO week, and pushes the digest to the ntfy topic (no-op
+    without a configured topic).
+    """
+    _setup_logging(verbose)
+    from kaupo.db.session import get_sessionmaker
+    from kaupo.report.rolling import build_rolling_origin_report, send_digest
+
+    async def _run() -> Any:
+        sessionmaker = get_sessionmaker()
+        body = await build_rolling_origin_report(sessionmaker, days=days, strategies_dir=strategies_dir)
+        await send_digest(body)
+        return body
+
+    body = asyncio.run(_run())
+    console.print(
+        f"\n[bold]Rolling-origin report {body['period']}[/bold] — window {body['window_days']} days"
+    )
+    table = Table("assignment", "strategy", "pair(s)", "tf", "backtest", "shadow", "verdict")
+    for entry in body["assignments"]:
+        if "error" in entry:
+            cells = (f"[red]error: {entry['error']}[/red]", "", entry["verdict"])
+        elif "note" in entry["shadow"]:
+            cells = ("", f"[yellow]{entry['shadow']['note']}[/yellow]", entry["verdict"])
+        else:
+            backtest, shadow = entry["backtest"], entry["shadow"]
+            cells = (
+                f"sharpe {backtest['sharpe']} ({backtest['num_round_trips']} trips)",
+                f"sharpe {shadow['sharpe']} ({shadow['num_fills']} fills)",
+                entry["verdict"],
+            )
+        table.add_row(entry["id"], entry["strategy_id"], entry["pair"], entry["timeframe"], *cells)
+    console.print(table)

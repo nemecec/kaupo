@@ -55,6 +55,8 @@ class PortfolioBacktestRequest:
     stability: dict[str, Any] | None = None
     # sweep marker for the run config: {"group", "point"}
     sweep: dict[str, Any] | None = None
+    # rolling-origin report marker for the run config: {"period", "assignment"}
+    rolling_origin: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if len(self.pairs) < 2:
@@ -175,6 +177,7 @@ async def run_portfolio_backtest(
                 "liquidate_end": request.liquidate_end,
                 **({"stability": request.stability} if request.stability is not None else {}),
                 **({"sweep": request.sweep} if request.sweep is not None else {}),
+                **({"rolling_origin": request.rolling_origin} if request.rolling_origin is not None else {}),
             },
         ),
     )
