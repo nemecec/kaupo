@@ -14,12 +14,14 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from kaupo.core.engine import STOPPED_EXTERNALLY
 from kaupo.core.recorder import SUPERSEDED_HALT_REASON
 from kaupo.core.runner import PortfolioShadowRequest, ShadowRequest, run_portfolio_shadow, run_shadow
 from kaupo.data.candles import upsert_candles
-from kaupo.db.models import EquitySnapshotRow, RunRow
-from kaupo.db.session import get_sessionmaker
-from kaupo.domain import Candle, Pair, Timeframe
+from kaupo.db.models import EquitySnapshotRow, EventRow, RunRow
+from kaupo.db.session import get_sessionmaker, sm_scope
+from kaupo.domain import Candle, Pair, Timeframe, new_id, utc_now
+from kaupo.risk.manager import RiskConfig
 from kaupo.sdk.loader import load_strategies
 
 pytestmark = pytest.mark.integration
@@ -137,6 +139,51 @@ class ScriptedUniverseClient:
         return []
 
 
+class StopAfterClient(ScriptedClient):
+    """Sets the stop event the moment the last poll batch is served.
+
+    The engine then sees the stop at the top of the candle loop and halts
+    "stopped externally" — the start-up/busy-phase graceful-stop shape
+    (halted, empty metrics), as opposed to the stream-dried-up shape
+    (completed) the plain ScriptedClient produces.
+    """
+
+    async def fetch_candles(self, pair, timeframe, since=None, limit=720):  # type: ignore[no-untyped-def]
+        batch = await super().fetch_candles(pair, timeframe, since=since, limit=limit)
+        if not self.in_backfill and batch and not self.poll_batches:
+            self.stop.set()
+        return batch
+
+
+class KillAfterClient(ScriptedClient):
+    """Writes a global control kill command to the events table mid-run."""
+
+    def __init__(
+        self, history: list[Candle], poll_batches: list[list[Candle]], stop: asyncio.Event, kill_on_batch: int
+    ) -> None:
+        super().__init__(history, poll_batches, stop)
+        self._kill_on_batch = kill_on_batch
+        self._served = 0
+
+    async def fetch_candles(self, pair, timeframe, since=None, limit=720):  # type: ignore[no-untyped-def]
+        batch = await super().fetch_candles(pair, timeframe, since=since, limit=limit)
+        if not self.in_backfill and batch:
+            self._served += 1
+            if self._served == self._kill_on_batch:
+                async with sm_scope(get_sessionmaker()) as session:
+                    session.add(
+                        EventRow(
+                            id=new_id(),
+                            ts=utc_now(),
+                            level="warning",
+                            source="control",
+                            message="kill all runs",
+                            data={"command": "kill"},
+                        )
+                    )
+        return batch
+
+
 async def _runs(session: AsyncSession) -> Sequence[RunRow]:
     # populate_existing: _mark_running leaves stale state in the identity map
     stmt = select(RunRow).order_by(RunRow.started_at).execution_options(populate_existing=True)
@@ -167,17 +214,32 @@ async def _mark_running(session: AsyncSession, run_id: str) -> None:
     await session.commit()
 
 
-async def _run_shadow(tmp_path: Path, client: ScriptedClient, params: dict | None = None):  # type: ignore[no-untyped-def]
+async def _run_shadow(
+    tmp_path: Path, client: ScriptedClient, params: dict | None = None, risk: RiskConfig | None = None
+):  # type: ignore[no-untyped-def]
     strategy = load_strategies(tmp_path)["buyer"]
     stop = client.stop
     return await run_shadow(
         ShadowRequest(
-            strategy=strategy, params=params or {}, pair=BTC, timeframe=TF, warmup=50, poll_interval_seconds=0
+            strategy=strategy,
+            params=params or {},
+            pair=BTC,
+            timeframe=TF,
+            warmup=50,
+            poll_interval_seconds=0,
+            risk=risk or RiskConfig(),
         ),
         get_sessionmaker(),
         client,  # type: ignore[arg-type]
         stop=stop,
     )
+
+
+async def _halt_reasons(session: AsyncSession, run_id: str) -> list[str]:
+    """The halt reasons the run left in the audit log (record_halt event rows)."""
+    stmt = select(EventRow).where(EventRow.source == "engine", EventRow.data["run_id"].as_string() == run_id)
+    rows = (await session.execute(stmt)).scalars().all()
+    return [str((row.data or {}).get("halt_reason")) for row in rows]
 
 
 async def test_superseded_run_resumes_ledger_state_and_chain(session: AsyncSession, tmp_path: Path) -> None:
@@ -346,3 +408,113 @@ async def test_portfolio_superseded_run_resumes_ledger_state(session: AsyncSessi
     assert snaps2[0].cash == snaps1[-1].cash
     assert snaps2[0].unrealized_pnl == snaps1[-1].unrealized_pnl
     assert snaps2[0].equity == snaps1[-1].equity
+
+
+async def test_shutdown_halted_run_resumes(session: AsyncSession, tmp_path: Path) -> None:
+    """The start-up/busy-phase graceful stop (halted, empty metrics, reason
+    "stopped externally" in the audit log) resumes, same as supersession."""
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    history = hourly_history(BTC, now - timedelta(hours=2), 100.0)
+    await upsert_candles(session, history)
+    await session.commit()
+    (tmp_path / "buyer.py").write_text(STRATEGY)
+    c1, c2, c3, c4 = (candle(BTC, now + timedelta(hours=i - 1), 100.0) for i in range(4))
+
+    # run 1: fills on c2; the "deploy" stop lands as c3 arrives, so the
+    # engine halts at the top of the candle loop
+    result1 = await _run_shadow(tmp_path, StopAfterClient(history, [[c1], [c2], [c3]], asyncio.Event()))
+    assert result1.status.value == "halted"
+    assert result1.halt_reason == STOPPED_EXTERNALLY
+    assert result1.num_fills == 1
+    run1 = (await _runs(session))[0]
+    assert run1.status == "halted"
+    assert run1.metrics is None  # the row carries no reason...
+    assert await _halt_reasons(session, run1.id) == [STOPPED_EXTERNALLY]  # ...the audit log does
+    snaps1 = await _snapshots(session, run1.id)
+    assert snaps1[-1].cash < 10_000
+
+    # run 2, same config: resumes run 1 without superseding it
+    result2 = await _run_shadow(tmp_path, ScriptedClient([*history, c1, c2], [[c4]], asyncio.Event()))
+    assert result2.num_fills == 0  # the carried position suppresses the strategy's entry
+    run1, run2 = await _runs(session)
+    assert run1.status == "halted"  # untouched: the slot was free
+    assert run2.config["resumed_from"] == run1.id
+    assert run2.config["chain_started_at"] == run1.started_at.isoformat()
+    snaps2 = await _snapshots(session, run2.id)
+    assert len(snaps2) == 1
+    assert snaps2[0].cash == snaps1[-1].cash
+    assert snaps2[0].unrealized_pnl == snaps1[-1].unrealized_pnl
+    assert snaps2[0].equity == snaps1[-1].equity
+
+
+async def test_rail_halted_run_does_not_resume(session: AsyncSession, tmp_path: Path) -> None:
+    """A genuine risk-rail halt (halted, empty metrics, accusing reason in
+    the audit log) is a deliberate stop: the successor starts fresh."""
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    history = hourly_history(BTC, now - timedelta(hours=2), 100.0)
+    await upsert_candles(session, history)
+    await session.commit()
+    (tmp_path / "buyer.py").write_text(STRATEGY)
+    tiny_loss_cap = RiskConfig(max_daily_loss_quote=1.0)
+    c1, c2 = (candle(BTC, now + timedelta(hours=i - 1), 100.0) for i in range(2))
+    c3 = candle(BTC, now + timedelta(hours=1), 90.0)  # the drop that trips the rail
+    c4, c5 = (candle(BTC, now + timedelta(hours=i), 100.0) for i in (2, 3))
+
+    # run 1: fills on c2, the price drop on c3 trips the daily-loss rail
+    result1 = await _run_shadow(
+        tmp_path, ScriptedClient(history, [[c1], [c2], [c3]], asyncio.Event()), risk=tiny_loss_cap
+    )
+    assert result1.status.value == "halted"
+    assert result1.halt_reason.startswith("max daily loss hit")
+    assert result1.num_fills == 1
+    run1 = (await _runs(session))[0]
+    assert run1.status == "halted"
+    assert run1.metrics is None
+    assert [r.startswith("max daily loss hit") for r in await _halt_reasons(session, run1.id)] == [True]
+
+    # run 2, same config: NOT resumed — the rail halt was a deliberate stop
+    result2 = await _run_shadow(
+        tmp_path, ScriptedClient([*history, c1, c2, c3], [[c4], [c5]], asyncio.Event()), risk=tiny_loss_cap
+    )
+    assert result2.num_fills == 1  # a flat book: the strategy enters again
+    _, run2 = await _runs(session)
+    assert "resumed_from" not in run2.config
+    assert "chain_started_at" not in run2.config
+    snaps2 = await _snapshots(session, run2.id)
+    assert snaps2[0].cash == 10_000.0  # fresh ledger at starting_cash
+    assert snaps2[0].unrealized_pnl == 0.0
+
+
+async def test_control_killed_run_does_not_resume(session: AsyncSession, tmp_path: Path) -> None:
+    """A control kill (halted, empty metrics, "killed via control API" in the
+    audit log) is a deliberate stop: the successor starts fresh."""
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    history = hourly_history(BTC, now - timedelta(hours=2), 100.0)
+    await upsert_candles(session, history)
+    await session.commit()
+    (tmp_path / "buyer.py").write_text(STRATEGY)
+    c1, c2, c3, c4 = (candle(BTC, now + timedelta(hours=i - 1), 100.0) for i in range(4))
+
+    # run 1: a global kill command lands before c2 is processed; the fill
+    # still happens (fills precede the control probe in the candle loop)
+    result1 = await _run_shadow(
+        tmp_path, KillAfterClient(history, [[c1], [c2]], asyncio.Event(), kill_on_batch=2)
+    )
+    assert result1.status.value == "halted"
+    assert result1.halt_reason == "killed via control API"
+    assert result1.num_fills == 1
+    run1 = (await _runs(session))[0]
+    assert run1.status == "halted"
+    assert run1.metrics is None
+    assert await _halt_reasons(session, run1.id) == ["killed via control API"]
+
+    # run 2, same config: NOT resumed; the stale global kill does not
+    # assassinate the fresh run (its probe ignores pre-start commands)
+    result2 = await _run_shadow(tmp_path, ScriptedClient([*history, c1, c2], [[c3], [c4]], asyncio.Event()))
+    assert result2.num_fills == 1  # a flat book: the strategy enters again
+    _, run2 = await _runs(session)
+    assert "resumed_from" not in run2.config
+    assert "chain_started_at" not in run2.config
+    snaps2 = await _snapshots(session, run2.id)
+    assert snaps2[0].cash == 10_000.0
+    assert snaps2[0].unrealized_pnl == 0.0

@@ -43,6 +43,11 @@ from kaupo.venues.venue import Venue
 
 log = logging.getLogger(__name__)
 
+# halt reason when the run's own stop event ends it (deploy, shutdown, CLI
+# stop): a graceful external stop, distinct from rail halts and control
+# kills — the resume logic reads it back from the audit log
+STOPPED_EXTERNALLY = "stopped externally"
+
 
 @dataclass(frozen=True)
 class EngineConfig:
@@ -164,7 +169,7 @@ class Engine:
             async for candle in candles:
                 if stop is not None and stop.is_set():
                     status = RunStatus.HALTED
-                    self._halt_reason = "stopped externally"
+                    self._halt_reason = STOPPED_EXTERNALLY
                     break
                 last_candle = candle
                 if seen % 100 == 0:

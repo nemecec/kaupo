@@ -10,12 +10,17 @@ Resume rule: a new run resumes when the latest ended run row of its slot
 (the assignment row id when supervised, else strategy + pair) ended by
 supersession or by a graceful stop, and runs the SAME config: the config
 hash (strategy, pair or universe, timeframe, params) and the strategy
-version must match. A graceful stop ends the row as completed with no
-halt reason — a shadow run never completes on its own (the candle stream
-is infinite), so completed means the stop event unwound the run (deploy,
-shutdown, CLI stop) before the process died. A run halted by the risk
-rail, killed via control, or failed does NOT resume — deliberate stops
-stay stopped and the successor starts fresh at starting_cash.
+version must match. A graceful stop has two row shapes, by timing race: a
+steady-state stop lets the candle stream dry up (status completed), a
+start-up or busy-phase stop is seen at the top of the candle loop (status
+halted, reason "stopped externally"). Both leave the run row's metrics
+empty — engine-ended runs keep their halt reason in the events audit log
+(record_halt), not in the row. That log is the discriminator: a halted
+row with empty metrics resumes only when its recorded reason is "stopped
+externally" (or absent — a process can die between the row write and the
+audit write only on the shutdown path). A run halted by the risk rail,
+killed via control, or failed does NOT resume — deliberate stops stay
+stopped and the successor starts fresh at starting_cash.
 
 What carries: cash and open positions only, rebuilt by replaying the whole
 chain's recorded fills through a fresh Ledger — the same apply_fill that
@@ -42,8 +47,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from kaupo.core.engine import STOPPED_EXTERNALLY
 from kaupo.core.recorder import SUPERSEDED_HALT_REASON, supersede_stale_runs
-from kaupo.db.models import FillRow, RunRow
+from kaupo.db.models import EventRow, FillRow, RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Fill, OrderId, Pair, Position, RunMode, RunStatus, Side
 from kaupo.ledger.ledger import InsufficientFunds, InsufficientPosition, Ledger
@@ -89,25 +95,39 @@ def run_config_hash(row: RunRow) -> str:
     )
 
 
-def is_resumable(row: RunRow, *, new_config_hash: str, new_strategy_version: str) -> bool:
+def is_resumable(
+    row: RunRow,
+    *,
+    new_config_hash: str,
+    new_strategy_version: str,
+    recorded_halt_reason: str | None = None,
+) -> bool:
     """True when the run row is a resumable predecessor running the same config.
 
     Two endings qualify: a supersession (the row was still "running" when
     its successor claimed the slot) and a graceful stop — a shadow run
-    never completes on its own (the candle stream is infinite), so
-    completed with no halt reason means the stop event unwound the run
-    (deploy, shutdown, CLI stop) before the process died. A risk-rail
-    halt, a control kill, and a failure leave a different status or a
-    halt reason, and resuming them would defeat deliberate stops.
+    never ends on its own (the candle stream is infinite), so an ending
+    with no halt reason means the stop event unwound the run (deploy,
+    shutdown, CLI stop). A graceful stop ends completed (stream dried up)
+    or halted with empty metrics (stop seen at the candle loop's top). The
+    latter shape is shared with rail halts and control kills, so it
+    qualifies only when the audit log carries no accusation:
+    ``recorded_halt_reason`` is the run's halt reason from the events
+    table, and only "stopped externally" (or no record) is graceful.
     """
     if row.ended_at is None:
         return False
     halt_reason = (row.metrics or {}).get("halt_reason")
     superseded = row.status == RunStatus.HALTED.value and halt_reason == SUPERSEDED_HALT_REASON
-    gracefully_stopped = (
-        row.mode == RunMode.SHADOW.value and row.status == RunStatus.COMPLETED.value and halt_reason is None
+    graceful_stop = (
+        row.mode == RunMode.SHADOW.value
+        and halt_reason is None
+        and (
+            row.status == RunStatus.COMPLETED.value
+            or (row.status == RunStatus.HALTED.value and recorded_halt_reason in (None, STOPPED_EXTERNALLY))
+        )
     )
-    if not (superseded or gracefully_stopped):
+    if not (superseded or graceful_stop):
         return False
     if row.strategy_version != new_strategy_version:
         return False
@@ -154,6 +174,30 @@ async def _chain_rows(session: AsyncSession, tip: RunRow) -> list[RunRow] | None
         row = parent
     chain.reverse()
     return chain
+
+
+async def _recorded_halt_reason(session: AsyncSession, run_id: str) -> str | None:
+    """The halt reason the run left in the audit log (record_halt); None when absent.
+
+    Engine-ended runs keep their run row's metrics empty — the reason lives
+    in the events table, the designed audit trail for halts.
+    """
+    row = (
+        (
+            await session.execute(
+                select(EventRow)
+                .where(EventRow.source == "engine", EventRow.data["run_id"].as_string() == run_id)
+                .order_by(EventRow.ts.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if row is None:
+        return None
+    reason = (row.data or {}).get("halt_reason")
+    return reason if isinstance(reason, str) else None
 
 
 async def _load_fills(session: AsyncSession, run_ids: list[str]) -> list[Fill]:
@@ -226,7 +270,19 @@ async def prepare_resume(
         if predecessor is None:
             return None
         new_hash = config_hash(strategy_id, pair, timeframe, params, pairs)
-        if not is_resumable(predecessor, new_config_hash=new_hash, new_strategy_version=strategy_version):
+        recorded_halt_reason: str | None = None
+        metrics_reason = (predecessor.metrics or {}).get("halt_reason")
+        if predecessor.status == RunStatus.HALTED.value and metrics_reason is None:
+            # halted with empty metrics: a graceful stop, a rail halt, and a
+            # control kill all write this row shape — only the audit log
+            # tells them apart
+            recorded_halt_reason = await _recorded_halt_reason(session, predecessor.id)
+        if not is_resumable(
+            predecessor,
+            new_config_hash=new_hash,
+            new_strategy_version=strategy_version,
+            recorded_halt_reason=recorded_halt_reason,
+        ):
             return None
         chain = await _chain_rows(session, predecessor)
         if chain is None:

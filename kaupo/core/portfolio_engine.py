@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
-from kaupo.core.engine import RunResult, VirtualClock
+from kaupo.core.engine import STOPPED_EXTERNALLY, RunResult, VirtualClock
 from kaupo.core.funding import EmptyFundingProvider, FundingProvider
 from kaupo.core.recorder import RunInfo, RunRecorder
 from kaupo.domain import (
@@ -193,7 +193,7 @@ class PortfolioEngine:
             async for ts, candles in steps:
                 if stop is not None and stop.is_set():
                     status = RunStatus.HALTED
-                    self._halt_reason = "stopped externally"
+                    self._halt_reason = STOPPED_EXTERNALLY
                     break
                 last_step = candles
                 if seen % 100 == 0:

@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 
+from kaupo.core.engine import STOPPED_EXTERNALLY
 from kaupo.core.recorder import SUPERSEDED_HALT_REASON
 from kaupo.core.resume import config_hash, is_resumable, replay_fills
 from kaupo.db.models import RunRow
@@ -34,8 +35,13 @@ def run_row(**overrides: object) -> RunRow:
     return RunRow(**fields)  # type: ignore[arg-type]
 
 
-def resumable(row: RunRow, new_hash: str = HASH, version: str = "v1") -> bool:
-    return is_resumable(row, new_config_hash=new_hash, new_strategy_version=version)
+def resumable(row: RunRow, new_hash: str = HASH, version: str = "v1", recorded: str | None = None) -> bool:
+    return is_resumable(
+        row,
+        new_config_hash=new_hash,
+        new_strategy_version=version,
+        recorded_halt_reason=recorded,
+    )
 
 
 class TestIsResumable:
@@ -73,8 +79,27 @@ class TestIsResumable:
         assert not resumable(run_row(status="failed", metrics=None))
 
     def test_rail_halt_is_not_resumable(self) -> None:
-        # engine halts (risk rail, kill switch, external stop) persist no metrics
-        assert not resumable(run_row(metrics=None))
+        # a rail halt leaves the same row shape as a shutdown (halted, empty
+        # metrics); the audit log holds the accusing reason
+        row = run_row(metrics=None)
+        reason = "max daily loss hit: floor equity 9000.00 vs day start 10000.00"
+        assert not resumable(row, recorded=reason)
+
+    def test_control_kill_is_not_resumable(self) -> None:
+        assert not resumable(run_row(metrics=None), recorded="killed via control API")
+
+    def test_control_switch_is_not_resumable(self) -> None:
+        assert not resumable(run_row(metrics=None), recorded="strategy switch requested")
+
+    def test_halted_by_shutdown_is_resumable(self) -> None:
+        # the stop event seen at the top of the candle loop (start-up or
+        # busy-phase stop): the audit log says "stopped externally"
+        assert resumable(run_row(metrics=None), recorded=STOPPED_EXTERNALLY)
+
+    def test_halted_with_no_recorded_reason_is_resumable(self) -> None:
+        # a process can die between the row write and the audit write only
+        # on the shutdown path: no record means no accusation
+        assert resumable(run_row(metrics=None), recorded=None)
 
     def test_orphan_halt_is_not_resumable(self) -> None:
         assert not resumable(run_row(metrics={"halt_reason": "no matching assignment"}))
