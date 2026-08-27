@@ -8,8 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.api.deps import Principal, get_principal, require_admin
-from kaupo.api.schemas import CandleOut, ControlIn, ControlOut, EventOut, ReportOut
+from kaupo.api.schemas import CandleOut, ControlIn, ControlOut, EventOut, FundingOut, ReportOut
 from kaupo.data.candles import get_candles
+from kaupo.data.funding import get_funding_rates
 from kaupo.db.models import EventRow
 from kaupo.db.session import get_session, get_sessionmaker
 from kaupo.domain import Pair, Timeframe, new_id, utc_now
@@ -61,6 +62,36 @@ async def candles(
     )
     return [
         CandleOut(ts=c.ts, open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume) for c in rows
+    ]
+
+
+@router.get("/funding")
+async def funding(
+    _: Annotated[Principal, Depends(get_principal)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    pair: str = Query(...),
+    start: datetime = Query(...),
+    end: datetime = Query(...),
+    limit: int = Query(5000, ge=1, le=50_000),
+    exchange: str = Query("binance"),
+) -> list[FundingOut]:
+    """Funding rates for the pair's base asset. The venue is Binance (the
+    ingest source), not the trade venue — the series marks crowded
+    positioning market-wide, so it transfers across venues."""
+    try:
+        parsed_pair = Pair.parse(pair)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    rows = await get_funding_rates(
+        session,
+        exchange,
+        parsed_pair.base,
+        _aware(start),
+        _aware(end),
+        limit=limit,
+    )
+    return [
+        FundingOut(exchange=r.exchange, base_asset=r.base_asset, ts=r.ts, rate=r.rate) for r in rows
     ]
 
 

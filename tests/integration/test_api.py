@@ -487,6 +487,51 @@ async def test_candles_endpoint(client: AsyncClient, session: AsyncSession) -> N
     assert r.json()[0]["close"] == 100.0
 
 
+async def test_funding_endpoint(client: AsyncClient, session: AsyncSession) -> None:
+    from kaupo.data.funding import upsert_funding_rates
+    from kaupo.domain import FundingRate
+
+    rates = [
+        FundingRate(
+            exchange="binance", base_asset="BTC", ts=BASE + timedelta(hours=8 * i), rate=0.0001 * (i + 1)
+        )
+        for i in range(5)
+    ]
+    await upsert_funding_rates(session, rates)
+    await session.commit()
+
+    r = await client.get(
+        "/api/v1/funding",
+        params={
+            "pair": "BTC/EUR",
+            "start": BASE.isoformat(),
+            "end": (BASE + timedelta(hours=40)).isoformat(),
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 5
+    assert body[0] == {"exchange": "binance", "base_asset": "BTC", "ts": body[0]["ts"], "rate": 0.0001}
+
+    # the pair supplies the base asset, whatever its quote
+    r = await client.get(
+        "/api/v1/funding",
+        params={
+            "pair": "BTC/USD",
+            "start": BASE.isoformat(),
+            "end": (BASE + timedelta(hours=40)).isoformat(),
+        },
+    )
+    assert r.status_code == 200
+    assert len(r.json()) == 5
+
+    r = await client.get(
+        "/api/v1/funding",
+        params={"pair": "bogus", "start": BASE.isoformat(), "end": (BASE + timedelta(hours=40)).isoformat()},
+    )
+    assert r.status_code == 422
+
+
 async def test_control_writes_command_events(client: AsyncClient, session: AsyncSession) -> None:
     from sqlalchemy import select
 

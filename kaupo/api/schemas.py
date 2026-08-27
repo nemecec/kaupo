@@ -89,6 +89,13 @@ class CandleOut(BaseModel):
     volume: float
 
 
+class FundingOut(BaseModel):
+    exchange: str
+    base_asset: str
+    ts: datetime
+    rate: float
+
+
 class BacktestIn(BaseModel):
     strategy: str
     pair: str | None = None  # single-pair backtest
