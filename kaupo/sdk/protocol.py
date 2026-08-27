@@ -25,7 +25,7 @@ from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel
 
-from kaupo.domain import Candle, FundingRate, OrderIntent, Pair, Position
+from kaupo.domain import BookSnapshot, Candle, FundingRate, OrderIntent, Pair, Position, TickFlow, TradeTick
 
 
 class EmptyParams(BaseModel):
@@ -63,6 +63,42 @@ class StrategyContext(Protocol):
         before ``clock.now()`` is ever returned, in backtests and live alike.
         Empty when no funding was ingested for the base asset (funding is an
         advisory signal sourced from Binance USDT perpetuals).
+        """
+        ...
+
+    def ticks(self, n: int) -> Sequence[TradeTick]:
+        """Latest ``n`` trade ticks for the run pair, oldest first.
+
+        Point-in-time like ``history``: only ticks with trade time at or
+        before ``clock.now()`` are ever returned, in backtests and live
+        alike. Empty when no ticks were stored for the pair — ticks exist
+        only for the pairs the tick collector feeds (Kraken majors) and are
+        kept for a rolling 30 days, so absence is normal: strategies must
+        tolerate an empty series, and backtests older than the retention
+        window simply see nothing.
+        """
+        ...
+
+    def book(self, n: int) -> Sequence[BookSnapshot]:
+        """Latest ``n`` top-of-book snapshots for the run pair, oldest first.
+
+        Point-in-time like ``history``: only snapshots with observation time
+        at or before ``clock.now()`` are ever returned, in backtests and live
+        alike. Empty when no snapshots were stored for the pair — book data
+        exists only for the pairs the book collector feeds and is kept for a
+        rolling 30 days, so strategies must tolerate absence.
+        """
+        ...
+
+    def tick_flow(self, n: int) -> Sequence[TickFlow]:
+        """Trade ticks bucketed per candle of the run's timeframe, oldest first.
+
+        One :class:`TickFlow` (buy/sell counts and volumes, largest trade)
+        per candle that saw at least one trade, over the newest ``n``
+        completed candles; candles without trades are absent. Only buckets
+        fully closed at or before ``clock.now()`` are returned — the
+        in-progress candle never leaks. Empty when no tick data (see
+        ``ticks`` for the coverage and retention boundary).
         """
         ...
 
@@ -128,6 +164,41 @@ class PortfolioContext(Protocol):
         Point-in-time like ``history``: only funding with funding time at or
         before ``clock.now()`` is ever returned. Empty when no funding was
         ingested for the base asset (advisory signal, Binance USDT perpetuals).
+        """
+        ...
+
+    def ticks(self, pair: Pair, n: int) -> Sequence[TradeTick]:
+        """Latest ``n`` trade ticks for ``pair``, oldest first.
+
+        Point-in-time like ``history``: only ticks with trade time at or
+        before ``clock.now()`` are ever returned, in backtests and live
+        alike. Empty for pairs outside the universe and when no ticks were
+        stored — ticks exist only for the pairs the tick collector feeds
+        (Kraken majors) and are kept for a rolling 30 days, so strategies
+        must tolerate absence.
+        """
+        ...
+
+    def book(self, pair: Pair, n: int) -> Sequence[BookSnapshot]:
+        """Latest ``n`` top-of-book snapshots for ``pair``, oldest first.
+
+        Point-in-time like ``history``: only snapshots with observation time
+        at or before ``clock.now()`` are ever returned, in backtests and live
+        alike. Empty for pairs outside the universe and when no snapshots
+        were stored — book data exists only for the pairs the book collector
+        feeds and is kept for a rolling 30 days.
+        """
+        ...
+
+    def tick_flow(self, pair: Pair, n: int) -> Sequence[TickFlow]:
+        """Trade ticks of ``pair`` bucketed per candle of the run's timeframe.
+
+        One :class:`TickFlow` (buy/sell counts and volumes, largest trade)
+        per candle that saw at least one trade, over the newest ``n``
+        completed candles, oldest first; candles without trades are absent.
+        Only buckets fully closed at or before ``clock.now()`` are returned —
+        the in-progress candle never leaks. Empty when no tick data (see
+        ``ticks`` for the coverage and retention boundary).
         """
         ...
 

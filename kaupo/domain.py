@@ -140,6 +140,24 @@ class BookSnapshot:
     ask_size: float
 
 
+@dataclass(frozen=True)
+class TickFlow:
+    """Order-flow aggregate of one candle bucket of trade ticks.
+
+    Derived from stored :class:`TradeTick` rows bucketed per candle: trade
+    counts and base-currency volumes per taker side, plus the largest single
+    trade. Inherits tick coverage: only pairs the tick collector feeds, kept
+    for a rolling 30 days.
+    """
+
+    ts: datetime  # bucket (candle) open time, UTC
+    buy_count: int
+    sell_count: int
+    buy_volume: float  # in base currency
+    sell_volume: float  # in base currency
+    max_trade_size: float  # largest single trade of the bucket, in base currency
+
+
 class Side(enum.Enum):
     BUY = "buy"
     SELL = "sell"

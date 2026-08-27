@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from kaupo.backtest.metrics import compute_metrics
 from kaupo.core.engine import RunResult
 from kaupo.core.funding import StaticFundingProvider
+from kaupo.core.orderflow import DbOrderFlowProvider
 from kaupo.core.portfolio_engine import PortfolioEngine, PortfolioEngineConfig, joined_steps
 from kaupo.core.recorder import CompositeRecorder, DbRecorder, InMemoryRecorder, RunInfo
 from kaupo.data.candles import get_candles
@@ -151,6 +152,10 @@ async def run_portfolio_backtest(
             liquidate_end=request.liquidate_end,
         ),
         funding=StaticFundingProvider(funding_by_base),
+        # ticks/book are too voluminous to prefill like funding: the DB
+        # provider queries per candle (rows beyond tick retention are simply
+        # absent — the strategy sees empty series)
+        orderflow=DbOrderFlowProvider(sessionmaker, exchange=request.exchange),
         run_info=RunInfo(
             mode=RunMode.BACKTEST,
             strategy_id=request.strategy.id,

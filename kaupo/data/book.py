@@ -79,6 +79,37 @@ async def get_book_snapshots(
     return [_to_domain(row) for row in rows]
 
 
+async def get_recent_book_snapshots(
+    session: AsyncSession,
+    exchange: str,
+    pair: str,
+    before: datetime,
+    start: datetime | None = None,
+    limit: int | None = None,
+) -> list[BookSnapshot]:
+    """Book snapshots with observation time at or before ``before``, ascending.
+
+    With ``start``, only snapshots at or after ``start`` are read. With
+    ``limit``, returns the *latest* ``limit`` snapshots of the window
+    (fetched descending, then reversed) instead of the whole window.
+    """
+    where = [
+        BookSnapshotRow.exchange == exchange,
+        BookSnapshotRow.pair == pair,
+        BookSnapshotRow.ts <= before,
+    ]
+    if start is not None:
+        where.append(BookSnapshotRow.ts >= start)
+    if limit is not None:
+        stmt = select(BookSnapshotRow).where(*where).order_by(BookSnapshotRow.ts.desc()).limit(limit)
+        rows = list((await session.execute(stmt)).scalars())
+        rows.reverse()
+    else:
+        stmt = select(BookSnapshotRow).where(*where).order_by(BookSnapshotRow.ts)
+        rows = list((await session.execute(stmt)).scalars())
+    return [_to_domain(row) for row in rows]
+
+
 async def get_latest_book_ts(session: AsyncSession, exchange: str, pair: str) -> datetime | None:
     stmt = (
         select(BookSnapshotRow.ts)

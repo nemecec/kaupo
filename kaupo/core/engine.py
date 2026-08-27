@@ -22,8 +22,10 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from kaupo.core.funding import EmptyFundingProvider, FundingProvider
+from kaupo.core.orderflow import EmptyOrderFlowProvider, OrderFlowProvider
 from kaupo.core.recorder import RunInfo, RunRecorder
 from kaupo.domain import (
+    BookSnapshot,
     Candle,
     Fill,
     FundingRate,
@@ -34,7 +36,9 @@ from kaupo.domain import (
     Position,
     RunStatus,
     Side,
+    TickFlow,
     Timeframe,
+    TradeTick,
 )
 from kaupo.ledger.ledger import InsufficientFunds, InsufficientPosition, Ledger
 from kaupo.risk.manager import Decision, RiskManager, RiskState
@@ -114,6 +118,26 @@ class _Context:
         engine = self._engine
         return engine._funding.latest(engine.config.pair.base, n, engine.clock.now())
 
+    def ticks(self, n: int) -> Sequence[TradeTick]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        return engine._orderflow.ticks(str(engine.config.pair), n, engine.clock.now())
+
+    def book(self, n: int) -> Sequence[BookSnapshot]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        return engine._orderflow.book(str(engine.config.pair), n, engine.clock.now())
+
+    def tick_flow(self, n: int) -> Sequence[TickFlow]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        return engine._orderflow.tick_flow(
+            str(engine.config.pair), n, engine.clock.now(), engine.config.timeframe.seconds
+        )
+
     def position(self) -> Position:
         return self._engine.ledger.position(self._engine.config.pair)
 
@@ -136,6 +160,7 @@ class Engine:
         run_info: RunInfo,
         control_probe: Callable[[], Awaitable[str | None]] | None = None,
         funding: FundingProvider | None = None,
+        orderflow: OrderFlowProvider | None = None,
     ) -> None:
         self.strategy = strategy
         self.venue = venue
@@ -148,6 +173,7 @@ class Engine:
         self.history: deque[Candle] = deque(maxlen=config.lookback)
         self._ctx = _Context(self)
         self._funding = funding if funding is not None else EmptyFundingProvider()
+        self._orderflow = orderflow if orderflow is not None else EmptyOrderFlowProvider()
         self._fills = 0
         self._halt_reason = ""
         self._control_probe = control_probe
@@ -262,6 +288,7 @@ class Engine:
 
         # 5-6. strategy + risk-filtered intents
         await self._funding.update(self.config.pair.base, self.clock.now())
+        await self._orderflow.update(str(self.config.pair), self.clock.now())
         self.history.append(candle)
         intents = self.strategy.on_candle(self._ctx)
         for assessment in self.risk.assess(intents, self._risk_state(candle)):

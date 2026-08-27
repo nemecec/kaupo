@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.core.engine import Engine, EngineConfig, RunResult
 from kaupo.core.funding import DbFundingProvider, EmptyFundingProvider, FundingProvider
+from kaupo.core.orderflow import DbOrderFlowProvider
 from kaupo.core.portfolio_engine import PortfolioEngine, PortfolioEngineConfig, joined_steps
 from kaupo.core.recorder import CompositeRecorder, DbRecorder, InMemoryRecorder, RunInfo
 from kaupo.core.resume import prepare_resume
@@ -270,6 +271,9 @@ async def run_shadow(
         ),
         control_probe=DbControlProbe(sessionmaker, recorder.run_id),
         funding=funding,
+        # ticks/book come from the local store (tick ingest cron and the
+        # book-collector service keep them fresh; no refresh loop here)
+        orderflow=DbOrderFlowProvider(sessionmaker),
     )
 
     poller = LiveCandlePoller(
@@ -596,6 +600,9 @@ async def run_portfolio_shadow(
         ),
         control_probe=DbControlProbe(sessionmaker, recorder.run_id),
         funding=funding,
+        # ticks/book come from the local store (tick ingest cron and the
+        # book-collector service keep them fresh; no refresh loop here)
+        orderflow=DbOrderFlowProvider(sessionmaker),
     )
 
     pollers = {

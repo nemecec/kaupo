@@ -77,6 +77,37 @@ async def get_trade_ticks(
     return [_to_domain(row) for row in rows]
 
 
+async def get_recent_trade_ticks(
+    session: AsyncSession,
+    exchange: str,
+    pair: str,
+    before: datetime,
+    start: datetime | None = None,
+    limit: int | None = None,
+) -> list[TradeTick]:
+    """Trade ticks with trade time at or before ``before``, ascending.
+
+    With ``start``, only ticks at or after ``start`` are read. With
+    ``limit``, returns the *latest* ``limit`` ticks of the window (fetched
+    descending, then reversed) instead of the whole window.
+    """
+    where = [
+        TradeTickRow.exchange == exchange,
+        TradeTickRow.pair == pair,
+        TradeTickRow.ts <= before,
+    ]
+    if start is not None:
+        where.append(TradeTickRow.ts >= start)
+    if limit is not None:
+        stmt = select(TradeTickRow).where(*where).order_by(TradeTickRow.ts.desc()).limit(limit)
+        rows = list((await session.execute(stmt)).scalars())
+        rows.reverse()
+    else:
+        stmt = select(TradeTickRow).where(*where).order_by(TradeTickRow.ts)
+        rows = list((await session.execute(stmt)).scalars())
+    return [_to_domain(row) for row in rows]
+
+
 async def get_latest_trade_ts(session: AsyncSession, exchange: str, pair: str) -> datetime | None:
     stmt = (
         select(TradeTickRow.ts)

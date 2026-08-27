@@ -34,8 +34,10 @@ from decimal import Decimal
 
 from kaupo.core.engine import STOPPED_EXTERNALLY, RunResult, VirtualClock
 from kaupo.core.funding import EmptyFundingProvider, FundingProvider
+from kaupo.core.orderflow import EmptyOrderFlowProvider, OrderFlowProvider
 from kaupo.core.recorder import RunInfo, RunRecorder
 from kaupo.domain import (
+    BookSnapshot,
     Candle,
     Fill,
     FundingRate,
@@ -46,7 +48,9 @@ from kaupo.domain import (
     Position,
     RunStatus,
     Side,
+    TickFlow,
     Timeframe,
+    TradeTick,
 )
 from kaupo.ledger.ledger import InsufficientFunds, InsufficientPosition, Ledger
 from kaupo.risk.manager import Decision, RiskManager, RiskState
@@ -126,6 +130,40 @@ class _PortfolioContext:
             return []
         return engine._funding.latest(pair.base, n, engine.clock.now())
 
+    def _orderflow_pair(self, pair: Pair) -> str | None:
+        """The provider key for ``pair``, or None when outside the universe."""
+        if pair not in self._engine.history:
+            log.warning("Strategy requested order flow for pair %s outside the universe", pair)
+            return None
+        return str(pair)
+
+    def ticks(self, pair: Pair, n: int) -> Sequence[TradeTick]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        key = self._orderflow_pair(pair)
+        if key is None:
+            return []
+        return engine._orderflow.ticks(key, n, engine.clock.now())
+
+    def book(self, pair: Pair, n: int) -> Sequence[BookSnapshot]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        key = self._orderflow_pair(pair)
+        if key is None:
+            return []
+        return engine._orderflow.book(key, n, engine.clock.now())
+
+    def tick_flow(self, pair: Pair, n: int) -> Sequence[TickFlow]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        key = self._orderflow_pair(pair)
+        if key is None:
+            return []
+        return engine._orderflow.tick_flow(key, n, engine.clock.now(), engine.config.timeframe.seconds)
+
     def positions(self) -> Mapping[Pair, Position]:
         engine = self._engine
         return {pair: pos for pair in engine.config.pairs if (pos := engine.ledger.position(pair)).size != 0}
@@ -149,6 +187,7 @@ class PortfolioEngine:
         run_info: RunInfo,
         control_probe: Callable[[], Awaitable[str | None]] | None = None,
         funding: FundingProvider | None = None,
+        orderflow: OrderFlowProvider | None = None,
     ) -> None:
         self.strategy = strategy
         self.venues = dict(venues)
@@ -162,6 +201,7 @@ class PortfolioEngine:
             pair: deque(maxlen=config.lookback) for pair in config.pairs
         }
         self._funding = funding if funding is not None else EmptyFundingProvider()
+        self._orderflow = orderflow if orderflow is not None else EmptyOrderFlowProvider()
         self.last_closes: dict[Pair, float] = {}  # last known close per pair (stale carry)
         self._last_candle: dict[Pair, Candle] = {}
         self._step_candles: dict[Pair, Candle] = {}
@@ -296,6 +336,8 @@ class PortfolioEngine:
         # 5-6. strategy + risk-filtered intents
         for base in sorted({pair.base for pair in self.config.pairs}):
             await self._funding.update(base, self.clock.now())
+        for pair in self.config.pairs:
+            await self._orderflow.update(str(pair), self.clock.now())
         self._append_history(candles)
         self._step_candles = candles
         intents = self.strategy.on_candle(self._ctx)
