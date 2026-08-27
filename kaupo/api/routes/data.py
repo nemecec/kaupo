@@ -90,9 +90,7 @@ async def funding(
         _aware(end),
         limit=limit,
     )
-    return [
-        FundingOut(exchange=r.exchange, base_asset=r.base_asset, ts=r.ts, rate=r.rate) for r in rows
-    ]
+    return [FundingOut(exchange=r.exchange, base_asset=r.base_asset, ts=r.ts, rate=r.rate) for r in rows]
 
 
 def _aware(dt: datetime) -> datetime:
