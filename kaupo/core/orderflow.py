@@ -11,21 +11,24 @@ slice it point-in-time at the virtual clock.
   (tests).
 - ``DbOrderFlowProvider``: reads ticks and book snapshots from Postgres
   (backtests and shadow/live runs; the volume makes preloading a whole
-  window unreasonable, so it queries per candle instead).
+  window unreasonable, so it queries per candle instead). The permanent
+  daily aggregates behind ``tick_flow_daily`` are one row per pair and day,
+  so they reload in full per update, like the funding provider.
 """
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.data.book import get_recent_book_snapshots
+from kaupo.data.orderflow_daily import get_orderflow_daily
 from kaupo.data.trades import get_recent_trade_ticks
 from kaupo.db.session import sm_scope
-from kaupo.domain import BookSnapshot, TickFlow, TradeTick
+from kaupo.domain import BookSnapshot, OrderflowDaily, TickFlow, TradeTick
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -45,6 +48,10 @@ class OrderFlowProvider(Protocol):
 
     def tick_flow(self, pair: str, n: int, now: datetime, candle_seconds: int) -> Sequence[TickFlow]:
         """Per-candle order-flow buckets over the last ``n`` completed candles."""
+        ...
+
+    def tick_flow_daily(self, pair: str, n: int, now: datetime) -> Sequence[OrderflowDaily]:
+        """Up to ``n`` daily aggregates with the aggregated day closed at ``now``, oldest first."""
         ...
 
 
@@ -112,14 +119,18 @@ class EmptyOrderFlowProvider:
     def tick_flow(self, pair: str, n: int, now: datetime, candle_seconds: int) -> Sequence[TickFlow]:
         return []
 
+    def tick_flow_daily(self, pair: str, n: int, now: datetime) -> Sequence[OrderflowDaily]:
+        return []
+
 
 class StaticOrderFlowProvider:
-    """Serves ticks/book/tick_flow from prefilled series, point-in-time filtered."""
+    """Serves ticks/book/tick_flow/tick_flow_daily from prefilled series, point-in-time filtered."""
 
     def __init__(
         self,
         ticks: Mapping[str, Sequence[TradeTick]] | None = None,
         book: Mapping[str, Sequence[BookSnapshot]] | None = None,
+        daily: Mapping[str, Sequence[OrderflowDaily]] | None = None,
     ) -> None:
         self._ticks: dict[str, tuple[TradeTick, ...]] = {}
         self._tick_ts: dict[str, list[datetime]] = {}
@@ -133,6 +144,12 @@ class StaticOrderFlowProvider:
             ordered_snapshots = tuple(sorted(snapshots, key=lambda s: s.ts))
             self._book[book_pair] = ordered_snapshots
             self._book_ts[book_pair] = [s.ts for s in ordered_snapshots]
+        self._daily: dict[str, tuple[OrderflowDaily, ...]] = {}
+        self._daily_days: dict[str, list[date]] = {}
+        for daily_pair, rows in (daily or {}).items():
+            ordered_rows = tuple(sorted(rows, key=lambda r: r.day))
+            self._daily[daily_pair] = ordered_rows
+            self._daily_days[daily_pair] = [r.day for r in ordered_rows]
 
     async def update(self, pair: str, now: datetime) -> None:
         return None
@@ -158,6 +175,14 @@ class StaticOrderFlowProvider:
         idx = bisect_right(self._tick_ts[pair], now)
         return bucket_tick_flow(series[:idx], n, now, candle_seconds)
 
+    def tick_flow_daily(self, pair: str, n: int, now: datetime) -> Sequence[OrderflowDaily]:
+        series = self._daily.get(pair)
+        if not series or n <= 0:
+            return []
+        # a day's row is visible once that UTC day is fully closed at the clock
+        idx = bisect_left(self._daily_days[pair], now.date())
+        return list(series[max(0, idx - n) : idx])
+
 
 class DbOrderFlowProvider:
     """Serves ticks/book/tick_flow from Postgres (backtests, shadow/live).
@@ -168,6 +193,11 @@ class DbOrderFlowProvider:
     updates re-read only the recent ``refresh_window`` and merge it over the
     cache tail (rows land slightly late in live collection, so the tail must
     stay re-readable). One bounded, indexed query per series per candle.
+
+    The daily aggregates behind ``tick_flow_daily`` are one row per pair and
+    day, so ``update`` simply reloads the newest ``daily_cap`` rows whose day
+    is fully closed at ``now`` (like the funding provider) — no incremental
+    merge needed at that volume.
 
     The sync accessors slice that cache, so strategy calls stay point-in-time
     and cheap. Coverage is count-bounded by ``cap``: reads asking for more
@@ -180,18 +210,25 @@ class DbOrderFlowProvider:
         exchange: str = "kraken",
         cap: int = 50_000,
         refresh_window: timedelta = timedelta(hours=1),
+        daily_cap: int = 1500,
     ) -> None:
         self._sessionmaker = sessionmaker
         self._exchange = exchange
         self._cap = cap
         self._refresh_window = refresh_window
+        self._daily_cap = daily_cap
         self._ticks: dict[str, list[TradeTick]] = {}
         self._book: dict[str, list[BookSnapshot]] = {}
+        self._daily: dict[str, list[OrderflowDaily]] = {}
 
     async def update(self, pair: str, now: datetime) -> None:
         async with sm_scope(self._sessionmaker) as session:
             self._ticks[pair] = await self._refresh_ticks(pair, now, session)
             self._book[pair] = await self._refresh_book(pair, now, session)
+            # [epoch, today): only days fully closed at the clock are served
+            self._daily[pair] = await get_orderflow_daily(
+                session, self._exchange, pair, _EPOCH.date(), now.date(), limit=self._daily_cap
+            )
 
     async def _refresh_ticks(self, pair: str, now: datetime, session: AsyncSession) -> list[TradeTick]:
         cached = self._ticks.get(pair, [])
@@ -231,3 +268,9 @@ class DbOrderFlowProvider:
 
     def tick_flow(self, pair: str, n: int, now: datetime, candle_seconds: int) -> Sequence[TickFlow]:
         return bucket_tick_flow(self._ticks.get(pair, []), n, now, candle_seconds)
+
+    def tick_flow_daily(self, pair: str, n: int, now: datetime) -> Sequence[OrderflowDaily]:
+        if n <= 0:
+            return []
+        rows = self._daily.get(pair, [])
+        return rows[-n:] if n < len(rows) else rows

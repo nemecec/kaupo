@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -115,6 +115,21 @@ class BookSnapshotOut(BaseModel):
     ask: float
     bid_size: float
     ask_size: float
+
+
+class OrderflowDailyOut(BaseModel):
+    exchange: str
+    pair: str
+    day: date
+    trade_count: int
+    buy_count: int
+    sell_count: int
+    buy_volume: float
+    sell_volume: float
+    max_trade_size: float
+    book_snapshots: int
+    spread_mean_bps: float | None
+    spread_max_bps: float | None
 
 
 class BacktestIn(BaseModel):

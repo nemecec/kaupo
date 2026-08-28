@@ -15,12 +15,14 @@ from kaupo.api.schemas import (
     ControlOut,
     EventOut,
     FundingOut,
+    OrderflowDailyOut,
     ReportOut,
     TradeTickOut,
 )
 from kaupo.data.book import get_book_snapshots
 from kaupo.data.candles import get_candles
 from kaupo.data.funding import get_funding_rates
+from kaupo.data.orderflow_daily import get_orderflow_daily
 from kaupo.data.trades import get_trade_ticks
 from kaupo.db.models import EventRow
 from kaupo.db.session import get_session, get_sessionmaker
@@ -176,6 +178,44 @@ async def book(
 def _aware(dt: datetime) -> datetime:
     """Naive datetimes are treated as UTC (never host-local)."""
     return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
+
+@router.get("/orderflow/daily")
+async def orderflow_daily(
+    _: Annotated[Principal, Depends(get_principal)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    pair: str = Query(...),
+    start: date = Query(...),
+    end: date = Query(...),
+    limit: int = Query(5000, ge=1, le=50_000),
+    exchange: str = Query("kraken"),
+) -> list[OrderflowDailyOut]:
+    """Permanent daily order-flow aggregates for the pair, ascending, with
+    day in [start, end). Rolled up daily from the retention-capped raw
+    stores: the aggregates start on 2026-08-28 and keep accumulating, so
+    this history outlives the 30-day raw window."""
+    try:
+        parsed_pair = Pair.parse(pair)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    rows = await get_orderflow_daily(session, exchange, str(parsed_pair), start, end, limit=limit)
+    return [
+        OrderflowDailyOut(
+            exchange=r.exchange,
+            pair=r.pair,
+            day=r.day,
+            trade_count=r.trade_count,
+            buy_count=r.buy_count,
+            sell_count=r.sell_count,
+            buy_volume=r.buy_volume,
+            sell_volume=r.sell_volume,
+            max_trade_size=r.max_trade_size,
+            book_snapshots=r.book_snapshots,
+            spread_mean_bps=r.spread_mean_bps,
+            spread_max_bps=r.spread_max_bps,
+        )
+        for r in rows
+    ]
 
 
 @router.post("/control/{command}")

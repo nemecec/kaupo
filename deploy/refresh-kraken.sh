@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Refresh the Kraken rolling windows for the pair-quality universe, plus the
-# trade-tick (order-flow) windows of the three most liquid pairs.
+# trade-tick (order-flow) windows of the same pairs.
 # Kraken serves at most the 720 newest candles of a timeframe: about 2 years
 # at 1d, about 120 days at 4h. Venue checks against the trade venue go stale
 # without a regular re-ingest. Trade ticks stay bounded: the ingest command
-# prunes rows older than the retention window after each run. Runs daily from
-# cron on the host. Idempotent (upserts).
+# prunes rows older than the retention window after each run. After the raw
+# refresh, yesterday's order flow is rolled up into the permanent
+# orderflow_daily table, so long-window aggregates accumulate while the raw
+# stores age out. Runs daily from cron on the host. Idempotent (upserts).
 set -uo pipefail
 
 PAIRS="BTC/EUR ETH/EUR SOL/EUR XRP/EUR ADA/EUR LINK/EUR DOGE/EUR LTC/EUR AVAX/EUR DOT/EUR ATOM/EUR"
 TIMEFRAMES="1d 4h"
-TRADE_PAIRS="BTC/EUR ETH/EUR SOL/EUR"
+TRADE_PAIRS="$PAIRS"
 
 cd /opt/kaupo || exit 1
 fail=0
@@ -30,5 +32,11 @@ for pair in $TRADE_PAIRS; do
     fail=1
   fi
 done
-[[ "$fail" -eq 0 ]] && echo "refreshed kraken ${TIMEFRAMES} for ${PAIRS}; trades for ${TRADE_PAIRS}"
+# defaults cover every pair with raw order-flow rows, yesterday (UTC)
+if ! docker compose --env-file /etc/kaupo/kaupo.env -f deploy/compose.prod.yml --profile trading \
+  run --rm -T api kaupo ingest orderflow-rollup; then
+  echo "FAILED: orderflow-rollup" >&2
+  fail=1
+fi
+[[ "$fail" -eq 0 ]] && echo "refreshed kraken ${TIMEFRAMES} for ${PAIRS}; trades for ${TRADE_PAIRS}; orderflow-rollup for yesterday"
 exit "$fail"

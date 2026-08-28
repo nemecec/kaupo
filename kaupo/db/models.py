@@ -1,10 +1,10 @@
 """SQLAlchemy models. Mirror of the schema in the initial Alembic migration."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -79,6 +79,31 @@ class BookSnapshotRow(Base):
     ask: Mapped[float]
     bid_size: Mapped[float]
     ask_size: Mapped[float]
+
+
+class OrderflowDailyRow(Base):
+    """Daily order-flow aggregate of a pair, keyed by (exchange, pair, day).
+
+    Rolled up daily from the raw trade_ticks/book_snapshots stores. The raw
+    stores are retention-capped at a rolling 30 days; this table is never
+    pruned, so long-window order-flow history survives the raw window.
+    Spread fields are null on days without book snapshots.
+    """
+
+    __tablename__ = "orderflow_daily"
+
+    exchange: Mapped[str] = mapped_column(String(20), primary_key=True)
+    pair: Mapped[str] = mapped_column(String(20), primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    trade_count: Mapped[int]
+    buy_count: Mapped[int]
+    sell_count: Mapped[int]
+    buy_volume: Mapped[float]
+    sell_volume: Mapped[float]
+    max_trade_size: Mapped[float]
+    book_snapshots: Mapped[int]
+    spread_mean_bps: Mapped[float | None] = mapped_column(nullable=True)
+    spread_max_bps: Mapped[float | None] = mapped_column(nullable=True)
 
 
 class StrategyRow(Base):

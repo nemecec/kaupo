@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -245,6 +245,55 @@ def ingest_trades(
             f"Database coverage: {count} trade ticks, {first:%Y-%m-%d %H:%M} → {last:%Y-%m-%d %H:%M} UTC"
         )
     console.print(f"Pruned {pruned} trade ticks older than {retention_days} days")
+
+
+@ingest_app.command(name="orderflow-rollup")
+def ingest_orderflow_rollup(
+    pair: Annotated[
+        list[str],
+        typer.Option(help="e.g. BTC/EUR (repeatable; default: every pair with raw order-flow rows)"),
+    ] = [],
+    day: Annotated[str | None, typer.Option(help="UTC date, YYYY-MM-DD (default: yesterday)")] = None,
+    exchange: Annotated[str, typer.Option(help="raw order-flow source exchange")] = "kraken",
+    verbose: VerboseOpt = False,
+) -> None:
+    """Roll up one UTC day of raw order flow into permanent daily aggregates.
+
+    Computes one row per pair from the retention-capped trade ticks and book
+    snapshots and upserts it; a rerun of the same day recomputes and
+    overwrites the same rows. Run daily so the aggregates land before the
+    raw rows age out of the 30-day retention window.
+    """
+    _setup_logging(verbose)
+    from kaupo.data.orderflow_daily import (
+        list_orderflow_source_pairs,
+        rollup_orderflow_daily,
+        upsert_orderflow_daily,
+    )
+    from kaupo.db.session import get_sessionmaker
+    from kaupo.domain import OrderflowDaily
+
+    try:
+        target = date.fromisoformat(day) if day else datetime.now(UTC).date() - timedelta(days=1)
+    except ValueError:
+        raise typer.BadParameter(f"--day must be an ISO date (YYYY-MM-DD), got {day!r}") from None
+    selected = [str(Pair.parse(p)) for p in pair]
+
+    async def _run() -> list[OrderflowDaily]:
+        sm = get_sessionmaker()
+        async with sm() as session:
+            pairs = selected or await list_orderflow_source_pairs(session, exchange)
+            rows = [await rollup_orderflow_daily(session, exchange, p, target) for p in pairs]
+            await upsert_orderflow_daily(session, rows)
+            await session.commit()
+        return rows
+
+    rows = asyncio.run(_run())
+    console.print(
+        f"[green]Rolled up order flow[/green] for {len(rows)} pairs on {target:%Y-%m-%d} from {exchange}"
+    )
+    for row in rows:
+        console.print(f"  {row.pair}: {row.trade_count} trades, {row.book_snapshots} book snapshots")
 
 
 @app.command()

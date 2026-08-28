@@ -42,6 +42,7 @@ from kaupo.domain import (
     Fill,
     FundingRate,
     Order,
+    OrderflowDaily,
     OrderIntent,
     OrderStatus,
     Pair,
@@ -163,6 +164,15 @@ class _PortfolioContext:
         if key is None:
             return []
         return engine._orderflow.tick_flow(key, n, engine.clock.now(), engine.config.timeframe.seconds)
+
+    def tick_flow_daily(self, pair: Pair, n: int) -> Sequence[OrderflowDaily]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        key = self._orderflow_pair(pair)
+        if key is None:
+            return []
+        return engine._orderflow.tick_flow_daily(key, n, engine.clock.now())
 
     def positions(self) -> Mapping[Pair, Position]:
         engine = self._engine

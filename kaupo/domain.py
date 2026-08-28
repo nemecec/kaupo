@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import NewType
 from uuid import uuid4
 
@@ -156,6 +156,32 @@ class TickFlow:
     buy_volume: float  # in base currency
     sell_volume: float  # in base currency
     max_trade_size: float  # largest single trade of the bucket, in base currency
+
+
+@dataclass(frozen=True)
+class OrderflowDaily:
+    """Permanent daily order-flow aggregate of one pair (one UTC day).
+
+    Rolled up daily from the raw :class:`TradeTick` and :class:`BookSnapshot`
+    stores: trade counts and base-currency volumes per taker side, the
+    largest single trade, the day's book-snapshot count, and the spread
+    statistics in basis points (null when no book was collected that day).
+    The raw stores are retention-capped at a rolling 30 days; these
+    aggregates are never pruned and accumulate forward from 2026-08-28.
+    """
+
+    exchange: str
+    pair: str  # unified pair string, e.g. "BTC/EUR"
+    day: date  # the UTC day the row aggregates
+    trade_count: int
+    buy_count: int
+    sell_count: int
+    buy_volume: float  # in base currency
+    sell_volume: float  # in base currency
+    max_trade_size: float  # largest single trade of the day, in base currency
+    book_snapshots: int  # 0 when the book collector served nothing that day
+    spread_mean_bps: float | None  # mean of (ask-bid)/mid*10000 over the day's snapshots
+    spread_max_bps: float | None  # max of the same; both null when book_snapshots is 0
 
 
 class Side(enum.Enum):

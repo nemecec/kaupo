@@ -8,7 +8,7 @@ from kaupo.core.orderflow import (
     StaticOrderFlowProvider,
     bucket_tick_flow,
 )
-from kaupo.domain import BookSnapshot, TickFlow, TradeTick
+from kaupo.domain import BookSnapshot, OrderflowDaily, TickFlow, TradeTick
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 H1 = 3600
@@ -42,6 +42,28 @@ TICKS = [
     tick(300, "sell", 5.0),
 ]
 BOOK = [snapshot(1), snapshot(2.5), snapshot(4.25), snapshot(20)]
+
+
+def daily(days: float, pair: str = "BTC/EUR", trade_count: int = 10) -> OrderflowDaily:
+    return OrderflowDaily(
+        exchange="kraken",
+        pair=pair,
+        day=(BASE + timedelta(days=days)).date(),
+        trade_count=trade_count,
+        buy_count=6,
+        sell_count=4,
+        buy_volume=3.0,
+        sell_volume=2.0,
+        max_trade_size=1.5,
+        book_snapshots=24,
+        spread_mean_bps=5.0,
+        spread_max_bps=9.0,
+    )
+
+
+# aggregates of consecutive days plus a later one; the 2026-01-02 row has no
+# raw coverage and is absent (days without data stay absent)
+DAILY = [daily(0, trade_count=10), daily(2, trade_count=20), daily(3, trade_count=30)]
 
 
 class TestBucketTickFlow:
@@ -95,6 +117,7 @@ class TestEmptyOrderFlowProvider:
         assert provider.ticks("BTC/EUR", 10, now) == []
         assert provider.book("BTC/EUR", 10, now) == []
         assert provider.tick_flow("BTC/EUR", 10, now, H1) == []
+        assert provider.tick_flow_daily("BTC/EUR", 10, now) == []
 
 
 class TestStaticOrderFlowProvider:
@@ -141,6 +164,28 @@ class TestStaticOrderFlowProvider:
         assert [f.ts for f in flows] == [BASE, BASE + timedelta(hours=1), BASE + timedelta(hours=5)]
         assert provider.tick_flow("ETH/EUR", 10, BASE + timedelta(hours=6), H1) == []
 
+    async def test_tick_flow_daily_point_in_time_completed_days_only(self) -> None:
+        provider = StaticOrderFlowProvider(daily={"BTC/EUR": DAILY})
+        assert await provider.update("BTC/EUR", BASE) is None  # no-op
+
+        # the in-progress day never leaks: on day 0 itself nothing is visible
+        assert provider.tick_flow_daily("BTC/EUR", 10, BASE + timedelta(hours=23)) == []
+        # the day-0 row appears exactly when the clock crosses into day 1
+        assert provider.tick_flow_daily("BTC/EUR", 10, BASE + timedelta(days=1)) == DAILY[:1]
+        assert provider.tick_flow_daily("BTC/EUR", 10, BASE + timedelta(days=2, hours=12)) == DAILY[:1]
+        # day 1 has no row (absent days stay absent); day-2 row joins at day 3
+        assert provider.tick_flow_daily("BTC/EUR", 10, BASE + timedelta(days=3)) == DAILY[:2]
+        assert provider.tick_flow_daily("BTC/EUR", 10, BASE + timedelta(days=100)) == DAILY
+
+    async def test_tick_flow_daily_n_unknown_pair_and_unsorted(self) -> None:
+        provider = StaticOrderFlowProvider(daily={"BTC/EUR": [DAILY[2], DAILY[0], DAILY[1]]})
+        now = BASE + timedelta(days=100)
+        assert provider.tick_flow_daily("BTC/EUR", 2, now) == DAILY[-2:]
+        assert provider.tick_flow_daily("BTC/EUR", 1, now) == DAILY[-1:]
+        assert provider.tick_flow_daily("BTC/EUR", 0, now) == []
+        assert provider.tick_flow_daily("BTC/EUR", -1, now) == []
+        assert provider.tick_flow_daily("ETH/EUR", 10, now) == []
+
 
 class TestDbOrderFlowProviderCacheSlicing:
     async def test_accessors_slice_the_cached_tail(self) -> None:
@@ -162,3 +207,12 @@ class TestDbOrderFlowProviderCacheSlicing:
         assert [f.ts for f in flows] == [BASE, BASE + timedelta(hours=1)]
         assert flows[1].buy_volume == 4.0
         assert provider.tick_flow("ETH/EUR", 10, now, H1) == []
+
+    async def test_tick_flow_daily_slices_the_cached_tail(self) -> None:
+        provider = DbOrderFlowProvider(None)  # type: ignore[arg-type]
+        provider._daily["BTC/EUR"] = DAILY
+        now = BASE + timedelta(days=100)
+        assert provider.tick_flow_daily("BTC/EUR", 10, now) == DAILY
+        assert provider.tick_flow_daily("BTC/EUR", 2, now) == DAILY[-2:]
+        assert provider.tick_flow_daily("BTC/EUR", 0, now) == []
+        assert provider.tick_flow_daily("ETH/EUR", 10, now) == []

@@ -796,6 +796,90 @@ async def test_book_endpoint(client: AsyncClient, session: AsyncSession) -> None
     assert r.status_code == 422
 
 
+async def test_orderflow_daily_endpoint(client: AsyncClient, session: AsyncSession) -> None:
+    from datetime import date
+
+    from kaupo.data.orderflow_daily import upsert_orderflow_daily
+    from kaupo.domain import OrderflowDaily
+
+    rows = [
+        OrderflowDaily(
+            exchange="kraken",
+            pair="BTC/EUR",
+            day=date(2026, 1, 1) + timedelta(days=i),
+            trade_count=10 * (i + 1),
+            buy_count=6,
+            sell_count=4,
+            buy_volume=3.0,
+            sell_volume=2.0,
+            max_trade_size=1.5,
+            book_snapshots=24 if i % 2 == 0 else 0,
+            spread_mean_bps=5.0 if i % 2 == 0 else None,
+            spread_max_bps=9.0 if i % 2 == 0 else None,
+        )
+        for i in range(5)
+    ]
+    await upsert_orderflow_daily(session, rows)
+    await session.commit()
+
+    r = await client.get(
+        "/api/v1/orderflow/daily",
+        params={"pair": "BTC/EUR", "start": "2026-01-01", "end": "2026-01-06"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 5
+    assert body[0] == {
+        "exchange": "kraken",
+        "pair": "BTC/EUR",
+        "day": "2026-01-01",
+        "trade_count": 10,
+        "buy_count": 6,
+        "sell_count": 4,
+        "buy_volume": 3.0,
+        "sell_volume": 2.0,
+        "max_trade_size": 1.5,
+        "book_snapshots": 24,
+        "spread_mean_bps": 5.0,
+        "spread_max_bps": 9.0,
+    }
+    assert body[1]["spread_mean_bps"] is None  # a day without book snapshots
+
+    # limit returns the latest rows of the range, still ascending
+    r = await client.get(
+        "/api/v1/orderflow/daily",
+        params={"pair": "BTC/EUR", "start": "2026-01-01", "end": "2026-01-06", "limit": 2},
+    )
+    assert r.status_code == 200
+    assert [row["day"] for row in r.json()] == ["2026-01-04", "2026-01-05"]
+
+    # the end day is exclusive: [start, end)
+    r = await client.get(
+        "/api/v1/orderflow/daily",
+        params={"pair": "BTC/EUR", "start": "2026-01-01", "end": "2026-01-05"},
+    )
+    assert r.status_code == 200
+    assert len(r.json()) == 4
+
+    # limit bounds
+    r = await client.get(
+        "/api/v1/orderflow/daily",
+        params={"pair": "BTC/EUR", "start": "2026-01-01", "end": "2026-01-06", "limit": 0},
+    )
+    assert r.status_code == 422
+    r = await client.get(
+        "/api/v1/orderflow/daily",
+        params={"pair": "BTC/EUR", "start": "2026-01-01", "end": "2026-01-06", "limit": 50_001},
+    )
+    assert r.status_code == 422
+
+    r = await client.get(
+        "/api/v1/orderflow/daily",
+        params={"pair": "bogus", "start": "2026-01-01", "end": "2026-01-06"},
+    )
+    assert r.status_code == 422
+
+
 async def test_control_writes_command_events(client: AsyncClient, session: AsyncSession) -> None:
     from sqlalchemy import select
 

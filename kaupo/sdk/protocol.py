@@ -25,7 +25,17 @@ from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel
 
-from kaupo.domain import BookSnapshot, Candle, FundingRate, OrderIntent, Pair, Position, TickFlow, TradeTick
+from kaupo.domain import (
+    BookSnapshot,
+    Candle,
+    FundingRate,
+    OrderflowDaily,
+    OrderIntent,
+    Pair,
+    Position,
+    TickFlow,
+    TradeTick,
+)
 
 
 class EmptyParams(BaseModel):
@@ -99,6 +109,21 @@ class StrategyContext(Protocol):
         fully closed at or before ``clock.now()`` are returned — the
         in-progress candle never leaks. Empty when no tick data (see
         ``ticks`` for the coverage and retention boundary).
+        """
+        ...
+
+    def tick_flow_daily(self, n: int) -> Sequence[OrderflowDaily]:
+        """Latest ``n`` permanent daily order-flow aggregates for the run pair.
+
+        One :class:`OrderflowDaily` per UTC day: trade counts and volumes
+        per taker side, the largest trade, the book-snapshot count, and the
+        day's spread statistics. Point-in-time like ``history``: only days
+        fully closed at ``clock.now()`` are returned — the in-progress day
+        never leaks. Where the raw ticks and book snapshots keep a rolling
+        30 days, these daily aggregates are permanent: they accumulate
+        forward from 2026-08-28, and days before that (or without raw
+        coverage) are absent. Empty when no aggregates exist for the pair,
+        so strategies must tolerate an empty series.
         """
         ...
 
@@ -199,6 +224,21 @@ class PortfolioContext(Protocol):
         Only buckets fully closed at or before ``clock.now()`` are returned —
         the in-progress candle never leaks. Empty when no tick data (see
         ``ticks`` for the coverage and retention boundary).
+        """
+        ...
+
+    def tick_flow_daily(self, pair: Pair, n: int) -> Sequence[OrderflowDaily]:
+        """Latest ``n`` permanent daily order-flow aggregates for ``pair``.
+
+        One :class:`OrderflowDaily` per UTC day: trade counts and volumes
+        per taker side, the largest trade, the book-snapshot count, and the
+        day's spread statistics, oldest first. Point-in-time like
+        ``history``: only days fully closed at ``clock.now()`` are returned —
+        the in-progress day never leaks. Where the raw ticks and book
+        snapshots keep a rolling 30 days, these daily aggregates are
+        permanent: they accumulate forward from 2026-08-28, and days before
+        that (or without raw coverage) are absent. Empty for pairs outside
+        the universe and when no aggregates exist for the pair.
         """
         ...
 

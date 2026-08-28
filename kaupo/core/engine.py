@@ -30,6 +30,7 @@ from kaupo.domain import (
     Fill,
     FundingRate,
     Order,
+    OrderflowDaily,
     OrderIntent,
     OrderStatus,
     Pair,
@@ -137,6 +138,12 @@ class _Context:
         return engine._orderflow.tick_flow(
             str(engine.config.pair), n, engine.clock.now(), engine.config.timeframe.seconds
         )
+
+    def tick_flow_daily(self, n: int) -> Sequence[OrderflowDaily]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        return engine._orderflow.tick_flow_daily(str(engine.config.pair), n, engine.clock.now())
 
     def position(self) -> Position:
         return self._engine.ledger.position(self._engine.config.pair)

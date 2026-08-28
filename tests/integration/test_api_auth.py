@@ -129,6 +129,45 @@ async def test_readonly_can_get_book(authed_client: AsyncClient, session: AsyncS
     assert [row["bid"] for row in body] == [102.0, 101.0, 100.0]  # ascending by ts
 
 
+async def test_readonly_can_get_orderflow_daily(authed_client: AsyncClient, session: AsyncSession) -> None:
+    from datetime import date
+
+    from kaupo.data.orderflow_daily import upsert_orderflow_daily
+    from kaupo.domain import OrderflowDaily
+
+    rows = [
+        OrderflowDaily(
+            exchange="kraken",
+            pair="BTC/EUR",
+            day=date(2026, 8, 26) + timedelta(days=i),
+            trade_count=10 + i,
+            buy_count=6,
+            sell_count=4,
+            buy_volume=3.0,
+            sell_volume=2.0,
+            max_trade_size=1.5,
+            book_snapshots=24,
+            spread_mean_bps=5.0,
+            spread_max_bps=9.0,
+        )
+        for i in range(3)
+    ]
+    await upsert_orderflow_daily(session, rows)
+    await session.commit()
+
+    headers = {"Authorization": "Bearer readonly-secret"}
+    r = await authed_client.get(
+        "/api/v1/orderflow/daily",
+        params={"pair": "BTC/EUR", "start": "2026-08-26", "end": "2026-08-29"},
+        headers=headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 3
+    assert [row["day"] for row in body] == ["2026-08-26", "2026-08-27", "2026-08-28"]  # ascending
+    assert body[0]["trade_count"] == 10
+
+
 async def test_settings_readonly_get_admin_put(authed_client: AsyncClient) -> None:
     readonly = {"Authorization": "Bearer readonly-secret"}
     r = await authed_client.get("/api/v1/settings", headers=readonly)
