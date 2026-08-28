@@ -71,9 +71,9 @@ cat > /etc/cron.d/kaupo-refresh <<'EOF'
 41 4 * * * root /opt/kaupo/deploy/refresh-kraken.sh >> /var/log/kaupo-refresh.log 2>&1
 EOF
 
-# Weekly rolling-origin triage report (shadow reality vs fresh backtest) Sunday 05:13 UTC
+# Daily rolling-origin triage report (shadow reality vs fresh backtest) 05:13 UTC
 cat > /etc/cron.d/kaupo-rolling <<'EOF'
-13 5 * * 0 root /opt/kaupo/deploy/rolling-report.sh >> /var/log/kaupo-rolling.log 2>&1
+13 5 * * * root /opt/kaupo/deploy/rolling-report.sh >> /var/log/kaupo-rolling.log 2>&1
 EOF
 
 echo
