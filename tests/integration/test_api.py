@@ -678,6 +678,32 @@ async def test_funding_endpoint(client: AsyncClient, session: AsyncSession) -> N
     assert r.status_code == 422
 
 
+async def test_rolling_origin_report_endpoint(client: AsyncClient, session: AsyncSession) -> None:
+    from kaupo.db.models import ReportRow
+
+    r = await client.get("/api/v1/reports/rolling-origin")
+    assert r.status_code == 404
+
+    body = {
+        "type": "rolling-origin",
+        "period": "2026-W35",
+        "assignments": [{"id": "a1", "verdict": "tracks"}],
+    }
+    session.add(ReportRow(id="r1", ts=BASE, period="rolling-origin-2026-W35", body=body))
+    await session.commit()
+
+    r = await client.get("/api/v1/reports/rolling-origin")
+    assert r.status_code == 200
+    assert r.json()["assignments"][0]["verdict"] == "tracks"
+
+    r = await client.get("/api/v1/reports/rolling-origin", params={"period": "2026-W35"})
+    assert r.status_code == 200
+    assert r.json()["period"] == "2026-W35"
+
+    r = await client.get("/api/v1/reports/rolling-origin", params={"period": "1999-W01"})
+    assert r.status_code == 404
+
+
 async def test_trades_endpoint(client: AsyncClient, session: AsyncSession) -> None:
     from kaupo.data.trades import upsert_trade_ticks
     from kaupo.domain import TradeTick

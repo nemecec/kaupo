@@ -1,7 +1,7 @@
 """Daily reports, candles, control commands, events."""
 
 from datetime import UTC, date, datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -46,6 +46,34 @@ async def daily_report(
         runs=body["runs"],
         totals=body["totals"],
     )
+
+
+@router.get("/reports/rolling-origin")
+async def rolling_origin_report(
+    _: Annotated[Principal, Depends(get_principal)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    period: str | None = Query(None),
+) -> dict[str, Any]:
+    """The persisted rolling-origin triage report (verdicts per assignment).
+
+    Latest ISO-week report by default; pass ``period=YYYY-Www`` for a
+    specific week. Runs daily at 05:13 UTC on the host.
+    """
+    from kaupo.db.models import ReportRow
+
+    if period is not None:
+        stmt = select(ReportRow).where(ReportRow.period == f"rolling-origin-{period}")
+    else:
+        stmt = (
+            select(ReportRow)
+            .where(ReportRow.period.like("rolling-origin-%"))
+            .order_by(ReportRow.ts.desc())
+            .limit(1)
+        )
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="no rolling-origin report found")
+    return row.body
 
 
 @router.get("/candles")
