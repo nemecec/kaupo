@@ -245,10 +245,10 @@ async def test_report_without_chain_notes_the_new_assignment(session: AsyncSessi
 
 async def test_young_chain_gets_unknown_not_lags(session: AsyncSession, tmp_path: Path) -> None:
     """The issue #25 case: a profitable 30d-window backtest vs a healthy 1.3d
-    flat chain must not come out as "lags" — the comparison aligns to the
-    chain's lifetime and the coverage guard suppresses the verdict."""
+    flat chain must not come out as "lags" — below the coverage floor the
+    backtest is skipped before it runs (no runs row, no error)."""
     start = NOW - timedelta(days=DAYS)
-    # rising zigzag over the whole window: the backtest is clearly profitable
+    # rising zigzag over the whole window: a full-window backtest would be profitable
     candles = [
         candle(start + timedelta(hours=i), 100 + 0.3 * i + (2 if i % 2 else 0)) for i in range(DAYS * 24)
     ]
@@ -272,16 +272,15 @@ async def test_young_chain_gets_unknown_not_lags(session: AsyncSession, tmp_path
     body = await build_rolling_origin_report(get_sessionmaker(), days=DAYS, now=NOW, strategies_dir=tmp_path)
 
     (entry,) = body["assignments"]
-    # the backtest ran over the overlap [chain_start, now], not the full window
     assert entry["start"] == chain_start.isoformat()
-    assert entry["backtest"]["status"] == "completed"
-    marker_row = await session.get(RunRow, entry["backtest"]["run_id"])
-    assert marker_row is not None
-    assert marker_row.config["start"] == chain_start.isoformat()
-    assert marker_row.config["rolling_origin"]["start"] == chain_start.isoformat()
-    # the flat young chain shows sharpe 0.0 against a profitable backtest...
+    assert entry["backtest"] is None  # coverage below the floor: the backtest never ran
+    # the flat young chain shows sharpe 0.0 against what would be a profitable backtest...
     assert entry["shadow"]["sharpe"] == 0.0
     assert entry["shadow"]["num_fills"] == 0
     # ...but the coverage guard suppresses the bogus "lags" verdict
     assert entry["shadow"]["note"] == "chain covers 1.2d of the 7d window"
     assert entry["verdict"] == "unknown"
+    assert "error" not in entry
+    # no wasted backtest runs row: only the seeded chain run exists
+    backtest_runs = (await session.execute(select(RunRow).where(RunRow.mode == "backtest"))).scalars().all()
+    assert backtest_runs == []

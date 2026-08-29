@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import kaupo.report.rolling as rolling
@@ -421,6 +422,7 @@ async def test_build_report_success_notes_and_exclusions(
     assert by_id["a3"]["start"] == start.isoformat()  # no chain: the backtest keeps the full window
     assert by_id["a4"]["shadow"] == {"note": "chain has 2.0 days so far"}
     assert by_id["a4"]["verdict"] == VERDICT_UNKNOWN
+    assert by_id["a4"]["backtest"] is None  # no equity in the window: the backtest is skipped too
 
     # portfolio assignment dispatched to the portfolio runner; no chain yet
     assert len(portfolio_seen) == 1
@@ -475,7 +477,8 @@ async def test_build_report_young_chain_gets_no_verdict(
     sessionmaker: async_sessionmaker[AsyncSession], strategies_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The issue #25 case: a profitable 30d backtest vs a 1.3d flat chain must
-    not come out as "lags" — the coverage guard emits unknown with a note."""
+    not come out as "lags" — below the coverage floor the backtest is skipped
+    before it runs (no runs row, backtest null, unknown with a note)."""
     chain_start = NOW - timedelta(days=1.3)
     async with sm_scope(sessionmaker) as session:
         await create_assignment(session, id="young", strategy_id="holder", pair="SOL/EUR", timeframe="4h")
@@ -498,21 +501,86 @@ async def test_build_report_young_chain_gets_no_verdict(
     )
 
     (entry,) = body["assignments"]
-    # the backtest ran over the overlap [chain_start, now], not the full window
-    assert seen[0].start == chain_start
-    assert seen[0].rolling_origin == {
-        "period": "2026-W35",
-        "assignment": "young",
-        "start": chain_start.isoformat(),
-    }
+    assert seen == []  # coverage decided before the backtest: never invoked
     assert entry["start"] == chain_start.isoformat()
-    assert entry["backtest"]["sharpe"] == 7.454  # still visible in the entry
-    # ...but the guard suppresses the verdict the sharpe gap would have forced
+    assert entry["backtest"] is None
     assert entry["shadow"]["sharpe"] == 0.0  # a correctly flat young chain
     assert entry["shadow"]["num_fills"] == 0
     assert entry["shadow"]["note"] == "chain covers 1.2d of the 30d window"
     assert entry["verdict"] == VERDICT_UNKNOWN
     assert entry["verdict"] != VERDICT_LAGS
+
+
+async def test_build_report_young_chain_daily_bars_no_error(
+    sessionmaker: async_sessionmaker[AsyncSession], strategies_dir: Path
+) -> None:
+    """The production case from the issue #25 follow-up: a 1.2d chain at 1d
+    bars has no closed candle inside its overlap — the report must skip the
+    backtest and emit unknown with the coverage note, never an error.
+
+    The backtest runner is NOT faked here: if the skip regresses, the real
+    run_backtest dies on the empty candle table and the entry comes out as
+    the error this test guards against.
+    """
+    chain_start = NOW - timedelta(days=1.2)
+    async with sm_scope(sessionmaker) as session:
+        await create_assignment(session, id="sol-1d", strategy_id="holder", pair="SOL/EUR", timeframe="1d")
+        await session.commit()
+    run = _run_row("run-d", "sol-1d", chain_start, timeframe="1d", chain_started_at=chain_start.isoformat())
+    snaps = [
+        _snapshot("run-d", chain_start + timedelta(hours=2), 10_000.0),
+        _snapshot("run-d", chain_start + timedelta(hours=14), 10_000.0),
+        _snapshot("run-d", NOW - timedelta(hours=1), 10_000.0),
+    ]
+    async with sm_scope(sessionmaker) as session:
+        await _seed(session, run, *snaps)
+
+    body = await rolling.build_rolling_origin_report(
+        sessionmaker, days=30, now=NOW, persist=False, strategies_dir=strategies_dir
+    )
+
+    (entry,) = body["assignments"]
+    assert entry["backtest"] is None
+    assert entry["shadow"]["note"] == "chain covers 1.1d of the 30d window"
+    assert entry["verdict"] == VERDICT_UNKNOWN
+    assert "error" not in entry
+    async with sm_scope(sessionmaker) as session:
+        rows = (await session.execute(select(RunRow))).scalars().all()
+    assert [row.id for row in rows] == ["run-d"]  # no wasted backtest runs row
+
+
+async def test_build_report_sub_candle_overlap_skips_backtest(
+    sessionmaker: async_sessionmaker[AsyncSession], strategies_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Belt and braces below the floor: an overlap shorter than one full bar
+    cannot hold a closed candle, so the backtest is skipped even when the
+    (here lowered) coverage floor would pass."""
+    monkeypatch.setattr(rolling, "MIN_OVERLAP_DAYS", 0.5)
+    chain_start = NOW - timedelta(hours=12)  # 0.5d: passes the lowered floor, below one 1d bar
+    async with sm_scope(sessionmaker) as session:
+        await create_assignment(session, id="sol-1d", strategy_id="holder", pair="SOL/EUR", timeframe="1d")
+        await session.commit()
+    run = _run_row("run-d", "sol-1d", chain_start, timeframe="1d", chain_started_at=chain_start.isoformat())
+    snaps = [
+        _snapshot("run-d", chain_start + timedelta(hours=1), 10_000.0),
+        _snapshot("run-d", chain_start + timedelta(hours=6), 10_000.0),
+        _snapshot("run-d", NOW - timedelta(hours=1), 10_000.0),
+    ]
+    async with sm_scope(sessionmaker) as session:
+        await _seed(session, run, *snaps)
+
+    seen: list[Any] = []
+    monkeypatch.setattr(rolling, "run_backtest", _fake_run_backtest(seen))
+
+    body = await rolling.build_rolling_origin_report(
+        sessionmaker, days=30, now=NOW, persist=False, strategies_dir=strategies_dir
+    )
+
+    (entry,) = body["assignments"]
+    assert seen == []  # the sub-bar guard fired before the backtest
+    assert entry["backtest"] is None
+    assert entry["shadow"]["note"] == "chain covers 0.4d of the 30d window"
+    assert entry["verdict"] == VERDICT_UNKNOWN
 
 
 async def test_build_report_lint_failure_degrades_all_entries(

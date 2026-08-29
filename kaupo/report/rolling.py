@@ -19,9 +19,13 @@ fired before the chain existed (issue #25).
 Coverage guard: a verdict is emitted only when the chain's overlap with the
 window is at least MIN_OVERLAP_DAYS and the chain's in-window equity spans
 at least MIN_EQUITY_SPAN_FRACTION of that overlap (a chain that died inside
-the window fails the span half). Below the floor the entry gets verdict
-"unknown" with a note ("chain covers Xd of the Nd window") instead of a
-verdict — a Sharpe comparison over a day or two is noise.
+the window fails the span half). The decision is made before the backtest:
+below the floor — or below one full bar of the timeframe, where no closed
+candle can sit in the slice (the bar covering the slice start opened
+before it) — the backtest is skipped entirely. The entry then carries
+"backtest": null, verdict "unknown", and a note ("chain covers Xd of the
+Nd window"); no runs row is created, and a sub-candle slice never dies
+with a misleading "no candles" error on a healthy young chain.
 
 Verdict rules (thresholds are the module constants below):
 - "tracks" — the shadow chain has no fills and the backtest has no round
@@ -340,9 +344,15 @@ async def _shadow_metrics(
         age_days = max((now - chain_start).total_seconds() / 86400, 0.0)
         return {"note": f"chain has {age_days:.1f} days so far"}
     metrics = compute_metrics(equity=windowed, fills=fills, timeframe=timeframe, starting_cash=cash)
-    overlap_days = (now - start).total_seconds() / 86400
+    overlap_seconds = (now - start).total_seconds()
+    overlap_days = overlap_seconds / 86400
     span_days = (windowed[-1][0] - windowed[0][0]).total_seconds() / 86400
-    if not has_min_coverage(overlap_days=overlap_days, span_days=span_days):
+    # belt and braces: below one full bar no closed candle can sit in the
+    # slice (the bar covering the slice start opened before it), so the
+    # backtest would find zero candles and die with a misleading error
+    if overlap_seconds < timeframe.seconds or not has_min_coverage(
+        overlap_days=overlap_days, span_days=span_days
+    ):
         # the metrics stay in the entry; the note suppresses the verdict
         metrics["note"] = f"chain covers {span_days:.1f}d of the {days}d window"
     return metrics
@@ -360,7 +370,7 @@ async def _assignment_entry(
     now: datetime,
     days: int,
 ) -> dict[str, Any]:
-    """One report entry: backtest expectation vs shadow reality, plus the verdict."""
+    """One report entry: shadow reality vs backtest expectation, plus the verdict."""
     cash = assignment.starting_cash or DEFAULT_STARTING_CASH
     async with sm_scope(sessionmaker) as session:
         chain = await _chain_rows(session, assignment.id)
@@ -372,8 +382,35 @@ async def _assignment_entry(
         "pair": assignment.pair,
         "pairs": assignment.pairs,
         "timeframe": assignment.timeframe,
-        "start": compare_start.isoformat(),  # the comparison slice both sides ran over
+        "start": compare_start.isoformat(),  # the comparison slice both sides run over
     }
+    try:
+        timeframe = Timeframe.parse(assignment.timeframe)
+    except ValueError as exc:
+        return {**entry, "error": str(exc), "verdict": VERDICT_ERROR}
+
+    # the shadow side first: its coverage decides whether a backtest is
+    # meaningful at all, before any runs row is created
+    shadow = await _shadow_metrics(
+        sessionmaker,
+        chain=chain,
+        chain_start=chain_start,
+        timeframe=timeframe,
+        cash=cash,
+        start=compare_start,
+        end=end,
+        now=now,
+        days=days,
+    )
+    entry["shadow"] = shadow
+    if chain and "note" in shadow:
+        # coverage below the verdict floor (or under one full bar): the
+        # backtest would compare a different regime or find no closed
+        # candle — skip it (no runs row, no misleading error)
+        entry["backtest"] = None
+        entry["verdict"] = VERDICT_UNKNOWN
+        return entry
+
     try:
         if load_error is not None:
             raise ValueError(f"strategies did not load: {load_error}")
@@ -381,7 +418,6 @@ async def _assignment_entry(
         loaded = strategies.get(assignment.strategy_id)
         if loaded is None:
             raise ValueError(f"unknown strategy {assignment.strategy_id!r}")
-        timeframe = Timeframe.parse(assignment.timeframe)
         marker = {"period": period, "assignment": assignment.id, "start": compare_start.isoformat()}
         if assignment.pairs is not None:
             portfolio_request = PortfolioBacktestRequest(
@@ -412,22 +448,8 @@ async def _assignment_entry(
         return {**entry, "error": str(exc), "verdict": VERDICT_ERROR}
     entry["backtest"] = {"run_id": str(run_id), **metrics}
 
-    shadow = await _shadow_metrics(
-        sessionmaker,
-        chain=chain,
-        chain_start=chain_start,
-        timeframe=timeframe,
-        cash=cash,
-        start=compare_start,
-        end=end,
-        now=now,
-        days=days,
-    )
-    entry["shadow"] = shadow
     if "note" in shadow:
-        # nothing meaningful to compare (new chain, or coverage below the
-        # guard floor) — the note suppresses the verdict, even when the
-        # short-slice backtest could not produce metrics itself
+        # no chain yet: the full-window backtest is the only data point
         entry["verdict"] = VERDICT_UNKNOWN
     elif "error" in metrics:  # the run persisted but had too little data for metrics
         return {**entry, "error": str(metrics["error"]), "verdict": VERDICT_ERROR}
