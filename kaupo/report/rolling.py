@@ -1,13 +1,27 @@
 """Rolling-origin triage: does shadow reality still track the backtest expectation?
 
 For every enabled shadow assignment, the report re-backtests the exact
-assignment config over the last ``days`` days (default 30) against stored
-candles, and compares the result with the shadow chain's actual stitched
-equity and fills over the same window. The 7-shadow-day promotion gate only
-counts days; this report catches slow decay weeks before the gate alone
-would. It runs weekly (Sunday 05:13 UTC, see deploy/rolling-report.sh) and
-persists one row per ISO week into the reports table, keyed
-"rolling-origin-<ISO week>" — reruns in the same week replace the row.
+assignment config against stored candles, and compares the result with the
+shadow chain's actual stitched equity and fills over the same slice. The
+7-shadow-day promotion gate only counts days; this report catches slow
+decay weeks before the gate alone would. It runs daily (05:13 UTC, see
+deploy/rolling-report.sh) and persists one row per ISO week into the
+reports table, keyed "rolling-origin-<ISO week>" — reruns in the same week
+replace the row.
+
+Comparison window: both sides see the same regime. The backtest runs over
+[max(window_start, chain_started_at), now] — the full ``days`` window only
+when the assignment has no chain yet — and the entry's "start" (also the
+runs-row marker's "start") records the slice used. Without this, a healthy
+young chain looks like it lags: the full-window backtest shows trades that
+fired before the chain existed (issue #25).
+
+Coverage guard: a verdict is emitted only when the chain's overlap with the
+window is at least MIN_OVERLAP_DAYS and the chain's in-window equity spans
+at least MIN_EQUITY_SPAN_FRACTION of that overlap (a chain that died inside
+the window fails the span half). Below the floor the entry gets verdict
+"unknown" with a note ("chain covers Xd of the Nd window") instead of a
+verdict — a Sharpe comparison over a day or two is noise.
 
 Verdict rules (thresholds are the module constants below):
 - "tracks" — the shadow chain has no fills and the backtest has no round
@@ -22,11 +36,12 @@ Verdict rules (thresholds are the module constants below):
   (checked before the sharpe rules; one round trip is two fills, so an
   exact shadow of the backtest sits at a ratio of 2 and is not flagged).
 
-Two non-comparison outcomes: "unknown" when the chain has no equity in the
-window yet (a new assignment — the entry carries a note with the chain age
-instead of pretending), and "error" when the backtest side failed (no
-candles, a strategy that does not load, a lint failure). A failed
-assignment never fails the report: the rest of the entries still build.
+Two non-comparison outcomes: "unknown" when there is nothing meaningful to
+compare (no chain yet, no equity in the window yet, or coverage below the
+guard floor — the entry carries a note instead of pretending), and "error"
+when the backtest side failed (no candles, a strategy that does not load,
+a lint failure). A failed assignment never fails the report: the rest of
+the entries still build.
 
 The shadow side feeds the chain's stitched equity (rebased onto the resume
 chain, root first — the same rebase stitch_equity applies, but keyed on the
@@ -63,6 +78,10 @@ DEFAULT_WINDOW_DAYS = 30
 # verdict thresholds
 SHARPE_TOLERANCE = 0.3
 COUNT_DIVERGENCE_RATIO = 2.0
+# coverage floor: a verdict needs this much chain overlap with the window,
+# with in-window equity spanning at least this fraction of the overlap
+MIN_OVERLAP_DAYS = 7.0
+MIN_EQUITY_SPAN_FRACTION = 0.5
 # mirrors the supervisor's default for assignments without a starting_cash
 DEFAULT_STARTING_CASH = 10_000.0
 
@@ -90,6 +109,30 @@ def slice_window(
 ) -> list[tuple[datetime, float]]:
     """The points of the curve inside the half-open window [start, end)."""
     return [(ts, value) for ts, value in points if start <= ts < end]
+
+
+def compare_window(window_start: datetime, chain_start: datetime | None) -> datetime:
+    """The comparison start: the chain's start when the chain is younger than the window.
+
+    Both sides must see the same regime, so a chain younger than the window
+    compares over its own lifetime only. Without a chain there is nothing
+    to align to: the full window stays (the shadow side is the note path).
+    """
+    if chain_start is None:
+        return window_start
+    return max(window_start, chain_start)
+
+
+def has_min_coverage(*, overlap_days: float, span_days: float) -> bool:
+    """True when the chain's coverage of the window supports a real verdict.
+
+    The floor: the overlap of the chain with the window is at least
+    MIN_OVERLAP_DAYS, and the in-window equity spans at least
+    MIN_EQUITY_SPAN_FRACTION of that overlap. Below the floor the report
+    emits "unknown" with a coverage note — a young (or dead) chain must not
+    look like it lags a backtest that saw a different regime.
+    """
+    return overlap_days >= MIN_OVERLAP_DAYS and span_days >= overlap_days * MIN_EQUITY_SPAN_FRACTION
 
 
 def stitch(groups: list[list[tuple[datetime, float]]]) -> list[tuple[datetime, float]]:
@@ -211,6 +254,15 @@ async def _chain_rows(session: AsyncSession, assignment_id: str) -> list[RunRow]
     return chain
 
 
+def _chain_start(chain: list[RunRow]) -> datetime | None:
+    """The chain's start: the tip's recorded chain_started_at, else the root's start."""
+    if not chain:
+        return None
+    raw = (chain[-1].config or {}).get("chain_started_at") or chain[0].started_at.isoformat()
+    ts = datetime.fromisoformat(str(raw))
+    return ts if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
+
+
 def _aware(ts: datetime) -> datetime:
     """Timestamps are UTC by domain rule; naive ones appear only from SQLite in tests."""
     return ts if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
@@ -266,29 +318,34 @@ async def _chain_window_fills(
 
 async def _shadow_metrics(
     sessionmaker: async_sessionmaker[AsyncSession],
-    assignment: Assignment,
+    *,
+    chain: list[RunRow],
+    chain_start: datetime | None,
     timeframe: Timeframe,
     cash: float,
     start: datetime,
     end: datetime,
     now: datetime,
+    days: int,
 ) -> dict[str, Any]:
-    """The shadow reality of one assignment over the window, or a note."""
+    """The shadow reality of one assignment over the comparison window, or a note."""
+    if not chain:
+        return {"note": "no shadow runs yet"}
     async with sm_scope(sessionmaker) as session:
-        chain = await _chain_rows(session, assignment.id)
-        if not chain:
-            return {"note": "no shadow runs yet"}
         equity = await _chain_equity(session, chain)
         fills = await _chain_window_fills(session, [run.id for run in chain], start, end)
     windowed = slice_window(equity, start, end)
     if len(windowed) < 2:
-        raw = (chain[-1].config or {}).get("chain_started_at") or chain[0].started_at.isoformat()
-        chain_start = datetime.fromisoformat(str(raw))
-        if chain_start.tzinfo is None:
-            chain_start = chain_start.replace(tzinfo=UTC)
+        assert chain_start is not None  # a non-empty chain always has a start
         age_days = max((now - chain_start).total_seconds() / 86400, 0.0)
         return {"note": f"chain has {age_days:.1f} days so far"}
-    return compute_metrics(equity=windowed, fills=fills, timeframe=timeframe, starting_cash=cash)
+    metrics = compute_metrics(equity=windowed, fills=fills, timeframe=timeframe, starting_cash=cash)
+    overlap_days = (now - start).total_seconds() / 86400
+    span_days = (windowed[-1][0] - windowed[0][0]).total_seconds() / 86400
+    if not has_min_coverage(overlap_days=overlap_days, span_days=span_days):
+        # the metrics stay in the entry; the note suppresses the verdict
+        metrics["note"] = f"chain covers {span_days:.1f}d of the {days}d window"
+    return metrics
 
 
 async def _assignment_entry(
@@ -301,16 +358,22 @@ async def _assignment_entry(
     start: datetime,
     end: datetime,
     now: datetime,
+    days: int,
 ) -> dict[str, Any]:
     """One report entry: backtest expectation vs shadow reality, plus the verdict."""
+    cash = assignment.starting_cash or DEFAULT_STARTING_CASH
+    async with sm_scope(sessionmaker) as session:
+        chain = await _chain_rows(session, assignment.id)
+    chain_start = _chain_start(chain)
+    compare_start = compare_window(start, chain_start)
     entry: dict[str, Any] = {
         "id": assignment.id,
         "strategy_id": assignment.strategy_id,
         "pair": assignment.pair,
         "pairs": assignment.pairs,
         "timeframe": assignment.timeframe,
+        "start": compare_start.isoformat(),  # the comparison slice both sides ran over
     }
-    cash = assignment.starting_cash or DEFAULT_STARTING_CASH
     try:
         if load_error is not None:
             raise ValueError(f"strategies did not load: {load_error}")
@@ -319,14 +382,14 @@ async def _assignment_entry(
         if loaded is None:
             raise ValueError(f"unknown strategy {assignment.strategy_id!r}")
         timeframe = Timeframe.parse(assignment.timeframe)
-        marker = {"period": period, "assignment": assignment.id}
+        marker = {"period": period, "assignment": assignment.id, "start": compare_start.isoformat()}
         if assignment.pairs is not None:
             portfolio_request = PortfolioBacktestRequest(
                 strategy=loaded,
                 params=assignment.params,
                 pairs=[Pair.parse(p) for p in assignment.pairs],
                 timeframe=timeframe,
-                start=start,
+                start=compare_start,
                 end=end,
                 starting_cash=cash,
                 rolling_origin=marker,
@@ -338,7 +401,7 @@ async def _assignment_entry(
                 params=assignment.params,
                 pair=Pair.parse(assignment.pair),
                 timeframe=timeframe,
-                start=start,
+                start=compare_start,
                 end=end,
                 starting_cash=cash,
                 rolling_origin=marker,
@@ -348,13 +411,26 @@ async def _assignment_entry(
         log.warning("rolling-origin backtest failed for assignment %s", assignment.id, exc_info=True)
         return {**entry, "error": str(exc), "verdict": VERDICT_ERROR}
     entry["backtest"] = {"run_id": str(run_id), **metrics}
-    if "error" in metrics:  # the run persisted but had too little data for metrics
-        return {**entry, "error": str(metrics["error"]), "verdict": VERDICT_ERROR}
 
-    shadow = await _shadow_metrics(sessionmaker, assignment, timeframe, cash, start, end, now)
+    shadow = await _shadow_metrics(
+        sessionmaker,
+        chain=chain,
+        chain_start=chain_start,
+        timeframe=timeframe,
+        cash=cash,
+        start=compare_start,
+        end=end,
+        now=now,
+        days=days,
+    )
     entry["shadow"] = shadow
     if "note" in shadow:
+        # nothing meaningful to compare (new chain, or coverage below the
+        # guard floor) — the note suppresses the verdict, even when the
+        # short-slice backtest could not produce metrics itself
         entry["verdict"] = VERDICT_UNKNOWN
+    elif "error" in metrics:  # the run persisted but had too little data for metrics
+        return {**entry, "error": str(metrics["error"]), "verdict": VERDICT_ERROR}
     else:
         entry["verdict"] = verdict_for(
             backtest_sharpe=float(metrics["sharpe"]),
@@ -404,6 +480,7 @@ async def build_rolling_origin_report(
             start=start,
             end=now,
             now=now,
+            days=days,
         )
         for assignment in shadow_assignments
     ]

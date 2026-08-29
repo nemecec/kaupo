@@ -113,7 +113,7 @@ A parameter sweep maps a parameter surface with one submission instead of one jo
 
 ### Rolling-origin triage
 
-The rolling-origin report answers one question per enabled shadow assignment: does the shadow reality still track the backtest expectation? Each week, it re-backtests the exact assignment configuration over the last 30 days and compares it with the equity and fills of its shadow chain. Each assignment gets a verdict: tracks, lags, leads, or diverges. The report runs on Sunday at 05:13 UTC and stores one row per ISO week in the reports table. A digest with one line per assignment goes to the ntfy topic. The command `kaupo report rolling-origin` builds the same report on demand.
+The rolling-origin report answers one question per enabled shadow assignment: does the shadow reality still track the backtest expectation? Each day, it re-backtests the exact assignment configuration over the last 30 days and compares it with the equity and fills of its shadow chain. When the shadow chain is younger than the window, only the days of the chain count. A chain younger than 7 days gets no verdict yet. Each assignment gets a verdict: tracks, lags, leads, or diverges. The report runs daily at 05:13 UTC, stores one row per ISO week in the reports table, and posts a digest to the ntfy topic.
 
 ### Top-of-book collection
 

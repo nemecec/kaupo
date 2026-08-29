@@ -147,6 +147,7 @@ async def test_report_matches_backtest_and_shadow_reality(session: AsyncSession,
     assert entry["strategy_id"] == "buyer"
     assert entry["pair"] == "BTC/EUR"
     assert entry["timeframe"] == "1h"
+    assert entry["start"] == start.isoformat()  # chain as old as the window: the full window is compared
 
     # the backtest side equals a directly-invoked run_backtest of the same config
     direct_id, _, direct_metrics = await run_backtest(
@@ -197,10 +198,14 @@ async def test_report_matches_backtest_and_shadow_reality(session: AsyncSession,
     assert entry["shadow"]["sharpe"] < entry["backtest"]["sharpe"] - 0.3
     assert entry["verdict"] == "lags"
 
-    # the runs row carries the audit marker
+    # the runs row carries the audit marker with the comparison slice used
     marker_row = await session.get(RunRow, entry["backtest"]["run_id"])
     assert marker_row is not None
-    assert marker_row.config["rolling_origin"] == {"period": "2026-W35", "assignment": "a1"}
+    assert marker_row.config["rolling_origin"] == {
+        "period": "2026-W35",
+        "assignment": "a1",
+        "start": start.isoformat(),
+    }
 
     # persisted as one row per ISO week; a rerun in the same week replaces it
     key = period_key(iso_week(NOW))
@@ -235,3 +240,48 @@ async def test_report_without_chain_notes_the_new_assignment(session: AsyncSessi
     assert entry["shadow"] == {"note": "no shadow runs yet"}
     assert entry["verdict"] == "unknown"
     assert entry["backtest"]["status"] == "completed"  # the backtest side still ran
+    assert entry["start"] == start.isoformat()  # no chain: the full window stays
+
+
+async def test_young_chain_gets_unknown_not_lags(session: AsyncSession, tmp_path: Path) -> None:
+    """The issue #25 case: a profitable 30d-window backtest vs a healthy 1.3d
+    flat chain must not come out as "lags" — the comparison aligns to the
+    chain's lifetime and the coverage guard suppresses the verdict."""
+    start = NOW - timedelta(days=DAYS)
+    # rising zigzag over the whole window: the backtest is clearly profitable
+    candles = [
+        candle(start + timedelta(hours=i), 100 + 0.3 * i + (2 if i % 2 else 0)) for i in range(DAYS * 24)
+    ]
+    await upsert_candles(session, candles)
+    await create_assignment(session, id="young", strategy_id="buyer", pair="BTC/EUR", timeframe="1h")
+
+    # a healthy 1.3-day-old chain: flat equity, no fills yet
+    chain_start = NOW - timedelta(days=1.3)
+    run = _run_row("run-y", chain_start, assignment_id="young", chain_started_at=chain_start.isoformat())
+    snapshots = [
+        _snapshot("run-y", chain_start + timedelta(hours=1), 10_000.0),
+        _snapshot("run-y", chain_start + timedelta(hours=15), 10_000.0),
+        _snapshot("run-y", NOW - timedelta(hours=1), 10_000.0),
+    ]
+    session.add(run)
+    await session.flush()  # the run must exist before its snapshots (FK)
+    session.add_all(snapshots)
+    await session.commit()
+    (tmp_path / "buyer.py").write_text(BUYER)
+
+    body = await build_rolling_origin_report(get_sessionmaker(), days=DAYS, now=NOW, strategies_dir=tmp_path)
+
+    (entry,) = body["assignments"]
+    # the backtest ran over the overlap [chain_start, now], not the full window
+    assert entry["start"] == chain_start.isoformat()
+    assert entry["backtest"]["status"] == "completed"
+    marker_row = await session.get(RunRow, entry["backtest"]["run_id"])
+    assert marker_row is not None
+    assert marker_row.config["start"] == chain_start.isoformat()
+    assert marker_row.config["rolling_origin"]["start"] == chain_start.isoformat()
+    # the flat young chain shows sharpe 0.0 against a profitable backtest...
+    assert entry["shadow"]["sharpe"] == 0.0
+    assert entry["shadow"]["num_fills"] == 0
+    # ...but the coverage guard suppresses the bogus "lags" verdict
+    assert entry["shadow"]["note"] == "chain covers 1.2d of the 7d window"
+    assert entry["verdict"] == "unknown"

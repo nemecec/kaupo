@@ -184,6 +184,40 @@ class TestWindowSlicing:
         assert rolling.slice_window(points, start, end) == points[1:4]
 
 
+class TestCompareWindow:
+    def test_no_chain_keeps_the_full_window(self) -> None:
+        window_start = NOW - timedelta(days=30)
+        assert rolling.compare_window(window_start, None) == window_start
+
+    def test_older_chain_keeps_the_full_window(self) -> None:
+        window_start = NOW - timedelta(days=30)
+        assert rolling.compare_window(window_start, NOW - timedelta(days=45)) == window_start
+
+    def test_younger_chain_aligns_to_its_start(self) -> None:
+        window_start = NOW - timedelta(days=30)
+        chain_start = NOW - timedelta(days=1, hours=7, minutes=12)
+        assert rolling.compare_window(window_start, chain_start) == chain_start
+
+
+class TestMinCoverage:
+    def test_exact_floor_passes(self) -> None:
+        # overlap exactly 7d, equity spanning exactly half of it
+        assert rolling.has_min_coverage(overlap_days=7.0, span_days=3.5) is True
+
+    def test_just_below_the_overlap_floor_fails(self) -> None:
+        assert rolling.has_min_coverage(overlap_days=6.99, span_days=6.99) is False
+
+    def test_just_below_the_span_half_fails(self) -> None:
+        assert rolling.has_min_coverage(overlap_days=7.0, span_days=3.49) is False
+
+    def test_full_coverage_passes(self) -> None:
+        assert rolling.has_min_coverage(overlap_days=30.0, span_days=30.0) is True
+
+    def test_dead_chain_fails_the_span_half(self) -> None:
+        # an old chain whose equity stops a third into the window
+        assert rolling.has_min_coverage(overlap_days=30.0, span_days=10.0) is False
+
+
 class TestStitch:
     def test_rebase_onto_previous_run(self) -> None:
         groups = [
@@ -325,18 +359,19 @@ async def test_build_report_success_notes_and_exclusions(
         await session.commit()
 
     # a1's chain: two resume-linked runs whose snapshots continue at the same
-    # level (a real resume chain's offset is zero), equity decaying in-window
+    # level (a real resume chain's offset is zero), equity decaying in-window;
+    # the snapshots span 4d of the 7d window so the coverage guard passes
     r1 = _run_row("run-1", "a1", start, chain_started_at=start.isoformat())
     r2 = _run_row(
-        "run-2", "a1", start + timedelta(hours=2), resumed_from="run-1", chain_started_at=start.isoformat()
+        "run-2", "a1", start + timedelta(days=1), resumed_from="run-1", chain_started_at=start.isoformat()
     )
     snaps = [
         _snapshot("run-1", start + timedelta(hours=1), 10_000.0),
-        _snapshot("run-2", start + timedelta(hours=2), 10_000.0),
-        _snapshot("run-2", start + timedelta(hours=3), 9_900.0),
+        _snapshot("run-2", start + timedelta(days=2), 10_000.0),
+        _snapshot("run-2", start + timedelta(days=4), 9_900.0),
     ]
     buy_order, buy = _fill("run-1", start + timedelta(hours=1), "buy", 100.0)
-    sell_order, sell = _fill("run-2", start + timedelta(hours=2), "sell", 99.0)
+    sell_order, sell = _fill("run-2", start + timedelta(days=2), "sell", 99.0)
     # a4's chain: one run, no snapshots yet (started two days ago)
     r4 = _run_row("run-4", "a4", NOW - timedelta(days=2))
     async with sm_scope(sessionmaker) as session:
@@ -357,17 +392,19 @@ async def test_build_report_success_notes_and_exclusions(
     by_id = {entry["id"]: entry for entry in body["assignments"]}
     assert set(by_id) == {"a1", "a2", "a3", "a4", "a7"}  # disabled and live assignments are out
 
-    # the runs row marker ties the backtest to the report and assignment
-    assert seen[0].rolling_origin == {"period": "2026-W35", "assignment": "a1"}
+    # the runs row marker ties the backtest to the report, assignment, and slice
+    assert seen[0].rolling_origin == {"period": "2026-W35", "assignment": "a1", "start": start.isoformat()}
+    assert seen[0].start == start
 
     a1 = by_id["a1"]
+    assert a1["start"] == start.isoformat()  # chain age == window: the full window is compared
     assert a1["backtest"]["run_id"] == "bt-1"
     assert a1["backtest"]["sharpe"] == 1.0
     expected_shadow = compute_metrics(
         equity=[
             (start + timedelta(hours=1), 10_000.0),
-            (start + timedelta(hours=2), 10_000.0),
-            (start + timedelta(hours=3), 9_900.0),
+            (start + timedelta(days=2), 10_000.0),
+            (start + timedelta(days=4), 9_900.0),
         ],
         fills=_expected_fills(start),
         timeframe=TF,
@@ -381,6 +418,7 @@ async def test_build_report_success_notes_and_exclusions(
     assert "unknown strategy" in by_id["a2"]["error"]
     assert by_id["a3"]["shadow"] == {"note": "no shadow runs yet"}
     assert by_id["a3"]["verdict"] == VERDICT_UNKNOWN
+    assert by_id["a3"]["start"] == start.isoformat()  # no chain: the backtest keeps the full window
     assert by_id["a4"]["shadow"] == {"note": "chain has 2.0 days so far"}
     assert by_id["a4"]["verdict"] == VERDICT_UNKNOWN
 
@@ -406,7 +444,7 @@ def _expected_fills(start: datetime) -> list[Fill]:
             order_id=OrderId("o2"),
             pair=pair,
             side=Side.SELL,
-            ts=start + timedelta(hours=2),
+            ts=start + timedelta(days=2),
             price=99.0,
             size=0.1,
             fee=0.03,
@@ -430,6 +468,51 @@ async def test_build_report_backtest_failure_isolated(
     (entry,) = body["assignments"]
     assert entry["verdict"] == VERDICT_ERROR
     assert "No kraken candles" in entry["error"]
+    assert entry["start"] == (NOW - timedelta(days=7)).isoformat()  # no chain: full window
+
+
+async def test_build_report_young_chain_gets_no_verdict(
+    sessionmaker: async_sessionmaker[AsyncSession], strategies_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The issue #25 case: a profitable 30d backtest vs a 1.3d flat chain must
+    not come out as "lags" — the coverage guard emits unknown with a note."""
+    chain_start = NOW - timedelta(days=1.3)
+    async with sm_scope(sessionmaker) as session:
+        await create_assignment(session, id="young", strategy_id="holder", pair="SOL/EUR", timeframe="4h")
+        await session.commit()
+    run = _run_row("run-y", "young", chain_start, chain_started_at=chain_start.isoformat())
+    snaps = [
+        _snapshot("run-y", chain_start + timedelta(hours=1), 10_000.0),
+        _snapshot("run-y", chain_start + timedelta(hours=15), 10_000.0),
+        _snapshot("run-y", NOW - timedelta(hours=1), 10_000.0),
+    ]
+    async with sm_scope(sessionmaker) as session:
+        await _seed(session, run, *snaps)
+
+    seen: list[Any] = []
+    profitable = {"status": "completed", "sharpe": 7.454, "num_fills": 4, "num_round_trips": 2}
+    monkeypatch.setattr(rolling, "run_backtest", _fake_run_backtest(seen, profitable))
+
+    body = await rolling.build_rolling_origin_report(
+        sessionmaker, days=30, now=NOW, persist=False, strategies_dir=strategies_dir
+    )
+
+    (entry,) = body["assignments"]
+    # the backtest ran over the overlap [chain_start, now], not the full window
+    assert seen[0].start == chain_start
+    assert seen[0].rolling_origin == {
+        "period": "2026-W35",
+        "assignment": "young",
+        "start": chain_start.isoformat(),
+    }
+    assert entry["start"] == chain_start.isoformat()
+    assert entry["backtest"]["sharpe"] == 7.454  # still visible in the entry
+    # ...but the guard suppresses the verdict the sharpe gap would have forced
+    assert entry["shadow"]["sharpe"] == 0.0  # a correctly flat young chain
+    assert entry["shadow"]["num_fills"] == 0
+    assert entry["shadow"]["note"] == "chain covers 1.2d of the 30d window"
+    assert entry["verdict"] == VERDICT_UNKNOWN
+    assert entry["verdict"] != VERDICT_LAGS
 
 
 async def test_build_report_lint_failure_degrades_all_entries(
