@@ -66,9 +66,14 @@ cat > /etc/cron.d/kaupo-backup <<'EOF'
 47 6 * * * root /opt/kaupo/deploy/notify-daily.sh >> /var/log/kaupo-notify.log 2>&1
 EOF
 
-# Kraken rolling-window refresh (1d + 4h candles, trade ticks) at 04:41 UTC (venue-check data stays fresh)
+# Rolling-window refresh (kraken+binance candles, orderflow rollup) daily 04:41 UTC
 cat > /etc/cron.d/kaupo-refresh <<'EOF'
 41 4 * * * root /opt/kaupo/deploy/refresh-kraken.sh >> /var/log/kaupo-refresh.log 2>&1
+EOF
+
+# Trade-tick refresh every 4 hours (order-flow window stays fresh between daily runs)
+cat > /etc/cron.d/kaupo-trades <<'EOF'
+23 */4 * * * root /opt/kaupo/deploy/refresh-trades.sh >> /var/log/kaupo-trades.log 2>&1
 EOF
 
 # Daily rolling-origin triage report (shadow reality vs fresh backtest) 05:13 UTC

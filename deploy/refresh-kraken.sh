@@ -1,42 +1,54 @@
 #!/usr/bin/env bash
-# Refresh the Kraken rolling windows for the pair-quality universe, plus the
-# trade-tick (order-flow) windows of the same pairs.
-# Kraken serves at most the 720 newest candles of a timeframe: about 2 years
-# at 1d, about 120 days at 4h. Venue checks against the trade venue go stale
-# without a regular re-ingest. Trade ticks stay bounded: the ingest command
-# prunes rows older than the retention window after each run. After the raw
-# refresh, yesterday's order flow is rolled up into the permanent
-# orderflow_daily table, so long-window aggregates accumulate while the raw
-# stores age out. Runs daily from cron on the host. Idempotent (upserts).
+# Daily refresh of the rolling data windows, plus a permanent order-flow
+# rollup. Runs from cron on the host. Idempotent (upserts).
+#
+# - Kraken 1d/4h candles for the pair-quality universe (venue checks; Kraken
+#   serves at most the 720 newest candles of a timeframe).
+# - Binance 1d/4h candles for the universe, and 1h for the liquid majors
+#   (research windows must not go stale; Binance is the deep-history venue).
+# - orderflow_daily rollup for yesterday (permanent aggregate archive).
+# Trade ticks refresh separately every 4 hours (deploy/refresh-trades.sh).
 set -uo pipefail
 
 PAIRS="BTC/EUR ETH/EUR SOL/EUR XRP/EUR ADA/EUR LINK/EUR DOGE/EUR LTC/EUR AVAX/EUR DOT/EUR ATOM/EUR"
 TIMEFRAMES="1d 4h"
-TRADE_PAIRS="$PAIRS"
+BINANCE_1H_PAIRS="BTC/EUR ETH/EUR SOL/EUR"
 
 cd /opt/kaupo || exit 1
 fail=0
+compose() {
+  docker compose --env-file /etc/kaupo/kaupo.env -f deploy/compose.prod.yml --profile trading \
+    run --rm -T api "$@"
+}
+
 for pair in $PAIRS; do
   for tf in $TIMEFRAMES; do
-    if ! docker compose --env-file /etc/kaupo/kaupo.env -f deploy/compose.prod.yml --profile trading \
-      run --rm -T api kaupo ingest candles --exchange kraken --pair "$pair" --timeframe "$tf" --days 700; then
-      echo "FAILED: $pair $tf" >&2
+    if ! compose kaupo ingest candles --exchange kraken --pair "$pair" --timeframe "$tf" --days 700; then
+      echo "FAILED: kraken $pair $tf" >&2
       fail=1
     fi
   done
 done
-for pair in $TRADE_PAIRS; do
-  if ! docker compose --env-file /etc/kaupo/kaupo.env -f deploy/compose.prod.yml --profile trading \
-    run --rm -T api kaupo ingest trades --exchange kraken --pair "$pair" --days 3; then
-    echo "FAILED: trades $pair" >&2
+
+for pair in $PAIRS; do
+  for tf in $TIMEFRAMES; do
+    if ! compose kaupo ingest candles --exchange binance --pair "$pair" --timeframe "$tf" --days 30; then
+      echo "FAILED: binance $pair $tf" >&2
+      fail=1
+    fi
+  done
+done
+for pair in $BINANCE_1H_PAIRS; do
+  if ! compose kaupo ingest candles --exchange binance --pair "$pair" --timeframe 1h --days 30; then
+    echo "FAILED: binance $pair 1h" >&2
     fail=1
   fi
 done
+
 # defaults cover every pair with raw order-flow rows, yesterday (UTC)
-if ! docker compose --env-file /etc/kaupo/kaupo.env -f deploy/compose.prod.yml --profile trading \
-  run --rm -T api kaupo ingest orderflow-rollup; then
+if ! compose kaupo ingest orderflow-rollup; then
   echo "FAILED: orderflow-rollup" >&2
   fail=1
 fi
-[[ "$fail" -eq 0 ]] && echo "refreshed kraken ${TIMEFRAMES} for ${PAIRS}; trades for ${TRADE_PAIRS}; orderflow-rollup for yesterday"
+[[ "$fail" -eq 0 ]] && echo "refreshed kraken+binance candles for ${PAIRS}; orderflow-rollup for yesterday"
 exit "$fail"
