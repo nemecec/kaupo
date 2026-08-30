@@ -121,7 +121,7 @@ def parse_aggtrades(zip_bytes: bytes) -> tuple[dict[date, TradeDayAgg], int]:
                 if ts_ms <= 0:
                     malformed += 1
                     continue
-                day = _day_of_ms(ts_ms)
+                day = _day_of_ts(ts_ms)
                 agg = days.setdefault(day, TradeDayAgg())
                 agg.trade_count += 1
                 if maker_is_buyer:  # buyer is the maker: the seller is the taker
@@ -138,23 +138,53 @@ def parse_aggtrades(zip_bytes: bytes) -> tuple[dict[date, TradeDayAgg], int]:
 def parse_metrics_daily(zip_bytes: bytes, exchange: str, base_asset: str) -> FuturesMetricsDaily:
     """Aggregate one futures metrics daily zip (5-minute rows) into one day row.
 
-    Open interest is the end-of-day snapshot (last row); the long/short
-    ratios are day means. Verified layout carries a header row; columns are
-    resolved by name.
+    Open interest is the end-of-day snapshot (last complete row); the
+    long/short ratios are day means over the rows where the column is
+    present. Real-world gaps are tolerated: some files carry duplicated
+    rows (deduped, the last wins), rows with zero OI and blank ratios, and
+    rows with a blank taker ratio. A column with no usable value at all
+    fails the file.
     """
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         names = [n for n in zf.namelist() if n.endswith(".csv")]
         if len(names) != 1:
             raise ValueError(f"expected exactly one CSV in the archive, got {names}")
         with zf.open(names[0]) as fh:
-            rows = list(csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8")))
-    if not rows:
+            raw = list(csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8")))
+    if not raw:
         raise ValueError("metrics archive has no data rows")
+    # some files carry duplicated rows; the last occurrence wins
+    by_time = {r["create_time"]: r for r in raw}
+    rows = list(by_time.values())
     day = datetime.strptime(rows[0]["create_time"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC).date()
-    last = rows[-1]
 
-    def mean(column: str) -> float:
-        return sum(float(r[column]) for r in rows) / len(rows)
+    def values(column: str) -> list[float]:
+        return [float(r[column]) for r in rows if (r[column] or "").strip() != ""]
+
+    columns = (
+        "count_toptrader_long_short_ratio",
+        "sum_toptrader_long_short_ratio",
+        "count_long_short_ratio",
+        "sum_taker_long_short_vol_ratio",
+    )
+    # a listed perp never has exactly zero OI; '0E-8' rows are data gaps
+    oi_rows = [
+        r
+        for r in rows
+        if (r["sum_open_interest"] or "").strip() != ""
+        and (r["sum_open_interest_value"] or "").strip() != ""
+        and float(r["sum_open_interest"]) != 0.0
+    ]
+    means = [values(c) for c in columns]
+    relevant = ("sum_open_interest", "sum_open_interest_value", *columns)
+    malformed = sum(1 for r in rows if any((r[c] or "").strip() == "" for c in relevant))
+    if malformed:
+        log.warning("metrics day %s: %d row(s) with blank fields skipped", day, malformed)
+    if not oi_rows:
+        raise ValueError(f"metrics archive has no usable open-interest rows for {day}")
+    if any(not v for v in means):
+        raise ValueError(f"metrics archive has a fully blank ratio column for {day}")
+    last = oi_rows[-1]
 
     return FuturesMetricsDaily(
         exchange=exchange,
@@ -162,12 +192,19 @@ def parse_metrics_daily(zip_bytes: bytes, exchange: str, base_asset: str) -> Fut
         day=day,
         oi_base=float(last["sum_open_interest"]),
         oi_quote=float(last["sum_open_interest_value"]),
-        count_toptrader_ls_ratio=mean("count_toptrader_long_short_ratio"),
-        sum_toptrader_ls_ratio=mean("sum_toptrader_long_short_ratio"),
-        count_ls_ratio=mean("count_long_short_ratio"),
-        taker_ls_vol_ratio=mean("sum_taker_long_short_vol_ratio"),
+        count_toptrader_ls_ratio=_mean(means[0]),
+        sum_toptrader_ls_ratio=_mean(means[1]),
+        count_ls_ratio=_mean(means[2]),
+        taker_ls_vol_ratio=_mean(means[3]),
     )
 
 
-def _day_of_ms(ts_ms: int) -> date:
-    return datetime.fromtimestamp(ts_ms / 1000, tz=UTC).date()
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values)
+
+
+def _day_of_ts(ts: int) -> date:
+    # Binance moved archive timestamps from milliseconds to microseconds
+    # during 2025; 1e14 separates the eras (ms today ≈ 1.7e12, µs ≈ 1.7e15)
+    seconds = ts / 1_000_000 if ts > 100_000_000_000_000 else ts / 1_000
+    return datetime.fromtimestamp(seconds, tz=UTC).date()

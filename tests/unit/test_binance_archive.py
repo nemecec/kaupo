@@ -73,6 +73,18 @@ def test_parse_aggtrades_rejects_multi_csv() -> None:
         raise AssertionError("expected ValueError")
 
 
+def test_parse_aggtrades_microsecond_timestamps() -> None:
+    # Binance moved archive timestamps from ms to µs during 2025
+    us = ms("2026-08-01", "00:00:01") * 1000
+    csv_text = f"101,100.0,1.5,1,2,{us},False,True\n{us + 1},100.5,2.5,3,3,{us + 1},True,True"
+    days, malformed = parse_aggtrades(make_zip(csv_text))
+
+    assert malformed == 0
+    assert list(days) == [date(2026, 8, 1)]
+    agg = days[date(2026, 8, 1)]
+    assert (agg.trade_count, agg.buy_count, agg.sell_count) == (2, 1, 1)
+
+
 # --- parse_metrics_daily -----------------------------------------------------
 
 METRICS_CSV = "\n".join(
@@ -99,6 +111,47 @@ def test_parse_metrics_daily_eod_oi_and_mean_ratios() -> None:
     assert row.sum_toptrader_ls_ratio == 2.0
     assert row.count_ls_ratio == 5.0
     assert row.taker_ls_vol_ratio == 3.0
+
+
+def test_parse_metrics_daily_tolerates_blanks_and_duplicates() -> None:
+    # row 2 has a blank taker ratio, row 3 has zero OI with blank ratios
+    # (real gaps in the Binance files), row 4 duplicates row 1
+    csv_text = "\n".join(
+        [
+            "create_time,symbol,sum_open_interest,sum_open_interest_value,"
+            "count_toptrader_long_short_ratio,sum_toptrader_long_short_ratio,"
+            "count_long_short_ratio,sum_taker_long_short_vol_ratio",
+            "2024-01-15 00:00:00,BTCUSDT,100.0,5000000.0,2.0,1.0,3.0,1.0",
+            "2024-01-15 00:05:00,BTCUSDT,200.0,9000000.0,4.0,2.0,5.0,",
+            "2024-01-15 00:10:00,BTCUSDT,0E-8,0E-8,,,,3.0",
+            "2024-01-15 00:00:00,BTCUSDT,100.0,5000000.0,2.0,1.0,3.0,1.0",
+        ]
+    )
+    row = parse_metrics_daily(make_zip(csv_text), "binance", "BTC")
+
+    assert row.oi_base == 200.0  # the last row with usable OI (the zero-OI row is skipped)
+    assert row.oi_quote == 9000000.0
+    # the duplicate is deduped (the last wins); blank fields skip their column only
+    assert row.count_toptrader_ls_ratio == 3.0  # mean of 2, 4 (zero-OI row blank)
+    assert row.taker_ls_vol_ratio == 2.0  # mean of 1, 3 (blank and zero-OI rows skip)
+
+
+def test_parse_metrics_daily_fully_blank_column_fails() -> None:
+    csv_text = "\n".join(
+        [
+            "create_time,symbol,sum_open_interest,sum_open_interest_value,"
+            "count_toptrader_long_short_ratio,sum_toptrader_long_short_ratio,"
+            "count_long_short_ratio,sum_taker_long_short_vol_ratio",
+            "2024-01-15 00:00:00,BTCUSDT,100.0,5000000.0,,1.0,3.0,1.0",
+            "2024-01-15 00:05:00,BTCUSDT,200.0,9000000.0,,2.0,5.0,3.0",
+        ]
+    )
+    try:
+        parse_metrics_daily(make_zip(csv_text), "binance", "BTC")
+    except ValueError as exc:
+        assert "fully blank" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
 
 
 # --- key_date ----------------------------------------------------------------
