@@ -50,9 +50,7 @@ def _assignment_out(assignment: Assignment, live: dict[tuple[str, str, str, str]
         starting_cash=assignment.starting_cash,
         created_at=assignment.created_at,
         updated_at=assignment.updated_at,
-        run_id=live.get(
-            (assignment.mode, assignment.strategy_id, assignment.pair, assignment.timeframe)
-        ),
+        run_id=live.get((assignment.mode, assignment.strategy_id, assignment.pair, assignment.timeframe)),
     )
 
 

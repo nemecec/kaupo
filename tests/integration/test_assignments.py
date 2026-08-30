@@ -256,9 +256,7 @@ async def test_api_list_shows_the_matching_live_run(client: AsyncClient, session
     assert rows[0]["run_id"] == "run-1"
 
 
-async def test_api_list_links_same_pair_runs_by_timeframe(
-    client: AsyncClient, session: AsyncSession
-) -> None:
+async def test_api_list_links_same_pair_runs_by_timeframe(client: AsyncClient, session: AsyncSession) -> None:
     """Same strategy and pair on two timeframes: each assignment gets its own run."""
     await client.post(
         "/api/v1/assignments",
