@@ -4,15 +4,14 @@
 #
 # - Kraken 1d/4h candles for the pair-quality universe (venue checks; Kraken
 #   serves at most the 720 newest candles of a timeframe).
-# - Binance 1d/4h candles for the universe, and 1h for the liquid majors
-#   (research windows must not go stale; Binance is the deep-history venue).
+# - Binance 1d/4h/1h candles for the universe (research windows must not go
+#   stale; Binance is the deep-history venue).
 # - orderflow_daily rollup for yesterday (permanent aggregate archive).
 # Trade ticks refresh separately every 4 hours (deploy/refresh-trades.sh).
 set -uo pipefail
 
 PAIRS="BTC/EUR ETH/EUR SOL/EUR XRP/EUR ADA/EUR LINK/EUR DOGE/EUR LTC/EUR AVAX/EUR DOT/EUR ATOM/EUR"
 TIMEFRAMES="1d 4h"
-BINANCE_1H_PAIRS="BTC/EUR ETH/EUR SOL/EUR"
 
 cd /opt/kaupo || exit 1
 fail=0
@@ -38,7 +37,7 @@ for pair in $PAIRS; do
     fi
   done
 done
-for pair in $BINANCE_1H_PAIRS; do
+for pair in $PAIRS; do
   if ! compose kaupo ingest candles --exchange binance --pair "$pair" --timeframe 1h --days 30; then
     echo "FAILED: binance $pair 1h" >&2
     fail=1
