@@ -144,7 +144,9 @@ class StrategyContext(Protocol):
         """Latest ``n`` daily futures positioning rows for the run pair's base asset.
 
         One :class:`FuturesMetricsDaily` per UTC day: end-of-day open
-        interest and day-mean long/short + top-trader ratios. Point-in-time
+        interest and day-mean long/short + top-trader ratios (null where the
+        source has no values, e.g. the 2022 gap year — strategies must
+        tolerate None). Point-in-time
         like ``history``: only days fully closed at ``clock.now()`` are
         returned — the in-progress day never leaks. Backfilled from the
         Binance metrics archive, so history starts at the perp's listing.
@@ -282,7 +284,8 @@ class PortfolioContext(Protocol):
         """Latest ``n`` daily futures positioning rows for ``pair``'s base asset.
 
         One :class:`FuturesMetricsDaily` per UTC day: end-of-day open
-        interest and day-mean long/short + top-trader ratios, oldest first.
+        interest and day-mean long/short + top-trader ratios, oldest first (null
+        where the source has no values, e.g. the 2022 gap year).
         Point-in-time like ``history``: only days fully closed at
         ``clock.now()`` are returned — the in-progress day never leaks.
         Backfilled from the Binance metrics archive, so history starts at the

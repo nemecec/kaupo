@@ -215,10 +215,12 @@ class FuturesMetricsDaily:
     day: date  # the UTC day the row aggregates
     oi_base: float  # end-of-day open interest in base units
     oi_quote: float  # end-of-day open interest in USD notional
-    count_toptrader_ls_ratio: float  # day mean of top-trader accounts long/short ratio
-    sum_toptrader_ls_ratio: float  # day mean of top-trader positions long/short ratio
-    count_ls_ratio: float  # day mean of all-accounts long/short ratio
-    taker_ls_vol_ratio: float  # day mean of taker buy/sell volume ratio
+    # ratios are null on days where the source has no values (the Binance
+    # archive leaves them empty for roughly a year, 2021-12-22 to late 2022)
+    count_toptrader_ls_ratio: float | None  # day mean of top-trader accounts long/short ratio
+    sum_toptrader_ls_ratio: float | None  # day mean of top-trader positions long/short ratio
+    count_ls_ratio: float | None  # day mean of all-accounts long/short ratio
+    taker_ls_vol_ratio: float | None  # day mean of taker buy/sell volume ratio
 
 
 class Side(enum.Enum):

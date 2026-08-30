@@ -81,3 +81,22 @@ async def test_limit_returns_latest_of_range(session: AsyncSession) -> None:
 
     loaded = await get_futures_metrics_daily(session, "binance", "BTC", DAY, DAY + timedelta(days=5), limit=2)
     assert [r.day for r in loaded] == [DAY + timedelta(days=3), DAY + timedelta(days=4)]
+
+
+async def test_null_ratios_round_trip(session: AsyncSession) -> None:
+    """The 2022 gap era: a day with valid OI and null ratios round-trips exactly."""
+    row = FuturesMetricsDaily(
+        exchange="binance",
+        base_asset="BTC",
+        day=DAY,
+        oi_base=100.0,
+        oi_quote=5_000_000.0,
+        count_toptrader_ls_ratio=None,
+        sum_toptrader_ls_ratio=None,
+        count_ls_ratio=None,
+        taker_ls_vol_ratio=None,
+    )
+    await upsert_futures_metrics_daily(session, [row])
+
+    loaded = await get_futures_metrics_daily(session, "binance", "BTC", DAY, DAY + timedelta(days=1))
+    assert loaded == [row]

@@ -182,8 +182,6 @@ def parse_metrics_daily(zip_bytes: bytes, exchange: str, base_asset: str) -> Fut
         log.warning("metrics day %s: %d row(s) with blank fields skipped", day, malformed)
     if not oi_rows:
         raise ValueError(f"metrics archive has no usable open-interest rows for {day}")
-    if any(not v for v in means):
-        raise ValueError(f"metrics archive has a fully blank ratio column for {day}")
     last = oi_rows[-1]
 
     return FuturesMetricsDaily(
@@ -192,15 +190,17 @@ def parse_metrics_daily(zip_bytes: bytes, exchange: str, base_asset: str) -> Fut
         day=day,
         oi_base=float(last["sum_open_interest"]),
         oi_quote=float(last["sum_open_interest_value"]),
-        count_toptrader_ls_ratio=_mean(means[0]),
-        sum_toptrader_ls_ratio=_mean(means[1]),
-        count_ls_ratio=_mean(means[2]),
-        taker_ls_vol_ratio=_mean(means[3]),
+        # ratios are optional: None on days the source leaves them empty
+        # (the 2022 gap era); open interest alone never fails a day
+        count_toptrader_ls_ratio=_mean_or_none(means[0]),
+        sum_toptrader_ls_ratio=_mean_or_none(means[1]),
+        count_ls_ratio=_mean_or_none(means[2]),
+        taker_ls_vol_ratio=_mean_or_none(means[3]),
     )
 
 
-def _mean(values: list[float]) -> float:
-    return sum(values) / len(values)
+def _mean_or_none(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
 
 
 def _day_of_ts(ts: int) -> date:

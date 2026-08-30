@@ -136,20 +136,40 @@ def test_parse_metrics_daily_tolerates_blanks_and_duplicates() -> None:
     assert row.taker_ls_vol_ratio == 2.0  # mean of 1, 3 (blank and zero-OI rows skip)
 
 
-def test_parse_metrics_daily_fully_blank_column_fails() -> None:
+def test_parse_metrics_daily_fully_blank_ratio_column_keeps_oi() -> None:
+    # the 2022 gap era: ratio columns empty for the whole day, OI valid
     csv_text = "\n".join(
         [
             "create_time,symbol,sum_open_interest,sum_open_interest_value,"
             "count_toptrader_long_short_ratio,sum_toptrader_long_short_ratio,"
             "count_long_short_ratio,sum_taker_long_short_vol_ratio",
-            "2024-01-15 00:00:00,BTCUSDT,100.0,5000000.0,,1.0,3.0,1.0",
-            "2024-01-15 00:05:00,BTCUSDT,200.0,9000000.0,,2.0,5.0,3.0",
+            '2022-01-01 00:00:00,BTCUSDT,74803.41,3456683790.32,"","","",""',
+            '2022-01-01 00:05:00,BTCUSDT,74861.62,3468073411.65,"","","",""',
+        ]
+    )
+    row = parse_metrics_daily(make_zip(csv_text), "binance", "BTC")
+
+    assert row.oi_base == 74861.62  # end-of-day OI, kept
+    assert row.count_toptrader_ls_ratio is None
+    assert row.sum_toptrader_ls_ratio is None
+    assert row.count_ls_ratio is None
+    assert row.taker_ls_vol_ratio is None
+
+
+def test_parse_metrics_daily_fully_blank_oi_fails() -> None:
+    csv_text = "\n".join(
+        [
+            "create_time,symbol,sum_open_interest,sum_open_interest_value,"
+            "count_toptrader_long_short_ratio,sum_toptrader_long_short_ratio,"
+            "count_long_short_ratio,sum_taker_long_short_vol_ratio",
+            "2024-01-15 00:00:00,BTCUSDT,0E-8,0E-8,,1.0,3.0,1.0",
+            "2024-01-15 00:05:00,BTCUSDT,0E-8,0E-8,,2.0,5.0,3.0",
         ]
     )
     try:
         parse_metrics_daily(make_zip(csv_text), "binance", "BTC")
     except ValueError as exc:
-        assert "fully blank" in str(exc)
+        assert "open-interest" in str(exc)
     else:
         raise AssertionError("expected ValueError")
 

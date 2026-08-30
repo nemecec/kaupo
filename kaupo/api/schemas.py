@@ -112,10 +112,10 @@ class FuturesMetricsDailyOut(BaseModel):
     day: date
     oi_base: float
     oi_quote: float
-    count_toptrader_ls_ratio: float
-    sum_toptrader_ls_ratio: float
-    count_ls_ratio: float
-    taker_ls_vol_ratio: float
+    count_toptrader_ls_ratio: float | None
+    sum_toptrader_ls_ratio: float | None
+    count_ls_ratio: float | None
+    taker_ls_vol_ratio: float | None
 
 
 class TradeTickOut(BaseModel):

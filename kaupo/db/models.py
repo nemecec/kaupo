@@ -73,10 +73,12 @@ class FuturesMetricsDailyRow(Base):
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     oi_base: Mapped[float]
     oi_quote: Mapped[float]
-    count_toptrader_ls_ratio: Mapped[float]
-    sum_toptrader_ls_ratio: Mapped[float]
-    count_ls_ratio: Mapped[float]
-    taker_ls_vol_ratio: Mapped[float]
+    # ratios are optional payload: the Binance archive leaves them empty for
+    # roughly a year (2021-12-22 to late 2022); open interest stays valid
+    count_toptrader_ls_ratio: Mapped[float | None]
+    sum_toptrader_ls_ratio: Mapped[float | None]
+    count_ls_ratio: Mapped[float | None]
+    taker_ls_vol_ratio: Mapped[float | None]
 
 
 class TradeTickRow(Base):
