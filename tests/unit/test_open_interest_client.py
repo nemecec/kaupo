@@ -16,7 +16,7 @@ class StubFutures:
         self.params: dict | None = None
         self.closed = False
 
-    async def futuresDataGetOpenInterestHist(self, params):  # type: ignore[no-untyped-def]  # ccxt implicit name
+    async def fapiDataGetOpenInterestHist(self, params):  # type: ignore[no-untyped-def]  # ccxt implicit name
         self.params = params
         return self.rows
 

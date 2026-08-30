@@ -112,7 +112,7 @@ class BinanceClient(CcxtExchangeClient):
         params: dict[str, Any] = {"symbol": f"{base}USDT", "period": "1h", "limit": limit}
         if since is not None:
             params["startTime"] = int(since.timestamp() * 1000)
-        rows = await self._futures.futuresDataGetOpenInterestHist(params)
+        rows = await self._futures.fapiDataGetOpenInterestHist(params)
         snapshots = []
         for entry in rows:
             ts_ms = entry.get("timestamp")
