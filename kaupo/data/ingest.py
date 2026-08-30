@@ -12,6 +12,7 @@ from kaupo.data.candles import upsert_candles
 from kaupo.data.ccxt_client import CcxtExchangeClient
 from kaupo.data.funding import upsert_funding_rates
 from kaupo.data.kraken import KrakenClient
+from kaupo.data.open_interest import upsert_open_interest
 from kaupo.data.trades import upsert_trade_ticks
 from kaupo.domain import Candle, Pair, Timeframe
 
@@ -45,6 +46,48 @@ async def backfill(
             break
         async with sessionmaker() as session:
             await upsert_candles(session, batch)
+            await session.commit()
+        total += len(batch)
+        if on_progress:
+            on_progress(total)
+
+        prev_last = last_ts
+        since = last_ts + step
+
+    return total
+
+
+async def backfill_open_interest(
+    client: BinanceClient,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    base_asset: str,
+    start: datetime,
+    end: datetime | None = None,
+    on_progress: Callable[[int], None] | None = None,
+) -> int:
+    """Page through open-interest history from ``start`` and upsert. Returns row count.
+
+    Snapshots sit on a fixed hourly grid, but Binance only serves ~30 days
+    back, so paging advances a millisecond past the last seen snapshot
+    instead of a fixed step (same idea as funding).
+    """
+    end = end or datetime.now(UTC)
+    step = timedelta(milliseconds=1)
+    since = start
+    prev_last: datetime | None = None
+    total = 0
+
+    while since < end:
+        batch = await client.fetch_open_interest_history(base_asset, since=since)
+        batch = [s for s in batch if s.ts < end]
+        if not batch:
+            break
+        last_ts = batch[-1].ts
+        if prev_last is not None and last_ts <= prev_last:
+            log.warning("Open-interest backfill made no progress at %s; stopping", since)
+            break
+        async with sessionmaker() as session:
+            await upsert_open_interest(session, batch)
             await session.commit()
         total += len(batch)
         if on_progress:

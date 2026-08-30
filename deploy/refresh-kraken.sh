@@ -6,6 +6,9 @@
 #   serves at most the 720 newest candles of a timeframe).
 # - Binance 1d/4h/1h candles for the universe (research windows must not go
 #   stale; Binance is the deep-history venue).
+# - Binance hourly open interest for the universe (positioning signal;
+#   Binance serves only ~30 days back, so this is forward-collected and the
+#   history accumulates here).
 # - orderflow_daily rollup for yesterday (permanent aggregate archive).
 # Trade ticks refresh separately every 4 hours (deploy/refresh-trades.sh).
 set -uo pipefail
@@ -40,6 +43,12 @@ done
 for pair in $PAIRS; do
   if ! compose kaupo ingest candles --exchange binance --pair "$pair" --timeframe 1h --days 30; then
     echo "FAILED: binance $pair 1h" >&2
+    fail=1
+  fi
+done
+for pair in $PAIRS; do
+  if ! compose kaupo ingest open-interest --pair "$pair" --days 30; then
+    echo "FAILED: open-interest $pair" >&2
     fail=1
   fi
 done

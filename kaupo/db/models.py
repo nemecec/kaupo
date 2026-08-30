@@ -42,6 +42,23 @@ class FundingRateRow(Base):
     rate: Mapped[float]
 
 
+class OpenInterestRow(Base):
+    """Perpetual-futures open interest snapshots, keyed by BASE ASSET (e.g. "BTC").
+
+    Binance serves only ~30 days of open-interest history, so this table is
+    forward-collected (hourly snapshots) and never pruned. Same advisory
+    role as funding: positioning signal, not a traded instrument.
+    """
+
+    __tablename__ = "open_interest"
+
+    exchange: Mapped[str] = mapped_column(String(20), primary_key=True)
+    base_asset: Mapped[str] = mapped_column(String(20), primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    oi_base: Mapped[float]
+    oi_quote: Mapped[float]
+
+
 class TradeTickRow(Base):
     """Public trade prints (order flow), keyed by the full tick tuple.
 

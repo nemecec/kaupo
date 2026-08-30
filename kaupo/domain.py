@@ -105,6 +105,22 @@ class FundingRate:
 
 
 @dataclass(frozen=True)
+class OpenInterest:
+    """Perpetual-futures open interest snapshot for a base asset (e.g. "BTC").
+
+    Kaupo trades spot only; open interest is an advisory positioning signal
+    (leverage build-up and unwind), never a traded instrument. Keyed by base
+    asset: one dominant USDT perpetual per venue is enough for a signal.
+    """
+
+    exchange: str
+    base_asset: str
+    ts: datetime  # snapshot time, UTC
+    oi_base: float  # open interest in base units (contracts)
+    oi_quote: float  # open interest in quote units (USD notional)
+
+
+@dataclass(frozen=True)
 class TradeTick:
     """One public trade print (tick) from an exchange.
 

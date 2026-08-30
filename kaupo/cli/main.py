@@ -192,6 +192,54 @@ def ingest_funding(
     )
 
 
+@ingest_app.command(name="open-interest")
+def ingest_open_interest(
+    pair: PairOpt,
+    days: Annotated[int, typer.Option(min=1)] = 30,
+    start: StartOpt = None,
+    end: EndOpt = None,
+    exchange: ExchangeOpt = "binance",
+    verbose: VerboseOpt = False,
+) -> None:
+    """Download open-interest history for the pair's base asset into Postgres.
+
+    Open interest comes from the Binance USDT-margined perpetual of the base
+    asset (BTC/EUR -> BTC perp), hourly snapshots. Binance serves only ~30
+    days back, so the table is forward-collected: the daily refresh keeps it
+    current and history accumulates. Kraken open interest is not supported.
+    """
+    _setup_logging(verbose)
+    from kaupo.data.binance import BinanceClient
+    from kaupo.data.ingest import backfill_open_interest
+    from kaupo.data.open_interest import OI_EXCHANGE, get_oi_range
+    from kaupo.db.session import get_sessionmaker
+
+    if exchange != OI_EXCHANGE:
+        raise typer.BadParameter(
+            f"open-interest history is only served by {OI_EXCHANGE}; "
+            f"--exchange {exchange} is not supported for open-interest"
+        )
+
+    start_dt, end_dt = _range(days, start, end)
+    p = Pair.parse(pair)
+
+    async def _run() -> tuple[int, datetime | None, datetime | None, int]:
+        sm = get_sessionmaker()
+        async with BinanceClient() as client:
+            total = await backfill_open_interest(client, sm, p.base, start_dt, end_dt)
+        async with sm() as session:
+            first, last, count = await get_oi_range(session, OI_EXCHANGE, p.base)
+        return total, first, last, count
+
+    total, first, last, count = asyncio.run(_run())
+    console.print(f"[green]Ingested {total} open-interest rows[/green] for {p.base} from {OI_EXCHANGE}")
+    if first is None or last is None:
+        return
+    console.print(
+        f"Database coverage: {count} open-interest rows, {first:%Y-%m-%d %H:%M} → {last:%Y-%m-%d %H:%M} UTC"
+    )
+
+
 TRADE_INGEST_MAX_DAYS = 31  # tick volume is large; one run stays bounded
 
 

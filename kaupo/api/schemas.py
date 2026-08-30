@@ -98,6 +98,14 @@ class FundingOut(BaseModel):
     rate: float
 
 
+class OpenInterestOut(BaseModel):
+    exchange: str
+    base_asset: str
+    ts: datetime
+    oi_base: float
+    oi_quote: float
+
+
 class TradeTickOut(BaseModel):
     exchange: str
     pair: str

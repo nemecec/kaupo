@@ -15,6 +15,7 @@ from kaupo.api.schemas import (
     ControlOut,
     EventOut,
     FundingOut,
+    OpenInterestOut,
     OrderflowDailyOut,
     ReportOut,
     TradeTickOut,
@@ -22,6 +23,7 @@ from kaupo.api.schemas import (
 from kaupo.data.book import get_book_snapshots
 from kaupo.data.candles import get_candles
 from kaupo.data.funding import get_funding_rates
+from kaupo.data.open_interest import get_open_interest
 from kaupo.data.orderflow_daily import get_orderflow_daily
 from kaupo.data.trades import get_trade_ticks
 from kaupo.db.models import EventRow
@@ -132,6 +134,41 @@ async def funding(
         limit=limit,
     )
     return [FundingOut(exchange=r.exchange, base_asset=r.base_asset, ts=r.ts, rate=r.rate) for r in rows]
+
+
+@router.get("/open-interest")
+async def open_interest(
+    _: Annotated[Principal, Depends(get_principal)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    pair: str = Query(...),
+    start: datetime = Query(...),
+    end: datetime = Query(...),
+    limit: int = Query(5000, ge=1, le=50_000),
+    exchange: str = Query("binance"),
+) -> list[OpenInterestOut]:
+    """Hourly open-interest snapshots for the pair's base asset. The venue is
+    Binance (the ingest source), not the trade venue — the series tracks
+    market-wide leverage positioning, so it transfers across venues.
+    Forward-collected: history starts when the collector started (Binance
+    serves only ~30 days back)."""
+    try:
+        parsed_pair = Pair.parse(pair)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    rows = await get_open_interest(
+        session,
+        exchange,
+        parsed_pair.base,
+        _aware(start),
+        _aware(end),
+        limit=limit,
+    )
+    return [
+        OpenInterestOut(
+            exchange=r.exchange, base_asset=r.base_asset, ts=r.ts, oi_base=r.oi_base, oi_quote=r.oi_quote
+        )
+        for r in rows
+    ]
 
 
 @router.get("/trades")
