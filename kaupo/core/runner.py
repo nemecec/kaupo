@@ -21,6 +21,7 @@ from kaupo.core.engine import Engine, EngineConfig, RunResult
 from kaupo.core.funding import DbFundingProvider, EmptyFundingProvider, FundingProvider
 from kaupo.core.orderflow import DbOrderFlowProvider
 from kaupo.core.portfolio_engine import PortfolioEngine, PortfolioEngineConfig, joined_steps
+from kaupo.core.positioning import DbFuturesMetricsProvider, DbOpenInterestProvider
 from kaupo.core.recorder import CompositeRecorder, DbRecorder, InMemoryRecorder, RunInfo
 from kaupo.core.resume import prepare_resume
 from kaupo.data.binance import BinanceClient
@@ -274,6 +275,8 @@ async def run_shadow(
         # ticks/book come from the local store (tick ingest cron and the
         # book-collector service keep them fresh; no refresh loop here)
         orderflow=DbOrderFlowProvider(sessionmaker),
+        open_interest=DbOpenInterestProvider(sessionmaker),
+        futures_metrics=DbFuturesMetricsProvider(sessionmaker),
     )
 
     poller = LiveCandlePoller(
@@ -603,6 +606,8 @@ async def run_portfolio_shadow(
         # ticks/book come from the local store (tick ingest cron and the
         # book-collector service keep them fresh; no refresh loop here)
         orderflow=DbOrderFlowProvider(sessionmaker),
+        open_interest=DbOpenInterestProvider(sessionmaker),
+        futures_metrics=DbFuturesMetricsProvider(sessionmaker),
     )
 
     pollers = {

@@ -29,6 +29,8 @@ from kaupo.domain import (
     BookSnapshot,
     Candle,
     FundingRate,
+    FuturesMetricsDaily,
+    OpenInterest,
     OrderflowDaily,
     OrderIntent,
     Pair,
@@ -124,6 +126,29 @@ class StrategyContext(Protocol):
         forward from 2026-08-28, and days before that (or without raw
         coverage) are absent. Empty when no aggregates exist for the pair,
         so strategies must tolerate an empty series.
+        """
+        ...
+
+    def open_interest(self, n: int) -> Sequence[OpenInterest]:
+        """Latest ``n`` hourly open-interest snapshots for the run pair's base asset.
+
+        Point-in-time like ``history``: only snapshots at or before
+        ``clock.now()`` are ever returned. The series is forward-collected
+        since 2026-08-30 (Binance serves only ~30 days back), so absence is
+        normal on older windows: strategies must tolerate an empty series.
+        Advisory signal from the Binance USDT perpetual, never an instrument.
+        """
+        ...
+
+    def futures_metrics_daily(self, n: int) -> Sequence[FuturesMetricsDaily]:
+        """Latest ``n`` daily futures positioning rows for the run pair's base asset.
+
+        One :class:`FuturesMetricsDaily` per UTC day: end-of-day open
+        interest and day-mean long/short + top-trader ratios. Point-in-time
+        like ``history``: only days fully closed at ``clock.now()`` are
+        returned — the in-progress day never leaks. Backfilled from the
+        Binance metrics archive, so history starts at the perp's listing.
+        Empty when no rows exist for the base asset.
         """
         ...
 
@@ -239,6 +264,30 @@ class PortfolioContext(Protocol):
         permanent: they accumulate forward from 2026-08-28, and days before
         that (or without raw coverage) are absent. Empty for pairs outside
         the universe and when no aggregates exist for the pair.
+        """
+        ...
+
+    def open_interest(self, pair: Pair, n: int) -> Sequence[OpenInterest]:
+        """Latest ``n`` hourly open-interest snapshots for ``pair``'s base asset.
+
+        Point-in-time like ``history``: only snapshots at or before
+        ``clock.now()`` are ever returned. The series is forward-collected
+        since 2026-08-30 (Binance serves only ~30 days back), so absence is
+        normal on older windows: strategies must tolerate an empty series.
+        Advisory signal from the Binance USDT perpetual, never an instrument.
+        """
+        ...
+
+    def futures_metrics_daily(self, pair: Pair, n: int) -> Sequence[FuturesMetricsDaily]:
+        """Latest ``n`` daily futures positioning rows for ``pair``'s base asset.
+
+        One :class:`FuturesMetricsDaily` per UTC day: end-of-day open
+        interest and day-mean long/short + top-trader ratios, oldest first.
+        Point-in-time like ``history``: only days fully closed at
+        ``clock.now()`` are returned — the in-progress day never leaks.
+        Backfilled from the Binance metrics archive, so history starts at the
+        perp's listing. Empty for pairs outside the universe and when no
+        rows exist for the base asset.
         """
         ...
 

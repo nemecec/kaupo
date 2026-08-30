@@ -13,9 +13,12 @@ from kaupo.backtest.metrics import compute_metrics
 from kaupo.core.engine import Engine, EngineConfig, RunResult
 from kaupo.core.funding import StaticFundingProvider
 from kaupo.core.orderflow import DbOrderFlowProvider
+from kaupo.core.positioning import StaticFuturesMetricsProvider, StaticOpenInterestProvider
 from kaupo.core.recorder import CompositeRecorder, DbRecorder, InMemoryRecorder, RunInfo
 from kaupo.data.candles import get_candles
 from kaupo.data.funding import FUNDING_EXCHANGE, get_funding_rates
+from kaupo.data.futures_metrics import METRICS_EXCHANGE, get_futures_metrics_daily
+from kaupo.data.open_interest import OI_EXCHANGE, get_open_interest
 from kaupo.db.models import RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Candle, Pair, RunId, RunMode, Timeframe
@@ -100,6 +103,11 @@ async def run_backtest(
         funding_rates = await get_funding_rates(
             session, FUNDING_EXCHANGE, request.pair.base, prefill_start, request.end
         )
+        # positioning series of the same perp, prefilled the same way
+        oi_rows = await get_open_interest(session, OI_EXCHANGE, request.pair.base, prefill_start, request.end)
+        metrics_rows = await get_futures_metrics_daily(
+            session, METRICS_EXCHANGE, request.pair.base, prefill_start.date(), request.end.date()
+        )
     in_range = [c for c in candles if c.ts >= request.start]
     if not in_range:
         raise ValueError(
@@ -137,6 +145,8 @@ async def run_backtest(
             liquidate_end=request.liquidate_end,
         ),
         funding=StaticFundingProvider({request.pair.base: funding_rates}),
+        open_interest=StaticOpenInterestProvider({request.pair.base: oi_rows}),
+        futures_metrics=StaticFuturesMetricsProvider({request.pair.base: metrics_rows}),
         # ticks/book are too voluminous to prefill like funding: the DB
         # provider queries per candle (rows beyond tick retention are simply
         # absent — the strategy sees empty series)

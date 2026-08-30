@@ -95,6 +95,29 @@ async def get_futures_metrics_daily(
     return [_to_domain(row) for row in rows]
 
 
+async def get_latest_futures_metrics_daily(
+    session: AsyncSession, exchange: str, base_asset: str, n: int, before_day: date
+) -> list[FuturesMetricsDaily]:
+    """The ``n`` most recent rows with day strictly before ``before_day``, oldest first.
+
+    The strict bound keeps the in-progress day invisible: only fully closed
+    UTC days are ever served.
+    """
+    stmt = (
+        select(FuturesMetricsDailyRow)
+        .where(
+            FuturesMetricsDailyRow.exchange == exchange,
+            FuturesMetricsDailyRow.base_asset == base_asset,
+            FuturesMetricsDailyRow.day < before_day,
+        )
+        .order_by(FuturesMetricsDailyRow.day.desc())
+        .limit(n)
+    )
+    rows = list((await session.execute(stmt)).scalars())
+    rows.reverse()
+    return [_to_domain(row) for row in rows]
+
+
 async def get_futures_metrics_range(
     session: AsyncSession, exchange: str, base_asset: str
 ) -> tuple[date | None, date | None, int]:

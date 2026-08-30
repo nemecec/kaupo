@@ -21,12 +21,24 @@ from kaupo.core.engine import RunResult
 from kaupo.core.funding import StaticFundingProvider
 from kaupo.core.orderflow import DbOrderFlowProvider
 from kaupo.core.portfolio_engine import PortfolioEngine, PortfolioEngineConfig, joined_steps
+from kaupo.core.positioning import StaticFuturesMetricsProvider, StaticOpenInterestProvider
 from kaupo.core.recorder import CompositeRecorder, DbRecorder, InMemoryRecorder, RunInfo
 from kaupo.data.candles import get_candles
 from kaupo.data.funding import FUNDING_EXCHANGE, get_funding_rates
+from kaupo.data.futures_metrics import METRICS_EXCHANGE, get_futures_metrics_daily
+from kaupo.data.open_interest import OI_EXCHANGE, get_open_interest
 from kaupo.db.models import RunRow
 from kaupo.db.session import sm_scope
-from kaupo.domain import Candle, FundingRate, Pair, RunId, RunMode, Timeframe
+from kaupo.domain import (
+    Candle,
+    FundingRate,
+    FuturesMetricsDaily,
+    OpenInterest,
+    Pair,
+    RunId,
+    RunMode,
+    Timeframe,
+)
 from kaupo.ledger.ledger import Ledger
 from kaupo.risk.manager import RiskConfig, RiskManager
 from kaupo.sdk.protocol import LoadedStrategy, PortfolioStrategyBase
@@ -97,16 +109,23 @@ async def run_portfolio_backtest(
     prefill_start = request.start - timedelta(seconds=request.timeframe.seconds * request.lookback)
     candles_by_pair: dict[Pair, list[Candle]] = {}
     funding_by_base: dict[str, list[FundingRate]] = {}
+    oi_by_base: dict[str, list[OpenInterest]] = {}
+    metrics_by_base: dict[str, list[FuturesMetricsDaily]] = {}
     async with sm_scope(sessionmaker) as session:
         for pair in request.pairs:
             candles_by_pair[pair] = await get_candles(
                 session, pair, request.timeframe, prefill_start, request.end, exchange=request.exchange
             )
-        # funding (Binance perp per base asset) prefilled over the same
-        # window; served point-in-time from memory for determinism
+        # funding and positioning series (Binance perp per base asset)
+        # prefilled over the same window; served point-in-time from memory
+        # for determinism
         for base in sorted({pair.base for pair in request.pairs}):
             funding_by_base[base] = await get_funding_rates(
                 session, FUNDING_EXCHANGE, base, prefill_start, request.end
+            )
+            oi_by_base[base] = await get_open_interest(session, OI_EXCHANGE, base, prefill_start, request.end)
+            metrics_by_base[base] = await get_futures_metrics_daily(
+                session, METRICS_EXCHANGE, base, prefill_start.date(), request.end.date()
             )
     for pair, candles in candles_by_pair.items():
         if not any(c.ts >= request.start for c in candles):
@@ -152,6 +171,8 @@ async def run_portfolio_backtest(
             liquidate_end=request.liquidate_end,
         ),
         funding=StaticFundingProvider(funding_by_base),
+        open_interest=StaticOpenInterestProvider(oi_by_base),
+        futures_metrics=StaticFuturesMetricsProvider(metrics_by_base),
         # ticks/book are too voluminous to prefill like funding: the DB
         # provider queries per candle (rows beyond tick retention are simply
         # absent — the strategy sees empty series)

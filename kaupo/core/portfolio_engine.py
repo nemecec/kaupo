@@ -35,12 +35,20 @@ from decimal import Decimal
 from kaupo.core.engine import STOPPED_EXTERNALLY, RunResult, VirtualClock
 from kaupo.core.funding import EmptyFundingProvider, FundingProvider
 from kaupo.core.orderflow import EmptyOrderFlowProvider, OrderFlowProvider
+from kaupo.core.positioning import (
+    EmptyFuturesMetricsProvider,
+    EmptyOpenInterestProvider,
+    FuturesMetricsProvider,
+    OpenInterestProvider,
+)
 from kaupo.core.recorder import RunInfo, RunRecorder
 from kaupo.domain import (
     BookSnapshot,
     Candle,
     Fill,
     FundingRate,
+    FuturesMetricsDaily,
+    OpenInterest,
     Order,
     OrderflowDaily,
     OrderIntent,
@@ -174,6 +182,22 @@ class _PortfolioContext:
             return []
         return engine._orderflow.tick_flow_daily(key, n, engine.clock.now())
 
+    def open_interest(self, pair: Pair, n: int) -> Sequence[OpenInterest]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        if pair not in engine.history:
+            return []  # outside the universe
+        return engine._open_interest.latest(pair.base, n, engine.clock.now())
+
+    def futures_metrics_daily(self, pair: Pair, n: int) -> Sequence[FuturesMetricsDaily]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        if pair not in engine.history:
+            return []  # outside the universe
+        return engine._futures_metrics.latest(pair.base, n, engine.clock.now())
+
     def positions(self) -> Mapping[Pair, Position]:
         engine = self._engine
         return {pair: pos for pair in engine.config.pairs if (pos := engine.ledger.position(pair)).size != 0}
@@ -198,6 +222,8 @@ class PortfolioEngine:
         control_probe: Callable[[], Awaitable[str | None]] | None = None,
         funding: FundingProvider | None = None,
         orderflow: OrderFlowProvider | None = None,
+        open_interest: OpenInterestProvider | None = None,
+        futures_metrics: FuturesMetricsProvider | None = None,
     ) -> None:
         self.strategy = strategy
         self.venues = dict(venues)
@@ -212,6 +238,10 @@ class PortfolioEngine:
         }
         self._funding = funding if funding is not None else EmptyFundingProvider()
         self._orderflow = orderflow if orderflow is not None else EmptyOrderFlowProvider()
+        self._open_interest = open_interest if open_interest is not None else EmptyOpenInterestProvider()
+        self._futures_metrics = (
+            futures_metrics if futures_metrics is not None else EmptyFuturesMetricsProvider()
+        )
         self.last_closes: dict[Pair, float] = {}  # last known close per pair (stale carry)
         self._last_candle: dict[Pair, Candle] = {}
         self._step_candles: dict[Pair, Candle] = {}
@@ -346,6 +376,8 @@ class PortfolioEngine:
         # 5-6. strategy + risk-filtered intents
         for base in sorted({pair.base for pair in self.config.pairs}):
             await self._funding.update(base, self.clock.now())
+            await self._open_interest.update(base, self.clock.now())
+            await self._futures_metrics.update(base, self.clock.now())
         for pair in self.config.pairs:
             await self._orderflow.update(str(pair), self.clock.now())
         self._append_history(candles)

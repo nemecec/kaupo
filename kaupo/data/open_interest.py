@@ -75,6 +75,25 @@ async def get_open_interest(
     return [_to_domain(row) for row in rows]
 
 
+async def get_latest_open_interest(
+    session: AsyncSession, exchange: str, base_asset: str, n: int, before: datetime
+) -> list[OpenInterest]:
+    """The ``n`` most recent snapshots at or before ``before``, oldest first."""
+    stmt = (
+        select(OpenInterestRow)
+        .where(
+            OpenInterestRow.exchange == exchange,
+            OpenInterestRow.base_asset == base_asset,
+            OpenInterestRow.ts <= before,
+        )
+        .order_by(OpenInterestRow.ts.desc())
+        .limit(n)
+    )
+    rows = list((await session.execute(stmt)).scalars())
+    rows.reverse()
+    return [_to_domain(row) for row in rows]
+
+
 async def get_oi_range(
     session: AsyncSession, exchange: str, base_asset: str
 ) -> tuple[datetime | None, datetime | None, int]:

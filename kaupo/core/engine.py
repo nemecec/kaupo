@@ -23,12 +23,20 @@ from decimal import Decimal
 
 from kaupo.core.funding import EmptyFundingProvider, FundingProvider
 from kaupo.core.orderflow import EmptyOrderFlowProvider, OrderFlowProvider
+from kaupo.core.positioning import (
+    EmptyFuturesMetricsProvider,
+    EmptyOpenInterestProvider,
+    FuturesMetricsProvider,
+    OpenInterestProvider,
+)
 from kaupo.core.recorder import RunInfo, RunRecorder
 from kaupo.domain import (
     BookSnapshot,
     Candle,
     Fill,
     FundingRate,
+    FuturesMetricsDaily,
+    OpenInterest,
     Order,
     OrderflowDaily,
     OrderIntent,
@@ -145,6 +153,18 @@ class _Context:
         engine = self._engine
         return engine._orderflow.tick_flow_daily(str(engine.config.pair), n, engine.clock.now())
 
+    def open_interest(self, n: int) -> Sequence[OpenInterest]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        return engine._open_interest.latest(engine.config.pair.base, n, engine.clock.now())
+
+    def futures_metrics_daily(self, n: int) -> Sequence[FuturesMetricsDaily]:
+        if n <= 0:
+            return []
+        engine = self._engine
+        return engine._futures_metrics.latest(engine.config.pair.base, n, engine.clock.now())
+
     def position(self) -> Position:
         return self._engine.ledger.position(self._engine.config.pair)
 
@@ -168,6 +188,8 @@ class Engine:
         control_probe: Callable[[], Awaitable[str | None]] | None = None,
         funding: FundingProvider | None = None,
         orderflow: OrderFlowProvider | None = None,
+        open_interest: OpenInterestProvider | None = None,
+        futures_metrics: FuturesMetricsProvider | None = None,
     ) -> None:
         self.strategy = strategy
         self.venue = venue
@@ -181,6 +203,10 @@ class Engine:
         self._ctx = _Context(self)
         self._funding = funding if funding is not None else EmptyFundingProvider()
         self._orderflow = orderflow if orderflow is not None else EmptyOrderFlowProvider()
+        self._open_interest = open_interest if open_interest is not None else EmptyOpenInterestProvider()
+        self._futures_metrics = (
+            futures_metrics if futures_metrics is not None else EmptyFuturesMetricsProvider()
+        )
         self._fills = 0
         self._halt_reason = ""
         self._control_probe = control_probe
@@ -296,6 +322,8 @@ class Engine:
         # 5-6. strategy + risk-filtered intents
         await self._funding.update(self.config.pair.base, self.clock.now())
         await self._orderflow.update(str(self.config.pair), self.clock.now())
+        await self._open_interest.update(self.config.pair.base, self.clock.now())
+        await self._futures_metrics.update(self.config.pair.base, self.clock.now())
         self.history.append(candle)
         intents = self.strategy.on_candle(self._ctx)
         for assessment in self.risk.assess(intents, self._risk_state(candle)):
