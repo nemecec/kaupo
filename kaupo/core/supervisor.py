@@ -147,13 +147,13 @@ async def halt_orphan_runs(session: AsyncSession) -> int:
 
     Such rows belong to dead processes (an old shadow container, a crashed
     supervisor) — the same slot-claiming idea as DbRecorder.start, which
-    supersedes stale rows of the same strategy and pair. Matching is
-    mode + strategy + config pair.
+    supersedes stale rows of the same strategy, pair, and timeframe.
+    Matching is mode + strategy + config pair + config timeframe.
     """
     enabled = [
         a for a in await list_assignments(session, enabled_only=True) if a.mode == RunMode.SHADOW.value
     ]
-    slots = {(a.strategy_id, a.pair) for a in enabled}
+    slots = {(a.strategy_id, a.pair, a.timeframe) for a in enabled}
     rows = (
         (
             await session.execute(
@@ -168,7 +168,8 @@ async def halt_orphan_runs(session: AsyncSession) -> int:
     )
     halted = 0
     for row in rows:
-        if (row.strategy_id, (row.config or {}).get("pair")) in slots:
+        config = row.config or {}
+        if (row.strategy_id, config.get("pair"), config.get("timeframe")) in slots:
             continue
         row.status = RunStatus.HALTED.value
         row.ended_at = utc_now()

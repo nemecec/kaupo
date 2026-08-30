@@ -252,7 +252,9 @@ async def prepare_resume(
     orphaned by a dead process shows its supersession and can be resumed.
     """
     async with sm_scope(sessionmaker) as session:
-        await supersede_stale_runs(session, mode=RunMode.SHADOW, strategy_id=strategy_id, pair=pair)
+        await supersede_stale_runs(
+            session, mode=RunMode.SHADOW, strategy_id=strategy_id, pair=pair, timeframe=timeframe
+        )
         stmt = (
             select(RunRow)
             .where(RunRow.mode == RunMode.SHADOW.value, RunRow.ended_at.is_not(None))

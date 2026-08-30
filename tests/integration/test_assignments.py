@@ -54,6 +54,7 @@ def _add_run(
     status: str,
     pair: str = "BTC/EUR",
     strategy_id: str = "regime-switch",
+    timeframe: str = "1h",
 ) -> None:
     session.add(
         RunRow(
@@ -63,7 +64,7 @@ def _add_run(
             strategy_version="v",
             started_at=utc_now(),
             status=status,
-            config={"pair": pair},
+            config={"pair": pair, "timeframe": timeframe},
         )
     )
 
@@ -516,6 +517,31 @@ async def test_halt_orphan_runs(session: AsyncSession) -> None:
     assert rows["orphan-disabled"].status == "halted"
     assert rows["bt"].status == "running"  # other modes untouched
     assert rows["old"].status == "halted"
+
+
+async def test_halt_orphan_runs_distinguishes_timeframes(session: AsyncSession) -> None:
+    """Same strategy and pair on different timeframes are different slots."""
+    await assignments_repo.create_assignment(
+        session, id="a-1h", strategy_id="sma-cross", pair="BTC/EUR", timeframe="1h"
+    )
+    await assignments_repo.create_assignment(
+        session, id="a-4h", strategy_id="sma-cross", pair="BTC/EUR", timeframe="4h"
+    )
+    _add_run(session, "run-1h", "shadow", "running", strategy_id="sma-cross", timeframe="1h")
+    _add_run(session, "run-4h", "shadow", "running", strategy_id="sma-cross", timeframe="4h")
+    # no 1d assignment protects this row
+    _add_run(session, "run-1d", "shadow", "running", strategy_id="sma-cross", timeframe="1d")
+    await session.commit()
+
+    halted = await sup.halt_orphan_runs(session)
+    await session.commit()
+    assert halted == 1
+
+    rows = {r.id: r for r in (await session.execute(select(RunRow))).scalars().all()}
+    assert rows["run-1h"].status == "running"
+    assert rows["run-4h"].status == "running"
+    assert rows["run-1d"].status == "halted"
+    assert rows["run-1d"].metrics == {"halt_reason": "no matching assignment"}
 
 
 # --- supervisor loop (fake exchange and engine) ----------------------------

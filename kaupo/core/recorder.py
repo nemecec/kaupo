@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -40,14 +40,16 @@ async def supersede_stale_runs(
     mode: RunMode,
     strategy_id: str,
     pair: str,
+    timeframe: str,
     exclude_run_id: str | None = None,
 ) -> None:
-    """Halt stale "running" rows of the same strategy and pair.
+    """Halt stale "running" rows of the same strategy, pair, and timeframe.
 
-    Long-running modes have one live process per strategy and pair. Rows
-    still marked "running" for the same strategy and pair belong to dead
-    processes (restarts, deploys) — halt them. Other pairs of the same
-    strategy run unaffected.
+    Long-running modes have one live process per strategy, pair, and
+    timeframe. Rows still marked "running" for the same slot belong to dead
+    processes (restarts, deploys) — halt them. Other pairs and other
+    timeframes of the same strategy run unaffected. Rows without a recorded
+    timeframe (legacy) count as the empty-timeframe slot.
     """
     stmt = (
         update(RunRow)
@@ -55,6 +57,7 @@ async def supersede_stale_runs(
             RunRow.mode == mode.value,
             RunRow.strategy_id == strategy_id,
             RunRow.config["pair"].as_string() == pair,
+            func.coalesce(RunRow.config["timeframe"].as_string(), "") == timeframe,
             RunRow.status == RunStatus.RUNNING.value,
         )
         .values(
@@ -128,12 +131,13 @@ class DbRecorder:
                 )
             )
             if info.mode in (RunMode.SHADOW, RunMode.LIVE):
-                # one live process per strategy and pair: claim the slot
+                # one live process per strategy, pair, and timeframe: claim the slot
                 await supersede_stale_runs(
                     session,
                     mode=info.mode,
                     strategy_id=info.strategy_id,
                     pair=str(info.config.get("pair", "")),
+                    timeframe=str(info.config.get("timeframe", "")),
                     exclude_run_id=self.run_id,
                 )
             await session.commit()

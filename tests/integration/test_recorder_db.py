@@ -255,3 +255,41 @@ async def test_start_halts_stale_same_strategy_shadow_runs(session: AsyncSession
     assert rows[other_pair.run_id].status == "running"  # same strategy, different pair
     assert rows[backtest_same_strategy.run_id].status == "running"
     assert rows[live.run_id].status == "running"
+
+
+async def test_start_supersedes_only_the_same_timeframe_slot(session: AsyncSession) -> None:
+    """Same strategy and pair on different timeframes coexist (kaupo#30): a
+    starting run supersedes only stale rows of its own timeframe slot."""
+    from kaupo.core.recorder import DbRecorder, RunInfo
+    from kaupo.db.models import RunRow
+    from kaupo.domain import RunMode
+
+    sm = get_sessionmaker()
+
+    def info(timeframe: str) -> RunInfo:
+        return RunInfo(
+            mode=RunMode.SHADOW,
+            strategy_id="s1",
+            strategy_version="v",
+            strategy_source_hash="x",
+            config={"pair": "BTC/EUR", "timeframe": timeframe},
+        )
+
+    run_1h = DbRecorder(sm)
+    await run_1h.start(info("1h"))
+    run_4h = DbRecorder(sm)  # different timeframe: must not touch the 1h row
+    await run_4h.start(info("4h"))
+
+    rows = {r.id: r for r in (await session.execute(select(RunRow))).scalars().all()}
+    assert rows[run_1h.run_id].status == "running"
+    assert rows[run_4h.run_id].status == "running"
+
+    successor_1h = DbRecorder(sm)  # same slot: supersedes the first 1h row only
+    await successor_1h.start(info("1h"))
+    session.expire_all()
+
+    rows = {r.id: r for r in (await session.execute(select(RunRow))).scalars().all()}
+    assert rows[run_1h.run_id].status == "halted"
+    assert rows[run_1h.run_id].metrics["halt_reason"] == "superseded by a newer run of the same strategy"
+    assert rows[run_4h.run_id].status == "running"
+    assert rows[successor_1h.run_id].status == "running"
