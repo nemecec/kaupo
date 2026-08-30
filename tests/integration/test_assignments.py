@@ -256,6 +256,29 @@ async def test_api_list_shows_the_matching_live_run(client: AsyncClient, session
     assert rows[0]["run_id"] == "run-1"
 
 
+async def test_api_list_links_same_pair_runs_by_timeframe(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """Same strategy and pair on two timeframes: each assignment gets its own run."""
+    await client.post(
+        "/api/v1/assignments",
+        json={"id": "a-1h", "strategy_id": "regime-switch", "pair": "BTC/EUR", "timeframe": "1h"},
+    )
+    await client.post(
+        "/api/v1/assignments",
+        json={"id": "a-4h", "strategy_id": "regime-switch", "pair": "BTC/EUR", "timeframe": "4h"},
+    )
+    _add_run(session, "run-1h", "shadow", "running", timeframe="1h")
+    _add_run(session, "run-4h", "shadow", "running", timeframe="4h")
+    await session.commit()
+
+    r = await client.get("/api/v1/assignments")
+    assert r.status_code == 200
+    rows = {row["id"]: row for row in r.json()}
+    assert rows["a-1h"]["run_id"] == "run-1h"
+    assert rows["a-4h"]["run_id"] == "run-4h"
+
+
 async def test_api_create_conflict(client: AsyncClient) -> None:
     payload = {"id": "a1", "strategy_id": "regime-switch", "pair": "BTC/EUR", "timeframe": "1h"}
     assert (await client.post("/api/v1/assignments", json=payload)).status_code == 201

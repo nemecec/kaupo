@@ -267,6 +267,7 @@ async def prepare_resume(
             stmt = stmt.where(
                 RunRow.strategy_id == strategy_id,
                 RunRow.config["pair"].as_string() == pair,
+                RunRow.config["timeframe"].as_string() == timeframe,
             )
         predecessor = (await session.execute(stmt)).scalars().first()
         if predecessor is None:

@@ -19,19 +19,25 @@ from kaupo.sdk.loader import load_strategies
 router = APIRouter(prefix="/api/v1/assignments", tags=["assignments"])
 
 
-async def _live_runs(session: AsyncSession) -> dict[tuple[str, str, str], str]:
-    """Running runs keyed by (mode, strategy, config pair) → run id."""
+async def _live_runs(session: AsyncSession) -> dict[tuple[str, str, str, str], str]:
+    """Running runs keyed by (mode, strategy, config pair, config timeframe) → run id."""
     rows = (
         (await session.execute(select(RunRow).where(RunRow.status == RunStatus.RUNNING.value)))
         .scalars()
         .all()
     )
     return {
-        (row.mode, row.strategy_id or "", str((row.config or {}).get("pair", ""))): row.id for row in rows
+        (
+            row.mode,
+            row.strategy_id or "",
+            str((row.config or {}).get("pair", "")),
+            str((row.config or {}).get("timeframe", "")),
+        ): row.id
+        for row in rows
     }
 
 
-def _assignment_out(assignment: Assignment, live: dict[tuple[str, str, str], str]) -> AssignmentOut:
+def _assignment_out(assignment: Assignment, live: dict[tuple[str, str, str, str], str]) -> AssignmentOut:
     return AssignmentOut(
         id=assignment.id,
         strategy_id=assignment.strategy_id,
@@ -44,7 +50,9 @@ def _assignment_out(assignment: Assignment, live: dict[tuple[str, str, str], str
         starting_cash=assignment.starting_cash,
         created_at=assignment.created_at,
         updated_at=assignment.updated_at,
-        run_id=live.get((assignment.mode, assignment.strategy_id, assignment.pair)),
+        run_id=live.get(
+            (assignment.mode, assignment.strategy_id, assignment.pair, assignment.timeframe)
+        ),
     )
 
 

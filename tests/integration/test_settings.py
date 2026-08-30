@@ -46,6 +46,7 @@ def _add_run(
     status: str,
     pair: str = "BTC/EUR",
     strategy_id: str = "regime-switch",
+    timeframe: str = "1h",
 ) -> None:
     session.add(
         RunRow(
@@ -55,7 +56,7 @@ def _add_run(
             strategy_version="v",
             started_at=utc_now(),
             status=status,
-            config={"pair": pair},
+            config={"pair": pair, "timeframe": timeframe},
         )
     )
 
@@ -198,6 +199,8 @@ async def test_switch_event_targets_only_runs_matching_current_settings(
     await settings_repo.upsert_settings(session, {"shadow_pair": "BTC/EUR"})
     _add_run(session, "primary", "shadow", "running", pair="BTC/EUR")
     _add_run(session, "side-run", "shadow", "running", pair="SOL/EUR")
+    # same pair on another timeframe is a different slot: also untouched
+    _add_run(session, "side-tf", "shadow", "running", pair="BTC/EUR", timeframe="4h")
     await session.commit()
 
     r = await client.put("/api/v1/settings", json={"shadow_strategy": "regime-switch"})

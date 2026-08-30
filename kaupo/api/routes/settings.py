@@ -59,11 +59,12 @@ async def _notify_shadow_runs(
 ) -> None:
     """Write a 'switch' control event for each shadow run matching the CURRENT settings.
 
-    Only runs whose strategy and pair equal the pre-change settings are
-    targeted: static side runs (--no-config-from-db) on other pairs keep
-    running. The engine treats 'switch' as a graceful halt; the container
-    restart policy then starts a new process, which reads the new settings.
-    Backtest (and future live) runs are never targeted.
+    Only runs whose strategy, pair, and timeframe equal the pre-change
+    settings are targeted: static side runs (--no-config-from-db) on other
+    pairs or timeframes keep running. The engine treats 'switch' as a
+    graceful halt; the container restart policy then starts a new process,
+    which reads the new settings. Backtest (and future live) runs are never
+    targeted.
     """
     strategy = str(
         current.get(
@@ -77,6 +78,12 @@ async def _notify_shadow_runs(
             settings_repo.SHADOW_DEFAULTS[settings_repo.SHADOW_PAIR_KEY],
         )
     )
+    timeframe = str(
+        current.get(
+            settings_repo.SHADOW_TIMEFRAME_KEY,
+            settings_repo.SHADOW_DEFAULTS[settings_repo.SHADOW_TIMEFRAME_KEY],
+        )
+    )
     runs = (
         (
             await session.execute(
@@ -85,6 +92,7 @@ async def _notify_shadow_runs(
                     RunRow.status == RunStatus.RUNNING.value,
                     RunRow.strategy_id == strategy,
                     RunRow.config["pair"].as_string() == pair,
+                    RunRow.config["timeframe"].as_string() == timeframe,
                 )
             )
         )
