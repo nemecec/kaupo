@@ -1,0 +1,173 @@
+"""Binance public data archive (data.binance.vision): listing, download, parsers.
+
+The archive publishes zipped CSVs the REST API never serves deep history
+for: spot aggTrades (every public trade, years back) and USD-M futures
+daily metrics (open interest and long/short ratios). Pure stdlib; no ccxt,
+no database. The CLI turns the parsed rows into storage upserts.
+"""
+
+import csv
+import io
+import logging
+import re
+import xml.etree.ElementTree as ET
+import zipfile
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
+
+import httpx
+
+from kaupo.domain import FuturesMetricsDaily
+
+log = logging.getLogger(__name__)
+
+ARCHIVE_BASE = "https://data.binance.vision"
+LISTING_URL = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision/"
+HTTP_TIMEOUT_SECONDS = 120
+
+_S3_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+
+
+def spot_aggtrades_prefix(symbol: str, granularity: str) -> str:
+    """Archive key prefix for spot aggTrades of a plain symbol (e.g. "BTCEUR")."""
+    return f"data/spot/{granularity}/aggTrades/{symbol}/"
+
+
+def futures_metrics_prefix(symbol: str) -> str:
+    """Archive key prefix for USD-M futures daily metrics (e.g. "BTCUSDT")."""
+    return f"data/futures/um/daily/metrics/{symbol}/"
+
+
+def list_archive_keys(client: httpx.Client, prefix: str) -> list[str]:
+    """All keys under an archive prefix (S3 listing), .CHECKSUM files excluded."""
+    keys: list[str] = []
+    marker = ""
+    while True:
+        params: dict[str, str | int] = {"prefix": prefix, "max-keys": 1000}
+        if marker:
+            params["marker"] = marker
+        resp = client.get(LISTING_URL, params=params)
+        resp.raise_for_status()
+        # stdlib etree does not resolve external entities; the source is the
+        # fixed S3 listing endpoint over TLS
+        root = ET.fromstring(resp.content)  # noqa: S314
+        page = [k.text or "" for k in root.iter(f"{_S3_NS}Key")]
+        keys.extend(page)
+        if root.find(f"{_S3_NS}IsTruncated").text != "true":  # type: ignore[union-attr]
+            break
+        marker = page[-1]
+    return [k for k in keys if not k.endswith(".CHECKSUM")]
+
+
+def download(client: httpx.Client, url: str) -> bytes:
+    """One archive file as bytes."""
+    log.info("Downloading %s", url)
+    resp = client.get(url)
+    resp.raise_for_status()
+    return resp.content
+
+
+_KEY_DATE = re.compile(r"-(\d{4}-\d{2}(?:-\d{2})?)\.zip$")
+
+
+def key_date(key: str) -> date | None:
+    """The date encoded in an archive file name (monthly keys give month precision)."""
+    m = _KEY_DATE.search(key)
+    if m is None:
+        return None
+    parts = [int(p) for p in m.group(1).split("-")]
+    return date(parts[0], parts[1], parts[2] if len(parts) == 3 else 1)
+
+
+@dataclass
+class TradeDayAgg:
+    """Mutable per-day accumulator for parsed aggTrades rows."""
+
+    trade_count: int = 0
+    buy_count: int = 0
+    sell_count: int = 0
+    buy_volume: float = 0.0
+    sell_volume: float = 0.0
+    max_trade_size: float = 0.0
+
+
+def parse_aggtrades(zip_bytes: bytes) -> tuple[dict[date, TradeDayAgg], int]:
+    """Aggregate one aggTrades zip (monthly or daily) into per-UTC-day buckets.
+
+    Returns (day buckets, malformed row count). Verified layout (2024 files,
+    no header): agg_trade_id, price, quantity, first_trade_id, last_trade_id,
+    timestamp_ms, is_buyer_maker, is_best_match. Newer files carry a header
+    row; it is detected and skipped. The buyer-is-maker flag maps to taker
+    side: True means the seller was the aggressor.
+    """
+    days: dict[date, TradeDayAgg] = {}
+    malformed = 0
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        names = [n for n in zf.namelist() if n.endswith(".csv")]
+        if len(names) != 1:
+            raise ValueError(f"expected exactly one CSV in the archive, got {names}")
+        with zf.open(names[0]) as fh:
+            reader = csv.reader(io.TextIOWrapper(fh, encoding="utf-8"))
+            for row in reader:
+                if not row or not row[0].strip().isdigit():
+                    continue  # header row or blank line
+                try:
+                    qty = float(row[2])
+                    ts_ms = int(row[5])
+                    maker_is_buyer = row[6].strip().lower() == "true"
+                except (IndexError, ValueError):
+                    malformed += 1
+                    continue
+                if ts_ms <= 0:
+                    malformed += 1
+                    continue
+                day = _day_of_ms(ts_ms)
+                agg = days.setdefault(day, TradeDayAgg())
+                agg.trade_count += 1
+                if maker_is_buyer:  # buyer is the maker: the seller is the taker
+                    agg.sell_count += 1
+                    agg.sell_volume += qty
+                else:
+                    agg.buy_count += 1
+                    agg.buy_volume += qty
+                if qty > agg.max_trade_size:
+                    agg.max_trade_size = qty
+    return days, malformed
+
+
+def parse_metrics_daily(zip_bytes: bytes, exchange: str, base_asset: str) -> FuturesMetricsDaily:
+    """Aggregate one futures metrics daily zip (5-minute rows) into one day row.
+
+    Open interest is the end-of-day snapshot (last row); the long/short
+    ratios are day means. Verified layout carries a header row; columns are
+    resolved by name.
+    """
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        names = [n for n in zf.namelist() if n.endswith(".csv")]
+        if len(names) != 1:
+            raise ValueError(f"expected exactly one CSV in the archive, got {names}")
+        with zf.open(names[0]) as fh:
+            rows = list(csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8")))
+    if not rows:
+        raise ValueError("metrics archive has no data rows")
+    day = datetime.strptime(rows[0]["create_time"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC).date()
+    last = rows[-1]
+
+    def mean(column: str) -> float:
+        return sum(float(r[column]) for r in rows) / len(rows)
+
+    return FuturesMetricsDaily(
+        exchange=exchange,
+        base_asset=base_asset,
+        day=day,
+        oi_base=float(last["sum_open_interest"]),
+        oi_quote=float(last["sum_open_interest_value"]),
+        count_toptrader_ls_ratio=mean("count_toptrader_long_short_ratio"),
+        sum_toptrader_ls_ratio=mean("sum_toptrader_long_short_ratio"),
+        count_ls_ratio=mean("count_long_short_ratio"),
+        taker_ls_vol_ratio=mean("sum_taker_long_short_vol_ratio"),
+    )
+
+
+def _day_of_ms(ts_ms: int) -> date:
+    return datetime.fromtimestamp(ts_ms / 1000, tz=UTC).date()

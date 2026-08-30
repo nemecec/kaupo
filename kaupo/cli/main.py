@@ -240,6 +240,169 @@ def ingest_open_interest(
     )
 
 
+@ingest_app.command(name="archive")
+def ingest_archive(
+    pair: PairOpt,
+    source: Annotated[str, typer.Option(help="trades, metrics, or all")] = "all",
+    days: Annotated[int, typer.Option(min=1)] = 30,
+    start: StartOpt = None,
+    end: EndOpt = None,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Backfill from the Binance public archive (data.binance.vision).
+
+    trades: spot aggTrades zipped CSVs, aggregated to daily order-flow rows
+    (exchange "binance" in orderflow_daily; the book fields stay empty —
+    the archive has no spot book history). metrics: USD-M perp daily metrics
+    (open interest, long/short ratios) into futures_metrics_daily. Monthly
+    files serve completed months, daily files the current one. Idempotent;
+    safe for both the deep backfill and the daily top-up (--days 3).
+    """
+    _setup_logging(verbose)
+    import httpx
+
+    from kaupo.data import binance_archive
+    from kaupo.data.futures_metrics import (
+        METRICS_EXCHANGE,
+        get_futures_metrics_range,
+        upsert_futures_metrics_daily,
+    )
+    from kaupo.data.orderflow_daily import get_latest_orderflow_day, upsert_orderflow_daily
+    from kaupo.db.session import get_sessionmaker
+    from kaupo.domain import FuturesMetricsDaily, OrderflowDaily
+
+    if source not in ("all", "trades", "metrics"):
+        raise typer.BadParameter("--source must be trades, metrics, or all")
+
+    start_dt, end_dt = _range(days, start, end)
+    start_day, end_day = start_dt.date(), end_dt.date()
+    p = Pair.parse(pair)
+    spot_symbol = f"{p.base}{p.quote}"
+    perp_symbol = f"{p.base}USDT"
+    failures = 0
+    http = httpx.Client(timeout=binance_archive.HTTP_TIMEOUT_SECONDS)
+
+    def _merge(
+        target: dict[date, binance_archive.TradeDayAgg], new: dict[date, binance_archive.TradeDayAgg]
+    ) -> None:
+        for day, agg in new.items():
+            old = target.get(day)
+            if old is None:
+                target[day] = agg
+                continue
+            old.trade_count += agg.trade_count
+            old.buy_count += agg.buy_count
+            old.sell_count += agg.sell_count
+            old.buy_volume += agg.buy_volume
+            old.sell_volume += agg.sell_volume
+            old.max_trade_size = max(old.max_trade_size, agg.max_trade_size)
+
+    trade_days: dict[date, binance_archive.TradeDayAgg] = {}
+    if source in ("all", "trades"):
+        monthly = [
+            k
+            for k in binance_archive.list_archive_keys(
+                http, binance_archive.spot_aggtrades_prefix(spot_symbol, "monthly")
+            )
+            if (d := binance_archive.key_date(k)) is not None and start_day <= d < end_day
+        ]
+        covered_months = set()
+        for k in monthly:
+            kd = binance_archive.key_date(k)
+            assert kd is not None  # the filter above guarantees a date
+            covered_months.add((kd.year, kd.month))
+        daily = [
+            k
+            for k in binance_archive.list_archive_keys(
+                http, binance_archive.spot_aggtrades_prefix(spot_symbol, "daily")
+            )
+            if (d := binance_archive.key_date(k)) is not None
+            and start_day <= d < end_day
+            and (d.year, d.month) not in covered_months
+        ]
+        for key in sorted(monthly + daily):
+            url = f"{binance_archive.ARCHIVE_BASE}/{key}"
+            try:
+                file_days, malformed = binance_archive.parse_aggtrades(binance_archive.download(http, url))
+            except Exception as exc:
+                console.print(f"[red]FAILED {key}: {exc}[/red]")
+                failures += 1
+                continue
+            trades = sum(a.trade_count for a in file_days.values())
+            console.print(
+                f"{key.rsplit('/', 1)[-1]}: {len(file_days)} days, {trades} trades, {malformed} malformed"
+            )
+            _merge(trade_days, file_days)
+
+    metric_rows: list[FuturesMetricsDaily] = []
+    if source in ("all", "metrics"):
+        keys = [
+            k
+            for k in binance_archive.list_archive_keys(
+                http, binance_archive.futures_metrics_prefix(perp_symbol)
+            )
+            if (d := binance_archive.key_date(k)) is not None and start_day <= d < end_day
+        ]
+        for key in sorted(keys):
+            url = f"{binance_archive.ARCHIVE_BASE}/{key}"
+            try:
+                metric_rows.append(
+                    binance_archive.parse_metrics_daily(
+                        binance_archive.download(http, url), METRICS_EXCHANGE, p.base
+                    )
+                )
+            except Exception as exc:
+                console.print(f"[red]FAILED {key}: {exc}[/red]")
+                failures += 1
+                continue
+        if keys:
+            console.print(f"metrics: {len(metric_rows)} day rows for {p.base}")
+
+    orderflow_rows = [
+        OrderflowDaily(
+            exchange="binance",  # the archive venue; Kraken rows stay the venue-true ones
+            pair=str(p),
+            day=day,
+            trade_count=agg.trade_count,
+            buy_count=agg.buy_count,
+            sell_count=agg.sell_count,
+            buy_volume=agg.buy_volume,
+            sell_volume=agg.sell_volume,
+            max_trade_size=agg.max_trade_size,
+            book_snapshots=0,
+            spread_mean_bps=None,
+            spread_max_bps=None,
+        )
+        for day, agg in sorted(trade_days.items())
+    ]
+
+    async def _store() -> tuple[date | None, date | None, date | None, int]:
+        sm = get_sessionmaker()
+        async with sm() as session:
+            if orderflow_rows:
+                await upsert_orderflow_daily(session, orderflow_rows)
+            if metric_rows:
+                await upsert_futures_metrics_daily(session, metric_rows)
+            await session.commit()
+            latest_of = await get_latest_orderflow_day(session, "binance", str(p))
+            fm_first, fm_last, fm_count = await get_futures_metrics_range(session, METRICS_EXCHANGE, p.base)
+        return latest_of, fm_first, fm_last, fm_count
+
+    latest_of, fm_first, fm_last, fm_count = asyncio.run(_store())
+    if orderflow_rows:
+        console.print(
+            f"[green]Ingested {len(orderflow_rows)} order-flow day rows[/green] for {p} from binance"
+            f" (latest in database: {latest_of})"
+        )
+    if metric_rows:
+        console.print(
+            f"[green]Ingested {len(metric_rows)} futures-metrics day rows[/green] for {p.base};"
+            f" database coverage: {fm_count} rows, {fm_first} → {fm_last}"
+        )
+    if failures:
+        raise typer.Exit(1)
+
+
 TRADE_INGEST_MAX_DAYS = 31  # tick volume is large; one run stays bounded
 
 

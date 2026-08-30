@@ -106,6 +106,18 @@ class OpenInterestOut(BaseModel):
     oi_quote: float
 
 
+class FuturesMetricsDailyOut(BaseModel):
+    exchange: str
+    base_asset: str
+    day: date
+    oi_base: float
+    oi_quote: float
+    count_toptrader_ls_ratio: float
+    sum_toptrader_ls_ratio: float
+    count_ls_ratio: float
+    taker_ls_vol_ratio: float
+
+
 class TradeTickOut(BaseModel):
     exchange: str
     pair: str

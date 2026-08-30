@@ -59,6 +59,26 @@ class OpenInterestRow(Base):
     oi_quote: Mapped[float]
 
 
+class FuturesMetricsDailyRow(Base):
+    """Daily futures positioning metrics, keyed by BASE ASSET (e.g. "BTC").
+
+    Backfilled from the Binance USD-M perp metrics archive (deep history)
+    and topped up daily. Advisory positioning signal, never an instrument.
+    """
+
+    __tablename__ = "futures_metrics_daily"
+
+    exchange: Mapped[str] = mapped_column(String(20), primary_key=True)
+    base_asset: Mapped[str] = mapped_column(String(20), primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    oi_base: Mapped[float]
+    oi_quote: Mapped[float]
+    count_toptrader_ls_ratio: Mapped[float]
+    sum_toptrader_ls_ratio: Mapped[float]
+    count_ls_ratio: Mapped[float]
+    taker_ls_vol_ratio: Mapped[float]
+
+
 class TradeTickRow(Base):
     """Public trade prints (order flow), keyed by the full tick tuple.
 

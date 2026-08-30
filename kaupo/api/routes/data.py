@@ -15,6 +15,7 @@ from kaupo.api.schemas import (
     ControlOut,
     EventOut,
     FundingOut,
+    FuturesMetricsDailyOut,
     OpenInterestOut,
     OrderflowDailyOut,
     ReportOut,
@@ -23,6 +24,7 @@ from kaupo.api.schemas import (
 from kaupo.data.book import get_book_snapshots
 from kaupo.data.candles import get_candles
 from kaupo.data.funding import get_funding_rates
+from kaupo.data.futures_metrics import get_futures_metrics_daily
 from kaupo.data.open_interest import get_open_interest
 from kaupo.data.orderflow_daily import get_orderflow_daily
 from kaupo.data.trades import get_trade_ticks
@@ -278,6 +280,41 @@ async def orderflow_daily(
             book_snapshots=r.book_snapshots,
             spread_mean_bps=r.spread_mean_bps,
             spread_max_bps=r.spread_max_bps,
+        )
+        for r in rows
+    ]
+
+
+@router.get("/futures-metrics/daily")
+async def futures_metrics_daily(
+    _: Annotated[Principal, Depends(get_principal)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    pair: str = Query(...),
+    start: date = Query(...),
+    end: date = Query(...),
+    limit: int = Query(5000, ge=1, le=50_000),
+    exchange: str = Query("binance"),
+) -> list[FuturesMetricsDailyOut]:
+    """Daily futures positioning metrics for the pair's base asset, ascending,
+    with day in [start, end). Open interest is the end-of-day snapshot; the
+    long/short ratios are day means. Backfilled from the Binance USD-M perp
+    metrics archive, so history runs years deep (per-perp listing date)."""
+    try:
+        parsed_pair = Pair.parse(pair)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    rows = await get_futures_metrics_daily(session, exchange, parsed_pair.base, start, end, limit=limit)
+    return [
+        FuturesMetricsDailyOut(
+            exchange=r.exchange,
+            base_asset=r.base_asset,
+            day=r.day,
+            oi_base=r.oi_base,
+            oi_quote=r.oi_quote,
+            count_toptrader_ls_ratio=r.count_toptrader_ls_ratio,
+            sum_toptrader_ls_ratio=r.sum_toptrader_ls_ratio,
+            count_ls_ratio=r.count_ls_ratio,
+            taker_ls_vol_ratio=r.taker_ls_vol_ratio,
         )
         for r in rows
     ]

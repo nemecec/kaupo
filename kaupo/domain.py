@@ -200,6 +200,27 @@ class OrderflowDaily:
     spread_max_bps: float | None  # max of the same; both null when book_snapshots is 0
 
 
+@dataclass(frozen=True)
+class FuturesMetricsDaily:
+    """Daily futures positioning metrics of one base asset (one UTC day).
+
+    Aggregated from the Binance USD-M perp metrics archive (5-minute rows):
+    open interest is the end-of-day snapshot, the long/short ratios are day
+    means. Tracks market-wide leverage positioning (advisory signal, never a
+    traded instrument). Never pruned.
+    """
+
+    exchange: str
+    base_asset: str  # e.g. "BTC" (the USDT perp's base)
+    day: date  # the UTC day the row aggregates
+    oi_base: float  # end-of-day open interest in base units
+    oi_quote: float  # end-of-day open interest in USD notional
+    count_toptrader_ls_ratio: float  # day mean of top-trader accounts long/short ratio
+    sum_toptrader_ls_ratio: float  # day mean of top-trader positions long/short ratio
+    count_ls_ratio: float  # day mean of all-accounts long/short ratio
+    taker_ls_vol_ratio: float  # day mean of taker buy/sell volume ratio
+
+
 class Side(enum.Enum):
     BUY = "buy"
     SELL = "sell"

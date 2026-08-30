@@ -52,6 +52,14 @@ for pair in $PAIRS; do
     fail=1
   fi
 done
+# archive top-up: recent days of binance order-flow aggregates and futures
+# metrics (deep history stays from the one-off backfill; idempotent upserts)
+for pair in $PAIRS; do
+  if ! compose kaupo ingest archive --pair "$pair" --days 3; then
+    echo "FAILED: archive $pair" >&2
+    fail=1
+  fi
+done
 
 # defaults cover every pair with raw order-flow rows, yesterday (UTC)
 if ! compose kaupo ingest orderflow-rollup; then
