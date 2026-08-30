@@ -60,15 +60,28 @@ def test_parse_aggtrades_skips_a_header_row() -> None:
     assert days[date(2024, 1, 15)].trade_count == 3
 
 
-def test_parse_aggtrades_rejects_multi_csv() -> None:
+def test_parse_aggtrades_picks_the_root_csv_among_fsx_duplicates() -> None:
+    # real shape of the 2021-12 monthly zips: the data CSV plus a duplicate
+    # under an fsx-data/... path
+    buf = io.BytesIO()
+    row = f"101,100.0,1.5,1,2,{ms('2021-12-15', '00:00:01')},False,True"
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("fsx-data/collector_data/data/spot/monthly/aggTrades/BTCEUR/dup.csv", "9,9,9,9,9,9,9,9")
+        zf.writestr("BTCEUR-aggTrades-2021-12.csv", row)
+    days, malformed = parse_aggtrades(buf.getvalue())
+    assert list(days) == [date(2021, 12, 15)]
+    assert malformed == 0
+
+
+def test_parse_aggtrades_rejects_ambiguous_multi_csv() -> None:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("a.csv", "x")
-        zf.writestr("b.csv", "y")
+        zf.writestr("nested/a.csv", "x")
+        zf.writestr("nested/b.csv", "y")
     try:
         parse_aggtrades(buf.getvalue())
     except ValueError as exc:
-        assert "exactly one CSV" in str(exc)
+        assert "cannot pick a CSV" in str(exc)
     else:
         raise AssertionError("expected ValueError")
 

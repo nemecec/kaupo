@@ -102,36 +102,32 @@ def parse_aggtrades(zip_bytes: bytes) -> tuple[dict[date, TradeDayAgg], int]:
     """
     days: dict[date, TradeDayAgg] = {}
     malformed = 0
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        names = [n for n in zf.namelist() if n.endswith(".csv")]
-        if len(names) != 1:
-            raise ValueError(f"expected exactly one CSV in the archive, got {names}")
-        with zf.open(names[0]) as fh:
-            reader = csv.reader(io.TextIOWrapper(fh, encoding="utf-8"))
-            for row in reader:
-                if not row or not row[0].strip().isdigit():
-                    continue  # header row or blank line
-                try:
-                    qty = float(row[2])
-                    ts_ms = int(row[5])
-                    maker_is_buyer = row[6].strip().lower() == "true"
-                except (IndexError, ValueError):
-                    malformed += 1
-                    continue
-                if ts_ms <= 0:
-                    malformed += 1
-                    continue
-                day = _day_of_ts(ts_ms)
-                agg = days.setdefault(day, TradeDayAgg())
-                agg.trade_count += 1
-                if maker_is_buyer:  # buyer is the maker: the seller is the taker
-                    agg.sell_count += 1
-                    agg.sell_volume += qty
-                else:
-                    agg.buy_count += 1
-                    agg.buy_volume += qty
-                if qty > agg.max_trade_size:
-                    agg.max_trade_size = qty
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf, zf.open(_pick_csv(zf)) as fh:
+        reader = csv.reader(io.TextIOWrapper(fh, encoding="utf-8"))
+        for row in reader:
+            if not row or not row[0].strip().isdigit():
+                continue  # header row or blank line
+            try:
+                qty = float(row[2])
+                ts_ms = int(row[5])
+                maker_is_buyer = row[6].strip().lower() == "true"
+            except (IndexError, ValueError):
+                malformed += 1
+                continue
+            if ts_ms <= 0:
+                malformed += 1
+                continue
+            day = _day_of_ts(ts_ms)
+            agg = days.setdefault(day, TradeDayAgg())
+            agg.trade_count += 1
+            if maker_is_buyer:  # buyer is the maker: the seller is the taker
+                agg.sell_count += 1
+                agg.sell_volume += qty
+            else:
+                agg.buy_count += 1
+                agg.buy_volume += qty
+            if qty > agg.max_trade_size:
+                agg.max_trade_size = qty
     return days, malformed
 
 
@@ -145,12 +141,8 @@ def parse_metrics_daily(zip_bytes: bytes, exchange: str, base_asset: str) -> Fut
     rows with a blank taker ratio. A column with no usable value at all
     fails the file.
     """
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        names = [n for n in zf.namelist() if n.endswith(".csv")]
-        if len(names) != 1:
-            raise ValueError(f"expected exactly one CSV in the archive, got {names}")
-        with zf.open(names[0]) as fh:
-            raw = list(csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8")))
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf, zf.open(_pick_csv(zf)) as fh:
+        raw = list(csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8")))
     if not raw:
         raise ValueError("metrics archive has no data rows")
     # some files carry duplicated rows; the last occurrence wins
@@ -201,6 +193,22 @@ def parse_metrics_daily(zip_bytes: bytes, exchange: str, base_asset: str) -> Fut
 
 def _mean_or_none(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
+
+
+def _pick_csv(zf: zipfile.ZipFile) -> str:
+    """The data member of an archive zip.
+
+    Some zips carry an extra duplicate under an fsx-data/... path (a
+    leftover of Binance's storage migration). The canonical member is the
+    root-level CSV; anything else ambiguous is an error.
+    """
+    names = [n for n in zf.namelist() if n.endswith(".csv")]
+    root = [n for n in names if "/" not in n]
+    if len(root) == 1:
+        return root[0]
+    if len(names) == 1:
+        return names[0]
+    raise ValueError(f"cannot pick a CSV in the archive, got {names}")
 
 
 def _day_of_ts(ts: int) -> date:
