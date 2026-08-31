@@ -71,6 +71,8 @@ def build_backtest_request(
     if body.pairs is not None:
         if not loaded.is_portfolio:
             raise ValueError(f"strategy {body.strategy!r} is not a portfolio strategy; pass pair")
+        if body.instrument == "perp":
+            raise ValueError("instrument 'perp' is single-pair only for now; pass pair")
         return PortfolioBacktestRequest(
             strategy=loaded,
             params=body.params,
@@ -94,5 +96,6 @@ def build_backtest_request(
         end=end,
         starting_cash=body.starting_cash,
         exchange=body.exchange,
+        instrument=body.instrument,
         risk=risk,
     )

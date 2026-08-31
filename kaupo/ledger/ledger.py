@@ -46,9 +46,11 @@ class Ledger:
         ts: datetime,
         *,
         positions: Mapping[Pair, Position] | None = None,
+        perp: bool = False,
     ) -> None:
         self._quote = quote_asset
         self._cash = _dec(starting_cash)
+        self._perp = perp
         self._positions: dict[Pair, Position] = {
             pair: Position(pair=pos.pair, size=pos.size, avg_entry=pos.avg_entry)
             for pair, pos in (positions or {}).items()
@@ -102,7 +104,9 @@ class Ledger:
         return Position(pair=Pair(base=base_asset, quote=self._quote))
 
     def apply_fill(self, fill: Fill) -> Decimal:
-        """Apply a fill; returns realized PnL (nonzero only on closing sells)."""
+        """Apply a fill; returns realized PnL (nonzero only on closing trades)."""
+        if self._perp:
+            return self._apply_fill_perp(fill)
         quote_amount = _dec(fill.price) * _dec(fill.size)
         fee = _dec(fill.fee)
         pos = self._positions.get(fill.pair, Position(pair=fill.pair))
@@ -139,6 +143,81 @@ class Ledger:
             self._record(fill.ts, fill.pair.base, -_dec(fill.size), "trade", fill.order_id)
 
         return realized
+
+    def _apply_fill_perp(self, fill: Fill, *, force: bool = False) -> Decimal:
+        """Perp fill: positions may go negative (short), flips are one fill.
+
+        Cash moves spot-style (sells add proceeds, buys pay cost); equity
+        stays exact for both directions because position value is signed.
+        Cost basis for shorts is the effective sell price (entry fee
+        included), so realized PnL covers both sides' fees. ``force`` skips
+        the cash check — the venue's liquidation fill executes regardless
+        (exchange insurance-fund semantics; cash may dip slightly negative).
+        """
+        quote_amount = _dec(fill.price) * _dec(fill.size)
+        fee = _dec(fill.fee)
+        pos = self._positions.get(fill.pair, Position(pair=fill.pair))
+        realized = Decimal(0)
+        remaining = _dec(fill.size)
+        total = _dec(fill.size)
+
+        if fill.side is Side.SELL:
+            self._cash += quote_amount - fee
+            if _dec(pos.size) > 0:  # close long first
+                closing = min(remaining, _dec(pos.size))
+                realized += closing * (_dec(fill.price) - _dec(pos.avg_entry)) - fee * (closing / total)
+                pos.size = float(_dec(pos.size) - closing)
+                remaining -= closing
+                if pos.size == 0:
+                    pos.avg_entry = 0.0
+            if remaining > 0:  # open or add to the short
+                open_fee = fee * (remaining / total)
+                old = abs(_dec(pos.size))
+                new_size = old + remaining
+                # a short's cost basis is the effective sell price (fee out)
+                pos.avg_entry = float(
+                    (old * _dec(pos.avg_entry) + remaining * _dec(fill.price) - open_fee) / new_size
+                )
+                pos.size = float(_dec(pos.size) - remaining)  # goes negative
+            self._positions[fill.pair] = pos
+            self.realized_pnl += realized
+            self._record(fill.ts, self._quote, quote_amount - fee, "trade", fill.order_id)
+            self._record(fill.ts, fill.pair.base, -_dec(fill.size), "trade", fill.order_id)
+        else:  # BUY
+            cost = quote_amount + fee
+            if not force and cost > self._cash:
+                raise InsufficientFunds(f"need {cost} {self._quote}, have {self._cash}")
+            self._cash -= cost
+            if _dec(pos.size) < 0:  # cover the short first
+                covering = min(remaining, -_dec(pos.size))
+                realized += covering * (_dec(pos.avg_entry) - _dec(fill.price)) - fee * (covering / total)
+                pos.size = float(_dec(pos.size) + covering)
+                remaining -= covering
+                if pos.size == 0:
+                    pos.avg_entry = 0.0
+            if remaining > 0:  # open or add to the long
+                open_fee = fee * (remaining / total)
+                new_size = _dec(pos.size) + remaining
+                pos.avg_entry = float(
+                    (_dec(pos.size) * _dec(pos.avg_entry) + remaining * _dec(fill.price) + open_fee)
+                    / new_size
+                )
+                pos.size = float(new_size)
+            self._positions[fill.pair] = pos
+            self.realized_pnl += realized
+            self._record(fill.ts, self._quote, -cost, "trade", fill.order_id)
+            self._record(fill.ts, fill.pair.base, _dec(fill.size), "trade", fill.order_id)
+
+        return realized
+
+    def apply_liquidation_fill(self, fill: Fill) -> Decimal:
+        """Forced close at mark (perp only): bypasses the cash backstop."""
+        return self._apply_fill_perp(fill, force=True)
+
+    def apply_funding(self, ts: datetime, amount: Decimal, ref_id: str | None = None) -> None:
+        """Perpetual funding cash flow (negative amount = paid by us)."""
+        self._cash += amount
+        self._record(ts, self._quote, amount, "funding", ref_id)
 
     def equity(self, prices: dict[Pair, float]) -> Decimal:
         value = self._cash

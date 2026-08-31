@@ -80,17 +80,20 @@ class PaperVenue:
         return orders
 
     def liquidate(self, pair: Pair, size: float, candle: Candle) -> Fill:
+        # size is signed: a positive size sells the long, a negative size
+        # buys the short back (perp runs can end short)
+        side = Side.SELL if size > 0 else Side.BUY
         order = Order(
             pair=pair,
-            side=Side.SELL,
+            side=side,
             order_type=OrderType.MARKET,
-            size=size,
+            size=abs(size),
             reason="end-of-run liquidation",
             created_ts=candle.ts,
         )
         self._orders[order.id] = order
         self._new_orders.append(order)
-        fill = self._make_fill(order, candle.ts, self._slipped(candle.close, Side.SELL), self._taker)
+        fill = self._make_fill(order, candle.ts, self._slipped(candle.close, side), self._taker)
         self._track_position(fill)
         return fill
 

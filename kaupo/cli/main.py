@@ -529,6 +529,9 @@ def backtest(
     ] = [],
     cash: Annotated[float, typer.Option(help="starting quote cash", min=0.01)] = 10_000.0,
     exchange: ExchangeOpt = "kraken",
+    instrument: Annotated[
+        str, typer.Option(help="spot (long-only) or perp (shorts at 1x, funding charged)")
+    ] = "spot",
     stability_windows: Annotated[
         int | None,
         typer.Option(
@@ -598,6 +601,9 @@ def backtest(
             if loaded.is_portfolio:
                 err_console.print(f"[red]Strategy {strategy!r} is a portfolio strategy[/red] — use --pairs")
                 raise typer.Exit(1)
+            if instrument not in ("spot", "perp"):
+                err_console.print(f"[red]--instrument must be spot or perp, got {instrument!r}[/red]")
+                raise typer.Exit(1)
             request = BacktestRequest(
                 strategy=loaded,
                 params=base_params,
@@ -607,6 +613,7 @@ def backtest(
                 end=end_dt,
                 starting_cash=cash,
                 exchange=exchange,
+                instrument=instrument,
                 risk=risk,
                 persist=not no_persist,
             )
@@ -615,6 +622,9 @@ def backtest(
                 err_console.print(
                     f"[red]Strategy {strategy!r} is not a portfolio strategy[/red] — use --pair"
                 )
+                raise typer.Exit(1)
+            if instrument == "perp":
+                err_console.print("[red]--instrument perp is single-pair only for now[/red]")
                 raise typer.Exit(1)
             request = PortfolioBacktestRequest(
                 strategy=loaded,

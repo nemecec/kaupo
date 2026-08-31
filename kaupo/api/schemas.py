@@ -163,6 +163,7 @@ class BacktestIn(BaseModel):
     params: dict[str, Any] = {}
     starting_cash: float = Field(default=10_000.0, gt=0)
     exchange: str = "kraken"
+    instrument: Literal["spot", "perp"] = "spot"  # perp: shorts at 1x, funding charged
     # when set, the worker also runs K equal time slices of [start, end]
     # and the job result carries per-window metrics (overfitting check)
     stability_windows: int | None = Field(default=None, ge=2, le=12)

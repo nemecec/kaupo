@@ -41,6 +41,7 @@ from kaupo.domain import (
     OrderflowDaily,
     OrderIntent,
     OrderStatus,
+    OrderType,
     Pair,
     Position,
     RunStatus,
@@ -68,6 +69,7 @@ class EngineConfig:
     timeframe: Timeframe
     lookback: int = 300
     liquidate_end: bool = False
+    instrument: str = "spot"  # "spot": long-only. "perp": shorts + funding + liquidation rail
 
 
 @dataclass(frozen=True)
@@ -213,6 +215,7 @@ class Engine:
         self._killed = False
         self._kill_reason = ""
         self._last_snapshot_ts: datetime | None = None
+        self._last_funding_ts: datetime | None = None
         self._warned_history_cap = False
 
     async def run(
@@ -283,12 +286,16 @@ class Engine:
                 self.venue.void_fill(fill)
                 self.risk.rejections.append(f"ledger rejected {fill.side.value}: {exc}")
                 continue
-            if fill.side is Side.SELL:
+            if fill.side is Side.SELL or (self.config.instrument == "perp" and realized != 0):
+                # perp: covering BUYs realize PnL too; zero-PnL entries leave
+                # the streak unchanged either way
                 self.risk.notify_trade_result(float(realized))
             await self.recorder.record_fill(fill)
             self._fills += 1
         for order in self._orders_touched(fills):
             await self.recorder.record_order(order)  # upsert final state
+        if self.config.instrument == "perp":
+            await self._apply_funding(candle)
         await self.recorder.record_ledger(self.ledger.drain_entries())
         await self.recorder.flush_stale()  # rows land at least per candle end
 
@@ -298,6 +305,13 @@ class Engine:
         unrealized = self._unrealized(price)
         await self.recorder.record_equity(candle.ts, equity, self.ledger.cash, unrealized)
         self._last_snapshot_ts = candle.ts
+
+        # 3b. perp liquidation rail: equity at/below zero force-closes at mark
+        if self.config.instrument == "perp" and equity <= 0:
+            await self._liquidate(candle)
+            self.risk.halted = True
+            self.risk.halt_reason = f"liquidated: equity {equity:.2f} depleted at close {candle.close}"
+            return
 
         # 4. risk time-based checks
         if not self.risk.on_candle(self._risk_state(candle)):
@@ -372,10 +386,64 @@ class Engine:
         pos = self.ledger.position(self.config.pair)
         return Decimal(str(pos.size)) * (Decimal(str(price)) - Decimal(str(pos.avg_entry)))
 
+    async def _apply_funding(self, candle: Candle) -> None:
+        """Charge perpetual funding for events in (candle open, candle close].
+
+        The position after this candle's fills stands in for the position
+        during the interval (positions change only at candle boundaries in
+        this engine); the candle close is the funding mark. The sign follows
+        the venue convention: a positive rate means longs pay shorts.
+        """
+        since = self._last_funding_ts if self._last_funding_ts is not None else candle.ts
+        points = self._funding.latest(self.config.pair.base, 10, self.clock.now())
+        new_events = [p for p in points if p.ts > since]
+        if not new_events:
+            return
+        self._last_funding_ts = new_events[-1].ts  # advances even while flat
+        pos = self.ledger.position(self.config.pair)
+        if pos.size == 0:
+            return
+        for point in new_events:
+            payment = Decimal(str(-pos.size * candle.close * point.rate))
+            self.ledger.apply_funding(point.ts, payment)
+
+    async def _liquidate(self, candle: Candle) -> None:
+        """Force-close the whole position at the candle close (perp rail)."""
+        pos = self.ledger.position(self.config.pair)
+        if pos.size == 0:
+            return
+        side = Side.BUY if pos.size < 0 else Side.SELL
+        fee = abs(pos.size) * candle.close * (self.risk.config.taker_fee_bps / 10_000)
+        order = Order(
+            pair=self.config.pair,
+            side=side,
+            order_type=OrderType.MARKET,
+            size=abs(pos.size),
+            reason="liquidation",
+        )
+        order.status = OrderStatus.FILLED
+        order.filled_price = candle.close
+        order.filled_ts = self.clock.now()
+        order.fee = fee
+        fill = Fill(
+            order_id=order.id,
+            pair=self.config.pair,
+            side=side,
+            ts=self.clock.now(),
+            price=candle.close,
+            size=abs(pos.size),
+            fee=fee,
+        )
+        self.ledger.apply_liquidation_fill(fill)
+        await self.recorder.record_order(order)
+        await self.recorder.record_fill(fill)
+        await self.recorder.record_ledger(self.ledger.drain_entries())
+        self._fills += 1
+
     async def _wind_down(self, status: RunStatus, last_candle: Candle | None) -> Decimal:
         if status is RunStatus.COMPLETED and self.config.liquidate_end and last_candle is not None:
             pos = self.ledger.position(self.config.pair)
-            if pos.size > 0:
+            if pos.size != 0:  # a perp run can end short: cover it too
                 fill = self.venue.liquidate(self.config.pair, pos.size, last_candle)
                 realized = self.ledger.apply_fill(fill)
                 self.risk.notify_trade_result(float(realized))

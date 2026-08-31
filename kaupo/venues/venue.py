@@ -29,7 +29,11 @@ class Venue(Protocol):
     def get_order(self, order_id: OrderId) -> Order | None: ...
 
     def liquidate(self, pair: Pair, size: float, candle: Candle) -> Fill:
-        """Force-close a position immediately at the given candle."""
+        """Force-close a position immediately at the given candle.
+
+        ``size`` is signed: positive sells the long, negative buys the short
+        back (perp runs can end short).
+        """
         ...
 
     def cancel_all(self) -> list[Order]:

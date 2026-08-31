@@ -157,8 +157,12 @@ class TestConsecutiveLosses:
 
 class TestConfig:
     def test_leverage_rejected(self) -> None:
-        with pytest.raises(ValueError, match="spot"):
+        with pytest.raises(ValueError, match="1x"):
             RiskConfig(leverage=2.0)
+
+    def test_instrument_rejected(self) -> None:
+        with pytest.raises(ValueError, match="instrument"):
+            RiskConfig(instrument="option")
 
     def test_limit_order_uses_limit_price(self, rm: RiskManager) -> None:
         intent = OrderIntent(

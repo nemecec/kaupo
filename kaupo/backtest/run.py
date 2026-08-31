@@ -47,6 +47,7 @@ class BacktestRequest:
     liquidate_end: bool = True
     persist: bool = True
     exchange: str = "kraken"  # which exchange's stored candles to run on
+    instrument: str = "spot"  # "spot": long-only. "perp": shorts at 1x, funding charged
     # stability-window marker for the run config: {"group", "window", "of"}
     stability: dict[str, Any] | None = None
     # sweep marker for the run config: {"group", "point"}
@@ -124,7 +125,10 @@ async def run_backtest(
 
     # keep risk's cost model in sync with the venue
     risk_config = replace(
-        request.risk, taker_fee_bps=request.taker_fee_bps, slippage_bps=request.slippage_bps
+        request.risk,
+        taker_fee_bps=request.taker_fee_bps,
+        slippage_bps=request.slippage_bps,
+        instrument=request.instrument,
     )
     risk = RiskManager(risk_config)
     strategy = request.strategy.create(request.params)
@@ -136,13 +140,19 @@ async def run_backtest(
         strategy=strategy,
         venue=PaperVenue(request.taker_fee_bps, request.maker_fee_bps, request.slippage_bps),
         risk=risk,
-        ledger=Ledger(request.pair.quote, request.starting_cash, request.start),
+        ledger=Ledger(
+            request.pair.quote,
+            request.starting_cash,
+            request.start,
+            perp=request.instrument == "perp",
+        ),
         recorder=recorder,
         config=EngineConfig(
             pair=request.pair,
             timeframe=request.timeframe,
             lookback=request.lookback,
             liquidate_end=request.liquidate_end,
+            instrument=request.instrument,
         ),
         funding=StaticFundingProvider({request.pair.base: funding_rates}),
         open_interest=StaticOpenInterestProvider({request.pair.base: oi_rows}),
@@ -160,6 +170,7 @@ async def run_backtest(
                 "pair": str(request.pair),
                 "timeframe": request.timeframe.value,
                 "exchange": request.exchange,
+                "instrument": request.instrument,
                 "params": request.params,
                 "start": request.start.isoformat(),
                 "end": request.end.isoformat(),
