@@ -723,6 +723,75 @@ async def test_supervisor_kill_stays_down_until_resume(
         await asyncio.wait_for(task, timeout=10)
 
 
+async def test_supervisor_watchdog_restarts_a_stalled_run(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run that stops writing equity snapshots is cancelled and restarted (kaupo#31)."""
+    started: list[tuple[str, str]] = []
+
+    async def fake_run(request, sm, client, stop, funding_client=None):
+        run_id = new_id()
+        # the first run looks three hours old with zero snapshots (stalled);
+        # the restart is fresh and healthy
+        started_at = utc_now() - timedelta(hours=3) if not started else utc_now()
+        config = {"pair": str(request.pair), "timeframe": request.timeframe.value}
+        config["assignment_id"] = request.assignment_id
+        async with sm_scope(sm) as s:
+            s.add(
+                RunRow(
+                    id=run_id,
+                    mode="shadow",
+                    strategy_id=request.strategy.id,
+                    strategy_version="v",
+                    started_at=started_at,
+                    status="running",
+                    config=config,
+                )
+            )
+        started.append((request.assignment_id, run_id))
+        try:
+            await stop.wait()  # wedged on progress: no candles, no snapshots
+        finally:
+            async with sm_scope(sm) as s:
+                row = await s.get(RunRow, run_id)
+                if row is not None:
+                    row.status = "halted"
+                    row.ended_at = utc_now()
+
+    monkeypatch.setattr(sup, "run_shadow", fake_run)
+    monkeypatch.setattr(sup, "run_portfolio_shadow", fake_run)
+    monkeypatch.setattr(sup, "KrakenClient", _FakeKrakenClient)
+    monkeypatch.setattr(sup, "BinanceClient", _FakeKrakenClient)
+
+    await assignments_repo.create_assignment(
+        session, id="a1", strategy_id="regime-switch", pair="BTC/EUR", timeframe="1h"
+    )
+    await session.commit()
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        sup.run_supervisor(
+            get_sessionmaker(),
+            load_strategies(EXAMPLES_DIR),
+            stop,
+            reconcile_interval_seconds=0.05,
+            restart_backoff=timedelta(seconds=0.2),
+        )
+    )
+    try:
+        # watchdog cancels the stalled run; the backoff path restarts it
+        await _wait_for(lambda: len(started) == 2)
+        assert started[0][0] == "a1"
+        assert started[1][0] == "a1"
+        assert await _run_status(started[0][1]) == "halted"
+        # the fresh run is not watchdog-ed: nothing further starts
+        await asyncio.sleep(0.5)
+        assert len(started) == 2
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=10)
+
+
 async def test_supervisor_does_not_start_unknown_strategy(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:

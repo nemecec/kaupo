@@ -9,7 +9,10 @@ from kaupo.core.supervisor import (
     in_backoff,
     reconcile,
     resume_cleared,
+    watchdog_is_stale,
+    watchdog_stale_after,
 )
+from kaupo.domain import Timeframe
 
 NOW = datetime(2026, 8, 25, tzinfo=UTC)
 
@@ -107,3 +110,25 @@ class TestResumeCleared:
     def test_stays_down_otherwise(self) -> None:
         assert not resume_cleared(NOW, NOW - timedelta(hours=1), "kill")
         assert not resume_cleared(NOW, NOW - timedelta(hours=1), None)
+
+
+class TestWatchdog:
+    def test_stale_after_scales_with_timeframe(self) -> None:
+        assert watchdog_stale_after(Timeframe.H1) == timedelta(hours=1, minutes=40)
+        assert watchdog_stale_after(Timeframe.H4) == timedelta(hours=6, minutes=10)
+        assert watchdog_stale_after(Timeframe.D1) == timedelta(hours=36, minutes=10)
+
+    def test_healthy_one_timeframe_lag_is_not_stale(self) -> None:
+        # the newest snapshot of a live run is the previous candle's open ts
+        assert not watchdog_is_stale(NOW - timedelta(hours=1), NOW, Timeframe.H1)
+        assert not watchdog_is_stale(NOW - timedelta(hours=4), NOW, Timeframe.H4)
+
+    def test_beyond_the_threshold_is_stale(self) -> None:
+        # the 2026-08-31 stall shape: 4h runs silent for hours
+        assert watchdog_is_stale(NOW - timedelta(hours=2), NOW, Timeframe.H1)
+        assert watchdog_is_stale(NOW - timedelta(hours=7), NOW, Timeframe.H4)
+        assert watchdog_is_stale(NOW - timedelta(hours=40), NOW, Timeframe.D1)
+
+    def test_fresh_run_waiting_for_its_first_candle_is_not_stale(self) -> None:
+        # a daily run started 12h ago has nothing to snapshot yet
+        assert not watchdog_is_stale(NOW - timedelta(hours=12), NOW, Timeframe.D1)

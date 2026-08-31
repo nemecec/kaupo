@@ -62,6 +62,11 @@ log = logging.getLogger(__name__)
 # kills — the resume logic reads it back from the audit log
 STOPPED_EXTERNALLY = "stopped externally"
 
+# Upper bound for one candle body (venue, fills, ledger, snapshot, strategy).
+# Bodies normally take milliseconds; a hang here is the 2026-08-31 silent-stall
+# shape, so it must fail loudly and let the supervisor restart the run.
+CANDLE_BODY_TIMEOUT_SECONDS = 120.0
+
 
 @dataclass(frozen=True)
 class EngineConfig:
@@ -192,6 +197,7 @@ class Engine:
         orderflow: OrderFlowProvider | None = None,
         open_interest: OpenInterestProvider | None = None,
         futures_metrics: FuturesMetricsProvider | None = None,
+        candle_timeout_seconds: float = CANDLE_BODY_TIMEOUT_SECONDS,
     ) -> None:
         self.strategy = strategy
         self.venue = venue
@@ -217,6 +223,7 @@ class Engine:
         self._last_snapshot_ts: datetime | None = None
         self._last_funding_ts: datetime | None = None
         self._warned_history_cap = False
+        self._candle_timeout = candle_timeout_seconds
 
     async def run(
         self, candles: AsyncIterable[Candle], stop: asyncio.Event | None = None, warmup: int = 0
@@ -240,7 +247,14 @@ class Engine:
                     self.clock.set(candle)
                     self.history.append(candle)
                 else:
-                    await self._process_candle(candle)
+                    try:
+                        async with asyncio.timeout(self._candle_timeout):
+                            await self._process_candle(candle)
+                    except TimeoutError:
+                        log.error(
+                            "Candle body watchdog fired after %.0fs at %s", self._candle_timeout, candle.ts
+                        )
+                        raise
                 seen += 1
                 if self._killed:
                     status = RunStatus.HALTED

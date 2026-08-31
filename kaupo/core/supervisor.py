@@ -12,11 +12,13 @@ resume command targets it or its assignment row is updated.
 import asyncio
 import enum
 import logging
+import traceback
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.core.engine import RunResult
@@ -25,7 +27,7 @@ from kaupo.core.runner import PortfolioShadowRequest, ShadowRequest, run_portfol
 from kaupo.data.assignments import Assignment, list_assignments
 from kaupo.data.binance import BinanceClient
 from kaupo.data.kraken import KrakenClient
-from kaupo.db.models import EventRow, RunRow
+from kaupo.db.models import EquitySnapshotRow, EventRow, RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Pair, RunMode, RunStatus, Timeframe, utc_now
 from kaupo.sdk.protocol import LoadedStrategy
@@ -35,6 +37,12 @@ log = logging.getLogger(__name__)
 RECONCILE_INTERVAL_SECONDS = 15.0
 RESTART_BACKOFF = timedelta(seconds=60)
 DEFAULT_STARTING_CASH = 10_000.0
+
+# Watchdog: a run whose newest equity snapshot is older than this is stalled.
+# The snapshot ts is the candle OPEN time, so a healthy run already lags wall
+# clock by up to one timeframe — the threshold must exceed that, not zero.
+WATCHDOG_STALE_MULTIPLIER = 1.5
+WATCHDOG_GRACE = timedelta(minutes=10)
 
 
 class EndKind(enum.Enum):
@@ -67,6 +75,18 @@ def in_backoff(failed_at: datetime, now: datetime, backoff: timedelta = RESTART_
 def resume_cleared(observed_at: datetime, updated_at: datetime, latest_command: str | None) -> bool:
     """A control-killed run resumes on a resume command or an assignment update."""
     return latest_command == "resume" or updated_at > observed_at
+
+
+def watchdog_stale_after(timeframe: Timeframe, grace: timedelta = WATCHDOG_GRACE) -> timedelta:
+    """How long a run may go without a fresh equity snapshot before it is stalled."""
+    return timedelta(seconds=WATCHDOG_STALE_MULTIPLIER * timeframe.seconds) + grace
+
+
+def watchdog_is_stale(
+    reference: datetime, now: datetime, timeframe: Timeframe, grace: timedelta = WATCHDOG_GRACE
+) -> bool:
+    """``reference`` is the last sign of progress: max(run start, latest snapshot ts)."""
+    return now - reference > watchdog_stale_after(timeframe, grace)
 
 
 @dataclass(frozen=True)
@@ -217,6 +237,47 @@ async def _run_assignment(
         return await run_shadow(request, sessionmaker, client, stop, funding_client=funding_client)
 
 
+def _log_task_stack(aid: str, task: asyncio.Task[RunResult]) -> None:
+    """Log where the stalled task is suspended — the root-cause clue for next time."""
+    frames = task.get_stack()
+    if not frames:
+        log.warning("Watchdog: assignment %s task shows no stack (already done?)", aid)
+        return
+    for frame in frames:
+        log.warning("Watchdog: assignment %s suspended at:\n%s", aid, "".join(traceback.format_stack(frame)))
+
+
+async def _stalled_runs(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    live: dict[str, _LiveRun],
+    assignments: Mapping[str, Assignment],
+) -> list[str]:
+    """Live assignment ids whose run stopped writing equity snapshots.
+
+    A stalled run looks healthy everywhere else: the task is alive, no
+    exception, run row 'running' (the 2026-08-31 silent stall, kaupo#31).
+    """
+    stalled: list[str] = []
+    now = utc_now()
+    async with sm_scope(sessionmaker) as session:
+        for aid in live:
+            assignment = assignments.get(aid)
+            if assignment is None:
+                continue  # not desired anymore; reconcile stops it this pass
+            row = await _latest_run_row(session, aid)
+            if row is None:
+                continue  # starting up: no run row yet, give it the reconcile cycle
+            last_ts = (
+                await session.execute(
+                    select(func.max(EquitySnapshotRow.ts)).where(EquitySnapshotRow.run_id == row.id)
+                )
+            ).scalar_one_or_none()
+            reference = max(row.started_at, last_ts) if last_ts is not None else row.started_at
+            if watchdog_is_stale(reference, now, Timeframe.parse(assignment.timeframe)):
+                stalled.append(aid)
+    return stalled
+
+
 async def _reap_finished(
     sessionmaker: async_sessionmaker[AsyncSession],
     live: dict[str, _LiveRun],
@@ -312,6 +373,15 @@ async def run_supervisor(
                 rows = await list_assignments(session, enabled_only=True)
             rows = [a for a in rows if a.mode == RunMode.SHADOW.value]
             by_id = {a.id: a for a in rows}
+            for aid in await _stalled_runs(sessionmaker, live, by_id):
+                lr = live.pop(aid)
+                _log_task_stack(aid, lr.task)
+                log.warning("Watchdog: run for assignment %s stalled; cancelling for restart", aid)
+                lr.task.cancel()
+                # restart through the usual crash backoff; if the task ignores
+                # cancellation it stays wedged but silent — the replacement
+                # supersedes its run row when it starts
+                backoff[aid] = utc_now()
             await _refresh_killed(sessionmaker, rows, killed)
             held_down = set(killed) | {
                 aid for aid, failed_at in backoff.items() if in_backoff(failed_at, utc_now(), restart_backoff)

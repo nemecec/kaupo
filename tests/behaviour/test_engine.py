@@ -3,6 +3,7 @@
 Uses a scripted strategy and the in-memory recorder — no DB, no network.
 """
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
@@ -72,6 +73,7 @@ def build_engine(
     recorder: InMemoryRecorder,
     risk: RiskManager | None = None,
     control_probe=None,  # type: ignore[no-untyped-def]
+    candle_timeout_seconds: float = 120.0,
 ) -> Engine:
     return Engine(
         strategy=BuyAt3SellAt7(BuyAt3SellAt7.params_schema()),
@@ -88,6 +90,7 @@ def build_engine(
             config={},
         ),
         control_probe=control_probe,
+        candle_timeout_seconds=candle_timeout_seconds,
     )
 
 
@@ -110,6 +113,21 @@ async def test_intents_fill_on_next_candle_open() -> None:
 
     # 10_000 - 103 + 107
     assert float(result.final_equity) == pytest.approx(10_004.0)
+
+
+class HangingRecorder(InMemoryRecorder):
+    """Wedges inside record_equity — the 2026-08-31 silent-stall shape (kaupo#31)."""
+
+    async def record_equity(self, ts, equity, cash, unrealized) -> None:  # type: ignore[no-untyped-def]
+        await asyncio.Event().wait()
+
+
+async def test_candle_body_watchdog_fails_loudly() -> None:
+    # a stuck candle body must surface as a failed run (the supervisor then
+    # restarts it) instead of hanging silently for hours
+    engine = build_engine(HangingRecorder(), candle_timeout_seconds=0.05)
+    with pytest.raises(TimeoutError):
+        await engine.run(aiter([candle(i) for i in range(3)]))
 
 
 async def test_position_held_at_end_is_not_liquidated_by_default() -> None:
