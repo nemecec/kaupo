@@ -451,6 +451,11 @@ async def test_rail_halted_run_does_not_resume(session: AsyncSession, tmp_path: 
     """A genuine risk-rail halt (halted, empty metrics, accusing reason in
     the audit log) is a deliberate stop: the successor starts fresh."""
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    # the rail trips only while c3's close stays on c1's clock day (the
+    # engine clock ticks at candle close, so c3 closes at now+2h): anchor
+    # away from midnight or the day rolls and the rail resets instead
+    if now.hour >= 22:
+        now -= timedelta(hours=2)
     history = hourly_history(BTC, now - timedelta(hours=2), 100.0)
     await upsert_candles(session, history)
     await session.commit()
