@@ -559,7 +559,7 @@ async def test_backtest_job_risk_override(client: AsyncClient, session: AsyncSes
 
     override = await submit({"max_position_quote": 50.0})
     assert override["status"] == "completed"
-    risk = override["run"]["config"]["risk"]  # the runs row records asdict(request.risk)
+    risk = override["run"]["config"]["risk"]  # the runs row records the effective risk config
     assert risk["max_position_quote"] == 50.0
     assert risk["max_gross_exposure_quote"] == 2000.0  # default kept
     assert risk["max_daily_loss_quote"] == 200.0  # default kept
@@ -572,6 +572,46 @@ async def test_backtest_risk_override_validation(client: AsyncClient) -> None:
             json={"strategy": "regime-switch", "pair": "BTC/EUR", field: -1},
         )
         assert r.status_code == 422, field
+
+
+async def test_backtest_perp_records_effective_risk_config(
+    client: AsyncClient, session: AsyncSession, worker: None
+) -> None:
+    candles = [
+        Candle(
+            pair=PAIR,
+            timeframe=Timeframe.H1,
+            ts=BASE + timedelta(hours=i),
+            open=100 + i,
+            high=101 + i,
+            low=99 + i,
+            close=100 + i,
+            volume=1.0,
+        )
+        for i in range(120)
+    ]
+    await upsert_candles(session, candles)
+    await session.commit()
+
+    r = await client.post(
+        "/api/v1/backtests",
+        json={
+            "strategy": "regime-switch",
+            "pair": "BTC/EUR",
+            "timeframe": "1h",
+            "start": BASE.isoformat(),
+            "end": (BASE + timedelta(hours=120)).isoformat(),
+            "instrument": "perp",
+        },
+    )
+    assert r.status_code == 202
+    job = await _wait_for_job(client, r.json()["run_id"])
+    assert job["status"] == "completed"
+    config = job["run"]["config"]
+    assert config["instrument"] == "perp"
+    # the run must record the effective risk config (instrument synced), not
+    # the raw request defaults — a stale "spot" here hid the real rules
+    assert config["risk"]["instrument"] == "perp"
 
 
 async def test_backtest_pairs_routing_validation(client: AsyncClient) -> None:

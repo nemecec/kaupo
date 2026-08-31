@@ -180,7 +180,7 @@ async def run_backtest(
                     "maker_bps": request.maker_fee_bps,
                     "slippage_bps": request.slippage_bps,
                 },
-                "risk": asdict(request.risk),
+                "risk": asdict(risk_config),  # the effective config (fee/instrument sync applied)
                 "lookback": request.lookback,
                 "liquidate_end": request.liquidate_end,
                 **({"stability": request.stability} if request.stability is not None else {}),
