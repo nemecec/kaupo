@@ -165,8 +165,8 @@ class TestLiveCandlePoller:
 
 class TestPollerGapRefill:
     async def test_gap_after_outage_is_backfilled(self) -> None:
-        # baseline at candle 0; window moved far ahead -> poller must fetch
-        # from the baseline, not jump to the newest candle
+        # baseline at candle 0; the next poll must fetch from the baseline
+        # anchor and return the entire gap, not jump to the newest candle
         all_candles = [candle(i) for i in range(20)]
         client = FakeClient([all_candles[0:1], all_candles])
         poller = LiveCandlePoller(client, PAIR, TF, poll_interval_seconds=0)  # type: ignore[arg-type]
@@ -174,6 +174,49 @@ class TestPollerGapRefill:
         first = await poller.poll_once()
         assert first == [all_candles[0]]  # baseline established
 
-        # second call: poller detects baseline << window and requests from baseline
         new = await poller.poll_once()
         assert new == all_candles[1:]  # entire gap returned, nothing skipped
+
+    async def test_since_is_anchored_to_the_baseline(self) -> None:
+        # the fetch must start right after the last delivered candle: a sliding
+        # now-window slides past a just-closed candle at exact boundaries (the
+        # 2026-08-31 stall, kaupo#31)
+        client = FakeClient([[candle(0), candle(1)], [candle(1), candle(2)]])
+        poller = LiveCandlePoller(client, PAIR, TF, poll_interval_seconds=0)  # type: ignore[arg-type]
+
+        await poller.poll_once()  # cold start: baseline = candle 1
+        await poller.poll_once()
+        assert client.calls[-1] == BASE + timedelta(hours=1) + timedelta(seconds=1)
+
+
+class TestPollerOwedWarning:
+    async def test_owed_but_empty_poll_logs_diagnostics(self, caplog: pytest.LogCaptureFixture) -> None:
+        # baseline is hours behind real time: every empty poll is owed
+        client = FakeClient([[candle(0)], [candle(0)]])  # venue serves only the stale candle
+        poller = LiveCandlePoller(client, PAIR, TF, poll_interval_seconds=0)  # type: ignore[arg-type]
+
+        await poller.poll_once()  # baseline = candle 0 (ancient vs real now)
+        with caplog.at_level("WARNING"):
+            assert await poller.poll_once() == []  # nothing new: owed and empty
+        assert any("owed a candle since" in r.message for r in caplog.records)
+
+    async def test_recent_baseline_is_not_owed(self, caplog: pytest.LogCaptureFixture) -> None:
+        # a baseline inside the current timeframe owes nothing yet
+        now = datetime.now(UTC)
+        recent = Candle(
+            pair=PAIR,
+            timeframe=TF,
+            ts=now - timedelta(minutes=5),
+            open=100,
+            high=101,
+            low=99,
+            close=100.5,
+            volume=1.0,
+        )
+        client = FakeClient([[recent], [recent]])
+        poller = LiveCandlePoller(client, PAIR, TF, poll_interval_seconds=0)  # type: ignore[arg-type]
+
+        await poller.poll_once()
+        with caplog.at_level("WARNING"):
+            assert await poller.poll_once() == []
+        assert not caplog.records

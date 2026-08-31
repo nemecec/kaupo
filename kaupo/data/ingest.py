@@ -208,6 +208,10 @@ class LiveCandlePoller:
     candle; subsequent polls return everything closed since the baseline.
     """
 
+    # a poll is owed a candle once a full timeframe plus this slack passed
+    # since the baseline: by then at least one new candle should have closed
+    OWED_SLACK = timedelta(minutes=2)
+
     def __init__(
         self,
         client: KrakenClient,
@@ -220,29 +224,59 @@ class LiveCandlePoller:
         self._pair = pair
         self._timeframe = timeframe
         self._poll_interval = poll_interval_seconds
-        # seeding the baseline (e.g. from the warm-up tail) makes the gap
-        # refill path pick up anything closed between warm-up and first poll
+        # seeding the baseline (e.g. from the warm-up tail) makes the first
+        # poll pick up anything closed between warm-up and start
         self._baseline: datetime | None = baseline
+        self._empty_streak = 0
 
     async def poll_once(self) -> list[Candle]:
-        window = timedelta(seconds=4 * self._timeframe.seconds)
-        since = datetime.now(UTC) - window
-        if self._baseline is not None and self._baseline < since:
-            # outage longer than the fetch window: backfill the gap instead
-            # of silently skipping candles (parity + store integrity)
-            log.warning("Poll gap detected after %s; backfilling", self._baseline)
-            since = self._baseline + timedelta(seconds=self._timeframe.seconds)
+        if self._baseline is not None:
+            # anchored to delivered progress: a sliding now-window slides past
+            # a just-closed candle at exact boundaries (a 4h candle is exactly
+            # one window old at its own close) and can never fetch it again.
+            # A long outage pages forward 720 candles per poll instead.
+            since = self._baseline + timedelta(seconds=1)
+        else:
+            since = datetime.now(UTC) - timedelta(seconds=4 * self._timeframe.seconds)
         candles = await self._client.fetch_candles(self._pair, self._timeframe, since=since)
-        if not candles:
-            return []
         if self._baseline is None:
-            # cold start: the whole fetched window is new (max 4 candles)
+            if not candles:
+                return []
+            # cold start: the whole fetched window is new
             self._baseline = candles[-1].ts
             return candles
         new = [c for c in candles if c.ts > self._baseline]
         if new:
+            self._empty_streak = 0
             self._baseline = new[-1].ts
+        else:
+            self._log_if_owed(candles)
         return new
+
+    def _log_if_owed(self, candles: list[Candle]) -> None:
+        """Warn on owed-but-empty polls — the 2026-08-31 silent-stall shape.
+
+        A candle should have closed since the baseline, yet the fetch delivered
+        nothing new. The response contents discriminate the causes: empty (the
+        venue or this client instance serves nothing) vs stale (newest row at
+        or behind the baseline — venue-side commitment lag).
+        """
+        assert self._baseline is not None
+        deadline = self._baseline + timedelta(seconds=self._timeframe.seconds) + self.OWED_SLACK
+        if datetime.now(UTC) < deadline:
+            self._empty_streak = 0
+            return
+        self._empty_streak += 1
+        if self._empty_streak == 1 or self._empty_streak % 10 == 0:
+            log.warning(
+                "Poll owed a candle since %s (%s %s) but fetch returned %d rows (newest %s); streak %d",
+                self._baseline,
+                self._pair,
+                self._timeframe.value,
+                len(candles),
+                candles[-1].ts if candles else None,
+                self._empty_streak,
+            )
 
     async def stream(self, stop: asyncio.Event | None = None) -> AsyncIterator[Candle]:
         """Endlessly yield newly closed candles until ``stop`` is set."""
