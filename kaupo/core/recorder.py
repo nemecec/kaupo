@@ -89,6 +89,10 @@ class RunRecorder(Protocol):
         """Flush buffered rows if the last flush is older than the interval."""
         ...
 
+    async def flush(self) -> None:
+        """Flush all buffered rows now (per-candle durability for shadow/live)."""
+        ...
+
 
 class DbRecorder:
     """Buffers rows and flushes in batches to Postgres."""
@@ -325,6 +329,10 @@ class CompositeRecorder:
         for child in self.children:
             await child.flush_stale()
 
+    async def flush(self) -> None:
+        for child in self.children:
+            await child.flush()
+
 
 @dataclass
 class InMemoryRecorder:
@@ -357,6 +365,9 @@ class InMemoryRecorder:
     async def finish(self, status: RunStatus, metrics: dict[str, Any] | None) -> None:
         self.final_status = status
         self.metrics = metrics
+
+    async def flush(self) -> None:
+        pass  # everything is already visible in the lists
 
     async def flush_stale(self) -> None:
         pass

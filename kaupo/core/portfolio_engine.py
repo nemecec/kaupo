@@ -55,6 +55,7 @@ from kaupo.domain import (
     OrderStatus,
     Pair,
     Position,
+    RunMode,
     RunStatus,
     Side,
     TickFlow,
@@ -352,6 +353,9 @@ class PortfolioEngine:
         equity = self.ledger.equity(self.last_closes)
         await self.recorder.record_equity(ts, equity, self.ledger.cash, self._unrealized())
         self._last_snapshot_ts = ts
+        if self.run_info.mode in (RunMode.SHADOW, RunMode.LIVE):
+            # per-candle durability, same as the single-pair engine (kaupo#31)
+            await self.recorder.flush()
 
         # 4. risk time-based checks on the portfolio state
         if not self.risk.on_candle(self._risk_state()):

@@ -44,6 +44,7 @@ from kaupo.domain import (
     OrderType,
     Pair,
     Position,
+    RunMode,
     RunStatus,
     Side,
     TickFlow,
@@ -319,6 +320,12 @@ class Engine:
         unrealized = self._unrealized(price)
         await self.recorder.record_equity(candle.ts, equity, self.ledger.cash, unrealized)
         self._last_snapshot_ts = candle.ts
+        if self.run_info.mode in (RunMode.SHADOW, RunMode.LIVE):
+            # per-candle durability: a restart kills the recorder's buffer, so
+            # shadow/live rows must not wait for the next candle's stale flush.
+            # Without this every snapshot lands one candle late — the lag that
+            # looked like the 2026-08-31 "silent stall" (kaupo#31)
+            await self.recorder.flush()
 
         # 3b. perp liquidation rail: equity at/below zero force-closes at mark
         if self.config.instrument == "perp" and equity <= 0:
