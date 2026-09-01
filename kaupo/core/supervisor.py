@@ -39,9 +39,12 @@ RESTART_BACKOFF = timedelta(seconds=60)
 DEFAULT_STARTING_CASH = 10_000.0
 
 # Watchdog: a run whose newest equity snapshot is older than this is stalled.
-# The snapshot ts is the candle OPEN time, so a healthy run already lags wall
-# clock by up to one timeframe — the threshold must exceed that, not zero.
-WATCHDOG_STALE_MULTIPLIER = 1.5
+# The snapshot ts is the candle OPEN time: with per-candle flushing it lands
+# at close + seconds, so a healthy run's newest ts oscillates between 1x and
+# 2x the timeframe behind wall clock. The threshold must exceed 2x — at 1.5x
+# the watchdog cancelled a healthy 1h run 20 minutes before its next tick
+# (2026-09-01 03:40 UTC false positive).
+WATCHDOG_STALE_MULTIPLIER = 2.0
 WATCHDOG_GRACE = timedelta(minutes=10)
 
 
