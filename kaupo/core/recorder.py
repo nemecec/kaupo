@@ -1,5 +1,6 @@
 """Run persistence: what happened during a run, stored for review and reports."""
 
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -20,6 +21,8 @@ from kaupo.db.models import (
 )
 from kaupo.domain import Fill, Order, RunId, RunMode, RunStatus, new_id, utc_now
 from kaupo.ledger.ledger import LedgerEntry
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -272,6 +275,16 @@ class DbRecorder:
         self._ledger = []
         self._equity = []
         self._last_flush = time.monotonic()
+        # the 2026-08-31/09-01 mystery: processed candles whose snapshots never
+        # landed, with no error — make every flush visible until that is solved
+        log.info(
+            "Run %s flushed %d orders, %d fills, %d ledger, %d equity rows",
+            self.run_id,
+            len(orders),
+            len(fills),
+            len(ledger),
+            len(equity),
+        )
 
 
 @dataclass

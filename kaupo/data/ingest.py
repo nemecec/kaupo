@@ -208,8 +208,9 @@ class LiveCandlePoller:
     candle; subsequent polls return everything closed since the baseline.
     """
 
-    # a poll is owed a candle once a full timeframe plus this slack passed
-    # since the baseline: by then at least one new candle should have closed
+    # a poll is owed a candle once the baseline's successor should have
+    # closed: the baseline candle closes one timeframe after its ts, the
+    # successor one timeframe after that, plus slack
     OWED_SLACK = timedelta(minutes=2)
 
     def __init__(
@@ -262,7 +263,7 @@ class LiveCandlePoller:
         or behind the baseline — venue-side commitment lag).
         """
         assert self._baseline is not None
-        deadline = self._baseline + timedelta(seconds=self._timeframe.seconds) + self.OWED_SLACK
+        deadline = self._baseline + timedelta(seconds=2 * self._timeframe.seconds) + self.OWED_SLACK
         if datetime.now(UTC) < deadline:
             self._empty_streak = 0
             return

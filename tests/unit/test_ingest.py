@@ -220,3 +220,26 @@ class TestPollerOwedWarning:
         with caplog.at_level("WARNING"):
             assert await poller.poll_once() == []
         assert not caplog.records
+
+    async def test_one_timeframe_old_baseline_is_not_owed(self, caplog: pytest.LogCaptureFixture) -> None:
+        # the baseline candle closes one timeframe after its ts; its successor
+        # closes one timeframe after that — a baseline one timeframe old owes
+        # nothing yet (the 2026-09-01 false-positive warnings)
+        now = datetime.now(UTC)
+        one_tf_old = Candle(
+            pair=PAIR,
+            timeframe=TF,
+            ts=now - timedelta(hours=1),
+            open=100,
+            high=101,
+            low=99,
+            close=100.5,
+            volume=1.0,
+        )
+        client = FakeClient([[one_tf_old], [one_tf_old]])
+        poller = LiveCandlePoller(client, PAIR, TF, poll_interval_seconds=0)  # type: ignore[arg-type]
+
+        await poller.poll_once()
+        with caplog.at_level("WARNING"):
+            assert await poller.poll_once() == []
+        assert not caplog.records
