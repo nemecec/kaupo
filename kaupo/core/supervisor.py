@@ -22,6 +22,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.core.engine import RunResult
+from kaupo.core.recorder import WATCHDOG_HALT_REASON
 from kaupo.core.resume import config_hash as config_hash
 from kaupo.core.runner import PortfolioShadowRequest, ShadowRequest, run_portfolio_shadow, run_shadow
 from kaupo.data.assignments import Assignment, list_assignments
@@ -46,6 +47,10 @@ DEFAULT_STARTING_CASH = 10_000.0
 # (2026-09-01 03:40 UTC false positive).
 WATCHDOG_STALE_MULTIPLIER = 2.0
 WATCHDOG_GRACE = timedelta(minutes=10)
+
+# fire-and-forget marker tasks (watchdog run-row marking) — referenced so the
+# event loop cannot garbage-collect them mid-flight
+_background_tasks: set[asyncio.Task[None]] = set()
 
 
 class EndKind(enum.Enum):
@@ -281,6 +286,26 @@ async def _stalled_runs(
     return stalled
 
 
+async def _mark_watchdog_stopped(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    assignment_id: str,
+    task: asyncio.Task[RunResult],
+) -> None:
+    """After a watchdog cancel, leave the run row halted with the watchdog
+    reason — a liveness restart, not a strategy failure — so the successor
+    resumes the ledger chain instead of starting flat (kaupo#33)."""
+    with suppress(asyncio.CancelledError):
+        await task
+    # the engine's failure path may have marked the row 'failed' first; the
+    # watchdog caused that shape, so overwrite it deterministically
+    async with sm_scope(sessionmaker) as session:
+        row = await _latest_run_row(session, assignment_id)
+        if row is not None:
+            row.status = RunStatus.HALTED.value
+            row.ended_at = utc_now()
+            row.metrics = {"halt_reason": WATCHDOG_HALT_REASON}
+
+
 async def _reap_finished(
     sessionmaker: async_sessionmaker[AsyncSession],
     live: dict[str, _LiveRun],
@@ -385,6 +410,9 @@ async def run_supervisor(
                 # cancellation it stays wedged but silent — the replacement
                 # supersedes its run row when it starts
                 backoff[aid] = utc_now()
+                marker = asyncio.create_task(_mark_watchdog_stopped(sessionmaker, aid, lr.task))
+                _background_tasks.add(marker)
+                marker.add_done_callback(_background_tasks.discard)
             await _refresh_killed(sessionmaker, rows, killed)
             held_down = set(killed) | {
                 aid for aid, failed_at in backoff.items() if in_backoff(failed_at, utc_now(), restart_backoff)

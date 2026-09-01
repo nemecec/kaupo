@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from kaupo.core.engine import STOPPED_EXTERNALLY
-from kaupo.core.recorder import SUPERSEDED_HALT_REASON
+from kaupo.core.recorder import SUPERSEDED_HALT_REASON, WATCHDOG_HALT_REASON
 from kaupo.core.resume import config_hash, is_resumable, replay_fills
 from kaupo.db.models import RunRow
 from kaupo.domain import Fill, OrderId, Pair, Side
@@ -77,6 +77,11 @@ class TestIsResumable:
 
     def test_failed_row_is_not_resumable(self) -> None:
         assert not resumable(run_row(status="failed", metrics=None))
+
+    def test_watchdog_restarted_row_is_resumable(self) -> None:
+        # a watchdog cancel is a liveness restart, not a strategy failure:
+        # the successor resumes the ledger chain (kaupo#33)
+        assert resumable(run_row(metrics={"halt_reason": WATCHDOG_HALT_REASON}))
 
     def test_rail_halt_is_not_resumable(self) -> None:
         # a rail halt leaves the same row shape as a shutdown (halted, empty

@@ -36,6 +36,10 @@ class RunInfo:
 
 SUPERSEDED_HALT_REASON = "superseded by a newer run of the same strategy"
 
+# the supervisor's watchdog cancels a run that stops making progress and
+# restarts it: a liveness restart, not a strategy failure — the chain resumes
+WATCHDOG_HALT_REASON = "watchdog restart: no progress"
+
 
 async def supersede_stale_runs(
     session: AsyncSession,

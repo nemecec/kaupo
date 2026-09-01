@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from kaupo.config import get_settings
 from kaupo.core import supervisor as sup
+from kaupo.core.recorder import WATCHDOG_HALT_REASON
 from kaupo.core.runner import DbControlProbe
 from kaupo.data import assignments as assignments_repo
 from kaupo.db.models import EventRow, RunRow
@@ -784,6 +785,15 @@ async def test_supervisor_watchdog_restarts_a_stalled_run(
         assert started[0][0] == "a1"
         assert started[1][0] == "a1"
         assert await _run_status(started[0][1]) == "halted"
+
+        # the cancelled row carries the watchdog reason, so the successor
+        # resumes the ledger chain instead of starting flat (kaupo#33)
+        async def marked() -> bool:
+            async with sm_scope(get_sessionmaker()) as s:
+                row = await s.get(RunRow, started[0][1])
+                return row is not None and (row.metrics or {}).get("halt_reason") == WATCHDOG_HALT_REASON
+
+        await _wait_for(marked)
         # the fresh run is not watchdog-ed: nothing further starts
         await asyncio.sleep(0.5)
         assert len(started) == 2

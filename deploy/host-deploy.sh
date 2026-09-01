@@ -62,6 +62,9 @@ if [[ "$TAG" != "$current_tag" ]]; then
 else
   echo "image tag unchanged ($TAG); skipping pull"
 fi
+# Dead one-off containers (manual `compose run` diagnostics) hold service names
+# hostage and break `up -d` with a docker name conflict (kaupo#32)
+docker container prune -f --filter "label=com.docker.compose.project=kaupo"
 compose up -d --remove-orphans
 echo "$TAG" > "$TAG_FILE"
 if [[ "$before" != "none" && "$before" != "$after" ]]; then

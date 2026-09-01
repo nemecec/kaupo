@@ -48,7 +48,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.core.engine import STOPPED_EXTERNALLY
-from kaupo.core.recorder import SUPERSEDED_HALT_REASON, supersede_stale_runs
+from kaupo.core.recorder import SUPERSEDED_HALT_REASON, WATCHDOG_HALT_REASON, supersede_stale_runs
 from kaupo.db.models import EventRow, FillRow, RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Fill, OrderId, Pair, Position, RunMode, RunStatus, Side
@@ -104,21 +104,26 @@ def is_resumable(
 ) -> bool:
     """True when the run row is a resumable predecessor running the same config.
 
-    Two endings qualify: a supersession (the row was still "running" when
-    its successor claimed the slot) and a graceful stop — a shadow run
-    never ends on its own (the candle stream is infinite), so an ending
-    with no halt reason means the stop event unwound the run (deploy,
-    shutdown, CLI stop). A graceful stop ends completed (stream dried up)
-    or halted with empty metrics (stop seen at the candle loop's top). The
-    latter shape is shared with rail halts and control kills, so it
-    qualifies only when the audit log carries no accusation:
-    ``recorded_halt_reason`` is the run's halt reason from the events
-    table, and only "stopped externally" (or no record) is graceful.
+    Two endings qualify: a deliberate restart — supersession (the row was
+    still "running" when its successor claimed the slot) or a watchdog
+    restart (cancelled for making no progress; a liveness restart, not a
+    strategy failure) — and a graceful stop. A shadow run never ends on its
+    own (the candle stream is infinite), so an ending with no halt reason
+    means the stop event unwound the run (deploy, shutdown, CLI stop). A
+    graceful stop ends completed (stream dried up) or halted with empty
+    metrics (stop seen at the candle loop's top). The latter shape is shared
+    with rail halts and control kills, so it qualifies only when the audit
+    log carries no accusation: ``recorded_halt_reason`` is the run's halt
+    reason from the events table, and only "stopped externally" (or no
+    record) is graceful.
     """
     if row.ended_at is None:
         return False
     halt_reason = (row.metrics or {}).get("halt_reason")
-    superseded = row.status == RunStatus.HALTED.value and halt_reason == SUPERSEDED_HALT_REASON
+    deliberate_restart = row.status == RunStatus.HALTED.value and halt_reason in (
+        SUPERSEDED_HALT_REASON,
+        WATCHDOG_HALT_REASON,
+    )
     graceful_stop = (
         row.mode == RunMode.SHADOW.value
         and halt_reason is None
@@ -127,7 +132,7 @@ def is_resumable(
             or (row.status == RunStatus.HALTED.value and recorded_halt_reason in (None, STOPPED_EXTERNALLY))
         )
     )
-    if not (superseded or graceful_stop):
+    if not (deliberate_restart or graceful_stop):
         return False
     if row.strategy_version != new_strategy_version:
         return False
