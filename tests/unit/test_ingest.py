@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -187,6 +188,51 @@ class TestPollerGapRefill:
         await poller.poll_once()  # cold start: baseline = candle 1
         await poller.poll_once()
         assert client.calls[-1] == BASE + timedelta(hours=1) + timedelta(seconds=1)
+
+
+class TestPollerRetryBackoff:
+    """A rate-limited venue must not be retried at a fixed interval."""
+
+    def test_delay_doubles_per_consecutive_failure_up_to_the_cap(self) -> None:
+        poller = LiveCandlePoller(FakeClient([]), PAIR, TF, poll_interval_seconds=20)  # type: ignore[arg-type]
+        assert [poller._retry_delay(n) for n in range(1, 6)] == [20, 40, 80, 160, 300]
+        assert poller._retry_delay(50) == poller.MAX_BACKOFF_SECONDS  # capped, never unbounded
+
+    async def test_stream_backs_off_on_failures_and_resets_after_a_success(self) -> None:
+        class RateLimitedClient:
+            """Fails the first three fetches, then serves candles."""
+
+            def __init__(self) -> None:
+                self.n = 0
+
+            async def fetch_candles(
+                self, pair: Pair, timeframe: Timeframe, since: datetime | None = None, limit: int = 720
+            ) -> list[Candle]:
+                self.n += 1
+                if self.n <= 3:
+                    raise RuntimeError("EGeneral:Too many requests")
+                return [candle(self.n)]
+
+        poller = LiveCandlePoller(RateLimitedClient(), PAIR, TF, poll_interval_seconds=20)  # type: ignore[arg-type]
+        stop = asyncio.Event()
+        delays: list[float] = []
+
+        async def record(_stop: asyncio.Event | None, seconds: float) -> None:
+            delays.append(seconds)
+            if len(delays) == 5:
+                stop.set()
+
+        poller._wait = record  # type: ignore[assignment]
+        [c async for c in poller.stream(stop)]
+
+        # three failures back off, then one success returns to the interval
+        assert delays == [20, 40, 80, 20, 20]
+
+    async def test_wait_returns_at_once_when_stop_is_set(self) -> None:
+        # a backed-off poller must not hold up shutdown for minutes
+        stop = asyncio.Event()
+        stop.set()
+        await asyncio.wait_for(LiveCandlePoller._wait(stop, 300), timeout=1)
 
 
 class TestPollerOwedWarning:

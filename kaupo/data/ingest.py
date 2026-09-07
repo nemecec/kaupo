@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -213,6 +214,11 @@ class LiveCandlePoller:
     # successor one timeframe after that, plus slack
     OWED_SLACK = timedelta(minutes=2)
 
+    # consecutive failures back off exponentially from the poll interval: a
+    # fixed 20s retry keeps steady pressure on a venue that is already rate
+    # limiting us, which can hold the limit window open
+    MAX_BACKOFF_SECONDS = 300.0
+
     def __init__(
         self,
         client: KrakenClient,
@@ -279,12 +285,44 @@ class LiveCandlePoller:
                 self._empty_streak,
             )
 
+    def _retry_delay(self, failures: int) -> float:
+        """Seconds to wait after ``failures`` consecutive failed polls.
+
+        Doubles per failure from the poll interval, capped at
+        ``MAX_BACKOFF_SECONDS``. One success resets the count, so an isolated
+        error costs one normal interval.
+        """
+        steps = min(failures - 1, 20)  # a long outage must not overflow the exponent
+        return min(self._poll_interval * 2.0**steps, self.MAX_BACKOFF_SECONDS)
+
+    @staticmethod
+    async def _wait(stop: asyncio.Event | None, seconds: float) -> None:
+        """Wait ``seconds``, but return at once when ``stop`` is set.
+
+        A backed-off poller must not hold up shutdown for minutes.
+        """
+        if stop is None:
+            await asyncio.sleep(seconds)
+            return
+        with suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=seconds)
+
     async def stream(self, stop: asyncio.Event | None = None) -> AsyncIterator[Candle]:
-        """Endlessly yield newly closed candles until ``stop`` is set."""
+        """Endlessly yield newly closed candles until ``stop`` is set.
+
+        A failed poll loses no data: the next fetch is anchored to the
+        baseline, so a backed-off poll returns the whole gap.
+        """
+        failures = 0
         while stop is None or not stop.is_set():
             try:
                 for candle in await self.poll_once():
                     yield candle
             except Exception:
-                log.exception("Polling failed; retrying in %ss", self._poll_interval)
-            await asyncio.sleep(self._poll_interval)
+                failures += 1
+                delay = self._retry_delay(failures)
+                log.exception("Polling failed (%d in a row); retrying in %ss", failures, delay)
+            else:
+                failures = 0
+                delay = self._poll_interval
+            await self._wait(stop, delay)
