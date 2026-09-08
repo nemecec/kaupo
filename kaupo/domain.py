@@ -298,6 +298,8 @@ class Order:
     filled_price: float | None = None
     filled_ts: datetime | None = None
     fee: float = 0.0
+    # the exchange's own order id, set by a live venue; None on paper orders
+    exchange_order_id: str | None = None
 
 
 @dataclass(frozen=True)

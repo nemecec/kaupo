@@ -1,8 +1,11 @@
-"""Desired-state supervisor: reconciles live shadow runs to run_assignments rows.
+"""Desired-state supervisor: reconciles running shadow and live runs to run_assignments rows.
 
 Enabled rows are the desired state. Each runs as an in-process asyncio task
-(``run_shadow``, or ``run_portfolio_shadow`` for a row with a ``pairs``
-universe, with its own stop event and its own Kraken client). The poll
+(``run_shadow``, ``run_portfolio_shadow`` for a row with a ``pairs``
+universe, or ``run_live`` for a ``mode='live'`` row, with its own stop event
+and its own Kraken client). A live row is started only when live trading is
+armed and the row is single-pair; otherwise it is skipped through the usual
+backoff, never a hot retry loop. The poll
 loop diffs desired rows against the live tasks: it starts what is missing,
 stops what is disabled, deleted, or config-changed, and restarts crashes
 after a backoff. A run killed through the control channel stays down until a
@@ -21,7 +24,9 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from kaupo.config import Settings, get_settings
 from kaupo.core.engine import RunResult
+from kaupo.core.live_runner import LiveRequest, LiveTradingUnavailable, check_armed, run_live
 from kaupo.core.recorder import WATCHDOG_HALT_REASON
 from kaupo.core.resume import config_hash as config_hash
 from kaupo.core.runner import PortfolioShadowRequest, ShadowRequest, run_portfolio_shadow, run_shadow
@@ -34,6 +39,9 @@ from kaupo.domain import Pair, RunMode, RunStatus, Timeframe, utc_now
 from kaupo.sdk.protocol import LoadedStrategy
 
 log = logging.getLogger(__name__)
+
+#: assignment modes the supervisor runs; backtests go through the job queue
+SUPERVISED_MODES = (RunMode.SHADOW.value, RunMode.LIVE.value)
 
 RECONCILE_INTERVAL_SECONDS = 15.0
 RESTART_BACKOFF = timedelta(seconds=60)
@@ -171,22 +179,21 @@ async def _latest_control_command(session: AsyncSession, run_id: str, not_before
 
 
 async def halt_orphan_runs(session: AsyncSession) -> int:
-    """Halt shadow-mode 'running' rows that match no enabled assignment.
+    """Halt long-running 'running' rows that match no enabled assignment.
 
     Such rows belong to dead processes (an old shadow container, a crashed
     supervisor) — the same slot-claiming idea as DbRecorder.start, which
     supersedes stale rows of the same strategy, pair, and timeframe.
-    Matching is mode + strategy + config pair + config timeframe.
+    Matching is mode + strategy + config pair + config timeframe, so a
+    shadow row and a live row of the same strategy never collide.
     """
-    enabled = [
-        a for a in await list_assignments(session, enabled_only=True) if a.mode == RunMode.SHADOW.value
-    ]
-    slots = {(a.strategy_id, a.pair, a.timeframe) for a in enabled}
+    enabled = [a for a in await list_assignments(session, enabled_only=True) if a.mode in SUPERVISED_MODES]
+    slots = {(a.mode, a.strategy_id, a.pair, a.timeframe) for a in enabled}
     rows = (
         (
             await session.execute(
                 select(RunRow).where(
-                    RunRow.mode == RunMode.SHADOW.value,
+                    RunRow.mode.in_(SUPERVISED_MODES),
                     RunRow.status == RunStatus.RUNNING.value,
                 )
             )
@@ -197,13 +204,31 @@ async def halt_orphan_runs(session: AsyncSession) -> int:
     halted = 0
     for row in rows:
         config = row.config or {}
-        if (row.strategy_id, config.get("pair"), config.get("timeframe")) in slots:
+        if (row.mode, row.strategy_id, config.get("pair"), config.get("timeframe")) in slots:
             continue
         row.status = RunStatus.HALTED.value
         row.ended_at = utc_now()
         row.metrics = {"halt_reason": "no matching assignment"}
         halted += 1
     return halted
+
+
+def live_start_error(assignment: Assignment, settings: Settings) -> str | None:
+    """Why this live assignment must not start, or None when it may.
+
+    Portfolio live runs are unsupported, and an unarmed or uncredentialed
+    host must never reach the exchange. Both are configuration faults, so
+    the caller backs the row off instead of retrying it every cycle.
+    """
+    if assignment.mode != RunMode.LIVE.value:
+        return None
+    if assignment.pairs is not None:
+        return "live runs are single-pair only; this assignment declares a portfolio universe"
+    try:
+        check_armed(settings)
+    except LiveTradingUnavailable as exc:
+        return str(exc)
+    return None
 
 
 async def _run_assignment(
@@ -215,6 +240,20 @@ async def _run_assignment(
     funding_refresh_seconds: float,
 ) -> RunResult:
     strategy = strategies[assignment.strategy_id]  # guarded by the supervisor's start check
+    if assignment.mode == RunMode.LIVE.value:
+        # the live venue owns the authenticated client; this one stays public
+        # market data, exactly as in a shadow run
+        async with KrakenClient() as client:
+            live_request = LiveRequest(
+                strategy=strategy,
+                params=assignment.params,
+                pair=Pair.parse(assignment.pair),
+                timeframe=Timeframe.parse(assignment.timeframe),
+                starting_cash=assignment.starting_cash or DEFAULT_STARTING_CASH,
+                poll_interval_seconds=poll_interval_seconds,
+                assignment_id=assignment.id,
+            )
+            return await run_live(live_request, sessionmaker, client, stop)
     # One Kraken client per run: each run gets its own exchange rate-limit
     # bucket. A shared client may be wanted later, when runs multiply.
     async with KrakenClient() as client, BinanceClient() as funding_client:
@@ -399,7 +438,7 @@ async def run_supervisor(
             await _reap_finished(sessionmaker, live, killed, backoff, restart_backoff)
             async with sm_scope(sessionmaker) as session:
                 rows = await list_assignments(session, enabled_only=True)
-            rows = [a for a in rows if a.mode == RunMode.SHADOW.value]
+            rows = [a for a in rows if a.mode in SUPERVISED_MODES]
             by_id = {a.id: a for a in rows}
             for aid in await _stalled_runs(sessionmaker, live, by_id):
                 lr = live.pop(aid)
@@ -417,7 +456,12 @@ async def run_supervisor(
             held_down = set(killed) | {
                 aid for aid, failed_at in backoff.items() if in_backoff(failed_at, utc_now(), restart_backoff)
             }
-            desired = {a.id: config_hash(a.strategy_id, a.pair, a.timeframe, a.params, a.pairs) for a in rows}
+            # the mode joins the hash here only (never in the persisted run
+            # config): switching a row between shadow and live must restart it
+            desired = {
+                a.id: f"{a.mode}:{config_hash(a.strategy_id, a.pair, a.timeframe, a.params, a.pairs)}"
+                for a in rows
+            }
             plan = reconcile(desired, {aid: lr.config_hash for aid, lr in live.items()}, held_down)
             for aid in plan.stop:
                 log.info("Stopping run for assignment %s (disabled, deleted, or changed)", aid)
@@ -431,6 +475,11 @@ async def run_supervisor(
                         aid,
                         assignment.strategy_id,
                     )
+                    backoff[aid] = utc_now()  # no hot retry loop
+                    continue
+                blocked = live_start_error(assignment, get_settings())
+                if blocked is not None:
+                    log.error("Assignment %s: %s; not starting", aid, blocked)
                     backoff[aid] = utc_now()  # no hot retry loop
                     continue
                 if (assignment.pairs is not None) != loaded.is_portfolio:
@@ -459,7 +508,8 @@ async def run_supervisor(
                 )
                 live[aid] = _LiveRun(config_hash=desired[aid], stop=stop_event, task=task)
                 log.info(
-                    "Started run for assignment %s: %s on %s %s",
+                    "Started %s run for assignment %s: %s on %s %s",
+                    assignment.mode,
                     aid,
                     assignment.strategy_id,
                     assignment.pair,

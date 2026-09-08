@@ -116,6 +116,20 @@ def _validate_mode(mode: str) -> str:
         raise HTTPException(status_code=422, detail=f"unknown mode {mode!r}; valid: {valid}") from None
 
 
+def _validate_live(mode: str, portfolio: bool) -> None:
+    """Live runs are single-pair. A portfolio universe has no live path yet.
+
+    Rejecting here keeps the desired-state table honest: the supervisor
+    would otherwise hold the row down in backoff forever, with the reason
+    visible only in its logs.
+    """
+    if mode == RunMode.LIVE.value and portfolio:
+        raise HTTPException(
+            status_code=422,
+            detail="live runs are single-pair only; pass pair, not pairs",
+        )
+
+
 @router.get("")
 async def list_assignments(
     _: Annotated[Principal, Depends(get_principal)],
@@ -141,13 +155,15 @@ async def create_assignment(
         raise HTTPException(status_code=409, detail=f"assignment {assignment_id!r} already exists")
     pair = _validate_pair(body.pair) if body.pair is not None else ""
     pairs = _validate_pairs(body.pairs) if body.pairs is not None else None
+    mode = _validate_mode(body.mode)
+    _validate_live(mode, portfolio=pairs is not None)
     assignment = await assignments_repo.create_assignment(
         session,
         id=assignment_id,
         strategy_id=body.strategy_id,
         pair=pair,  # the repo derives the joined universe when pairs is set
         timeframe=_validate_timeframe(body.timeframe),
-        mode=_validate_mode(body.mode),
+        mode=mode,
         params=body.params,
         enabled=body.enabled,
         starting_cash=body.starting_cash,
@@ -186,6 +202,8 @@ async def update_assignment(
         changes["starting_cash"] = body.starting_cash
     if not changes:
         raise HTTPException(status_code=422, detail="at least one field is required")
+    if "pairs" in changes or "pair" in changes:
+        _validate_live(current.mode, portfolio=changes.get("pairs") is not None)
     if "strategy_id" in changes or "pairs" in changes or "pair" in changes:
         strategy_id = str(changes.get("strategy_id", current.strategy_id))
         _validate_strategy_kind(
