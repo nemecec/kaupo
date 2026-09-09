@@ -36,7 +36,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from kaupo.core.notify import send_alert
 from kaupo.db.models import FillRow, OrderRow, RunRow
 from kaupo.db.session import sm_scope
-from kaupo.domain import Fill, Order, OrderId, OrderStatus, OrderType, Pair, Position, RunMode
+from kaupo.domain import (
+    Fill,
+    Order,
+    OrderId,
+    OrderStatus,
+    OrderType,
+    Pair,
+    Position,
+    RunMode,
+    utc_now,
+)
 from kaupo.venues.kraken_client import ExchangeError, ExchangeTrade, TradingClient
 from kaupo.venues.kraken_live import aggregate_trades, unattributed_order_id
 
@@ -192,28 +202,56 @@ async def reconcile_live(
     pair: Pair,
     positions: dict[Pair, Position],
     cash: Decimal,
+    history_since: datetime | None,
     check_quote: bool,
+    now: datetime | None = None,
     base_tolerance: float = BASE_TOLERANCE,
     quote_tolerance: float = QUOTE_TOLERANCE,
 ) -> ReconcileResult:
     """Bring the exchange and the books into agreement, or refuse to start.
 
     ``positions`` and ``cash`` are the state the resume machinery replayed
-    from the recorded fills. ``check_quote`` is false for a run with no
-    predecessor chain: its ledger opens at a configured starting cash, which
-    the account balance has no reason to match. The base-asset check always
-    applies — that one is comparable in every case.
+    from the recorded fills.
+
+    ``history_since`` is the earliest moment whose trades belong to this
+    run's chain — the chain root's start. ``None`` means there is no chain:
+    a fresh run recovers no history at all, because every trade on the
+    account predates the platform's involvement with the pair, and adopting
+    one would invent fills the run never made. Its trade cursor is seeded at
+    ``now`` instead, so only what this run does from here counts.
+
+    ``check_quote`` follows the same split: a fresh run's ledger opens at a
+    configured starting cash, which the account balance has no reason to
+    match. The base-asset check always applies — that one is comparable in
+    every case, and it is what catches an account that already holds the
+    base asset.
 
     Raises :class:`ReconciliationRefused` when the drift is beyond tolerance.
     """
+    now = now if now is not None else utc_now()
     cancelled = await _cancel_open_orders(client, pair)
-    async with sm_scope(sessionmaker) as session:
-        since = await last_recorded_fill_ts(session, pair)
-    trades = await _fetch_since(client, pair, since)
-    missed = await _recover_missed(sessionmaker, pair, trades)
-    cursor_ms = max((int(t.ts.timestamp() * 1000) for t in trades), default=None)
-    if since is not None and cursor_ms is None:
-        cursor_ms = int(since.timestamp() * 1000)
+    trades: list[ExchangeTrade] = []
+    missed: list[tuple[Order, Fill]] = []
+    cursor_ms = int(now.timestamp() * 1000)
+    if history_since is not None:
+        async with sm_scope(sessionmaker) as session:
+            recorded_until = await last_recorded_fill_ts(session, pair)
+        # never reach back past the chain root: older trades are not this
+        # run's, however empty the chain's fill history is
+        since = max(history_since, recorded_until) if recorded_until is not None else history_since
+        trades = await _fetch_since(client, pair, since)
+        missed = await _recover_missed(sessionmaker, pair, trades)
+        cursor_ms = max(
+            (int(t.ts.timestamp() * 1000) for t in trades),
+            default=int(since.timestamp() * 1000),
+        )
+    else:
+        log.info(
+            "Fresh live run on %s: no chain to recover trades into, so the account's own "
+            "history stays out of the books; the trade cursor starts at %s",
+            pair,
+            now,
+        )
 
     for order, fill in missed:
         log.warning(

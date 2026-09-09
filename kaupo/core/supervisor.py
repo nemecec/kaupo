@@ -242,8 +242,9 @@ async def _run_assignment(
     strategy = strategies[assignment.strategy_id]  # guarded by the supervisor's start check
     if assignment.mode == RunMode.LIVE.value:
         # the live venue owns the authenticated client; this one stays public
-        # market data, exactly as in a shadow run
-        async with KrakenClient() as client:
+        # market data, and the funding client feeds the same advisory series
+        # a shadow run gets, exactly as in a shadow run
+        async with KrakenClient() as client, BinanceClient() as funding_client:
             live_request = LiveRequest(
                 strategy=strategy,
                 params=assignment.params,
@@ -252,8 +253,9 @@ async def _run_assignment(
                 starting_cash=assignment.starting_cash or DEFAULT_STARTING_CASH,
                 poll_interval_seconds=poll_interval_seconds,
                 assignment_id=assignment.id,
+                funding_refresh_seconds=funding_refresh_seconds,
             )
-            return await run_live(live_request, sessionmaker, client, stop)
+            return await run_live(live_request, sessionmaker, client, stop, funding_client=funding_client)
     # One Kraken client per run: each run gets its own exchange rate-limit
     # bucket. A shared client may be wanted later, when runs multiply.
     async with KrakenClient() as client, BinanceClient() as funding_client:

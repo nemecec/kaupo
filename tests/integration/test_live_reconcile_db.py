@@ -22,6 +22,8 @@ pytestmark = pytest.mark.integration
 
 PAIR = Pair.parse("SOL/EUR")
 BASE = datetime(2026, 3, 1, tzinfo=UTC)
+# a resumed run: its chain began before any of these trades
+CHAIN_START = BASE - timedelta(days=1)
 
 
 async def _live_run(session: AsyncSession, run_id: str = "run-1") -> str:
@@ -98,6 +100,7 @@ class TestOpenOrders:
             pair=PAIR,
             positions={},
             cash=Decimal("1000"),
+            history_since=CHAIN_START,
             check_quote=True,
         )
 
@@ -123,6 +126,7 @@ class TestMissedTrades:
             pair=PAIR,
             positions={PAIR: Position(pair=PAIR, size=1.0, avg_entry=100.0)},
             cash=Decimal("900"),
+            history_since=CHAIN_START,
             check_quote=False,
         )
 
@@ -163,6 +167,7 @@ class TestMissedTrades:
             pair=PAIR,
             positions={},
             cash=Decimal("1000"),
+            history_since=CHAIN_START,
             check_quote=False,
         )
 
@@ -189,6 +194,7 @@ class TestMissedTrades:
             pair=PAIR,
             positions={PAIR: Position(pair=PAIR, size=0.4, avg_entry=100.0)},
             cash=Decimal("960"),
+            history_since=CHAIN_START,
             check_quote=False,
         )
 
@@ -204,7 +210,13 @@ class TestMissedTrades:
         sessionmaker = get_sessionmaker()
 
         first = await reconcile_live(
-            client, sessionmaker, pair=PAIR, positions={}, cash=Decimal("1000"), check_quote=False
+            client,
+            sessionmaker,
+            pair=PAIR,
+            positions={},
+            cash=Decimal("1000"),
+            history_since=CHAIN_START,
+            check_quote=False,
         )
         assert len(first.missed) == 1
 
@@ -249,12 +261,94 @@ class TestMissedTrades:
             pair=PAIR,
             positions={PAIR: Position(pair=PAIR, size=1.0, avg_entry=100.0)},
             cash=Decimal("900"),
+            history_since=CHAIN_START,
             check_quote=False,
         )
         assert second.missed == []  # recorded once, never twice
 
         fills = (await session.execute(select(FillRow))).scalars().all()
         assert len(fills) == 1
+
+
+class TestFreshRun:
+    """A live run with no chain adopts none of the account's own past."""
+
+    async def test_account_history_is_not_recovered_into_a_fresh_run(self, session: AsyncSession) -> None:
+        # the account traded this pair before the platform ever touched it,
+        # and the trades net to a flat position, so the base check passes
+        client = FakeKrakenClient(balances={"EUR": 1000.0, "SOL": 0.0})
+        client.add_trade("OLD-1", price=100.0, size=1.0, fee=0.16, ts=BASE, side=Side.BUY)
+        client.add_trade(
+            "OLD-2", price=110.0, size=1.0, fee=0.18, ts=BASE + timedelta(hours=1), side=Side.SELL
+        )
+
+        result = await reconcile_live(
+            client,
+            get_sessionmaker(),
+            pair=PAIR,
+            positions={},
+            cash=Decimal("1000"),
+            history_since=None,
+            check_quote=False,
+        )
+
+        assert result.missed == []  # no phantom fills in the new run's books
+        assert result.seen_trade_ids == set()
+        assert "fetch_my_trades" not in client.calls  # not even read
+
+    async def test_the_trade_cursor_starts_at_the_run_start(self, session: AsyncSession) -> None:
+        started = datetime(2026, 3, 2, 12, tzinfo=UTC)
+        client = FakeKrakenClient(balances={"EUR": 1000.0, "SOL": 0.0})
+        client.add_trade("OLD-1", price=100.0, size=1.0, fee=0.16, ts=BASE, side=Side.BUY)
+        client.add_trade("OLD-2", price=100.0, size=1.0, fee=0.16, ts=BASE, side=Side.SELL)
+
+        result = await reconcile_live(
+            client,
+            get_sessionmaker(),
+            pair=PAIR,
+            positions={},
+            cash=Decimal("1000"),
+            history_since=None,
+            check_quote=False,
+            now=started,
+        )
+
+        assert result.trades_cursor_ms == int(started.timestamp() * 1000)
+
+    async def test_an_account_holding_the_base_asset_still_refuses(self, session: AsyncSession) -> None:
+        """Skipping history does not skip the safety net."""
+        client = FakeKrakenClient(balances={"EUR": 1000.0, "SOL": 3.0})
+
+        with pytest.raises(ReconciliationRefused, match="SOL"):
+            await reconcile_live(
+                client,
+                get_sessionmaker(),
+                pair=PAIR,
+                positions={},
+                cash=Decimal("1000"),
+                history_since=None,
+                check_quote=False,
+            )
+
+
+class TestHistoryFloor:
+    async def test_a_trade_older_than_the_chain_is_left_alone(self, session: AsyncSession) -> None:
+        await _live_run(session)
+        await session.commit()
+        client = FakeKrakenClient(balances={"EUR": 1000.0, "SOL": 0.0})
+        client.add_trade("ANCIENT", price=100.0, size=1.0, fee=0.16, ts=CHAIN_START - timedelta(days=5))
+
+        result = await reconcile_live(
+            client,
+            get_sessionmaker(),
+            pair=PAIR,
+            positions={},
+            cash=Decimal("1000"),
+            history_since=CHAIN_START,
+            check_quote=True,
+        )
+
+        assert result.missed == []
 
 
 class TestBalanceDrift:
@@ -267,6 +361,7 @@ class TestBalanceDrift:
             pair=PAIR,
             positions={PAIR: Position(pair=PAIR, size=1.0, avg_entry=100.0)},
             cash=Decimal("1000"),
+            history_since=CHAIN_START,
             check_quote=True,
         )
 
@@ -282,6 +377,7 @@ class TestBalanceDrift:
                 pair=PAIR,
                 positions={PAIR: Position(pair=PAIR, size=1.0, avg_entry=100.0)},
                 cash=Decimal("1000"),
+                history_since=CHAIN_START,
                 check_quote=True,
             )
 
@@ -295,6 +391,7 @@ class TestBalanceDrift:
                 pair=PAIR,
                 positions={},
                 cash=Decimal("1000"),
+                history_since=CHAIN_START,
                 check_quote=True,
             )
 
@@ -308,6 +405,7 @@ class TestBalanceDrift:
             pair=PAIR,
             positions={},
             cash=Decimal("1000"),
+            history_since=None,
             check_quote=False,
         )
 
@@ -326,6 +424,7 @@ class TestBalanceDrift:
             pair=PAIR,
             positions={},  # the books show no position yet
             cash=Decimal("1000"),
+            history_since=CHAIN_START,
             check_quote=True,
         )
 
@@ -349,6 +448,7 @@ class TestSecrets:
                 pair=PAIR,
                 positions={},
                 cash=Decimal("1000"),
+                history_since=CHAIN_START,
                 check_quote=False,
             )
 

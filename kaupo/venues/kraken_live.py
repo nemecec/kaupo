@@ -27,6 +27,14 @@ would leave a window in which a fill lands between the poll and the cancel.
 Sizes round DOWN to the pair's lot precision and are clamped to the
 configured notional ceiling; an order below the exchange minimum is skipped,
 logged, and alerted, never rounded up.
+
+**One live run per pair.** ``cancel_all`` sweeps every open order the
+account holds on the pair, not only the ones this venue placed, because the
+kill switch must leave nothing behind that a lost tracking table hides. Two
+live runs on the same pair would therefore cancel each other's orders. The
+supervisor allows one run per (mode, strategy, pair, timeframe) slot, and
+live runs are single-pair, so this is a limitation to respect rather than a
+race to defend against.
 """
 
 from __future__ import annotations
@@ -262,6 +270,11 @@ class KrakenVenue:
         ``size`` is signed, like the paper venue: positive sells the long.
         Live runs never end on their own (``liquidate_end`` is false), so
         this is the manual close-out path.
+
+        The returned fill covers the trades the first successful poll saw.
+        A liquidation that fills across several polls leaves the remainder
+        to the ordinary trade poll, or to the next run's reconciliation —
+        the exchange is still the truth, the fill simply lands later.
         """
         side = Side.SELL if size > 0 else Side.BUY
         order = Order(
@@ -306,6 +319,8 @@ class KrakenVenue:
 
         The kill switch and every shutdown path land here, so it must leave
         no live order behind — including one whose local tracking was lost.
+        The sweep is account-wide for the pair, so only one live run may
+        trade a pair at a time (see the module docstring).
         """
         cancelled: list[Order] = []
         for live in list(self._open.values()):

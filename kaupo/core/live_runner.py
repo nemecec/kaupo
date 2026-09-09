@@ -31,12 +31,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.config import Settings, get_settings
 from kaupo.core.engine import Engine, EngineConfig, RunResult
+from kaupo.core.funding import DbFundingProvider, EmptyFundingProvider, FundingProvider
 from kaupo.core.live_reconcile import ReconciliationRefused, reconcile_live
 from kaupo.core.orderflow import DbOrderFlowProvider
 from kaupo.core.positioning import DbFuturesMetricsProvider, DbOpenInterestProvider
 from kaupo.core.recorder import DbRecorder, RunInfo, RunRecorder
-from kaupo.core.resume import prepare_resume
-from kaupo.core.runner import DbControlProbe, _chain_persist
+from kaupo.core.resume import ResumeState, prepare_resume
+from kaupo.core.runner import DbControlProbe, _chain_persist, _funding_refresh_loop
+from kaupo.data.binance import BinanceClient
 from kaupo.data.candles import get_latest_candles
 from kaupo.data.ingest import LiveCandlePoller, backfill
 from kaupo.data.kraken import KrakenClient
@@ -80,6 +82,8 @@ class LiveRequest:
     poll_interval_seconds: float = 20.0
     # supervisor-managed runs carry their desired-state row id
     assignment_id: str | None = None
+    # seconds between funding-rate refreshes (Binance perp of the base asset)
+    funding_refresh_seconds: float = 1800.0
 
 
 class _ReconciledRecorder:
@@ -153,11 +157,15 @@ async def run_live(
     trading: TradingClient | None = None,
     bridge: AsyncBridge | None = None,
     settings: Settings | None = None,
+    funding_client: BinanceClient | None = None,
 ) -> RunResult:
     """Run one live assignment. ``trading`` and ``bridge`` are injected by tests.
 
     ``client`` stays the public market-data client: candles come from the
     same poller the shadow runs use, so the two modes see the same stream.
+    ``funding_client`` feeds the same advisory funding series a shadow run
+    gets; without it the strategy sees an empty series, and any funding
+    filter it carries goes quiet.
     """
     settings = settings if settings is not None else get_settings()
     check_armed(settings)
@@ -204,8 +212,10 @@ async def run_live(
             pair=request.pair,
             positions=ledger.open_positions,
             cash=ledger.cash,
-            # a fresh run's cash is a configured figure, not a carried one,
-            # so the account balance has nothing to match it against
+            # with no chain there is no history that belongs to this run:
+            # the account's own past stays out of the books, and the cash
+            # figure is a configured one the balance cannot match either
+            history_since=_chain_start(resume),
             check_quote=resume is not None,
         )
         _apply_recovered(ledger, reconciled.missed_fills)
@@ -229,6 +239,7 @@ async def run_live(
             config=config,
             warmup_candles=warmup_candles,
             recovered=reconciled.missed,
+            funding_client=funding_client,
         )
     except ReconciliationRefused:
         log.error("Live run for %s refused to start: exchange and ledger disagree", request.pair)
@@ -240,6 +251,26 @@ async def run_live(
                 await bridge.run(trading.close())
         if owns_bridge:
             bridge.close()
+
+
+def _chain_start(resume: ResumeState | None) -> datetime | None:
+    """When this run's chain began, or None for a fresh run.
+
+    Reconciliation recovers trades only from this moment on, so a live run
+    starting on an account with its own trading past adopts none of it.
+    """
+    if resume is None:
+        return None
+    try:
+        return datetime.fromisoformat(resume.chain_started_at)
+    except ValueError:
+        # an unparsable chain root is not a reason to adopt history: fall
+        # back to the newest recorded fill, which the reconciler floors to
+        log.warning(
+            "Chain start %r is not a timestamp; recovering trades from the last recorded fill only",
+            resume.chain_started_at,
+        )
+        return datetime.min.replace(tzinfo=UTC)
 
 
 def _build_client(bridge: AsyncBridge, settings: Settings) -> TradingClient:
@@ -323,8 +354,14 @@ async def _run_engine(
     config: dict[str, Any],
     warmup_candles: list[Candle],
     recovered: list[tuple[Order, Fill]],
+    funding_client: BinanceClient | None,
 ) -> RunResult:
     recorder = _ReconciledRecorder(DbRecorder(sessionmaker), recovered)
+    # funding stays advisory, exactly as in a shadow run: without a client
+    # the series is empty and the strategy must tolerate no data
+    funding: FundingProvider = EmptyFundingProvider()
+    if funding_client is not None:
+        funding = DbFundingProvider(sessionmaker)
     engine = Engine(
         strategy=strategy,
         venue=venue,
@@ -351,6 +388,7 @@ async def _run_engine(
             config=config,
         ),
         control_probe=DbControlProbe(sessionmaker, recorder.run_id),
+        funding=funding,
         orderflow=DbOrderFlowProvider(sessionmaker),
         open_interest=DbOpenInterestProvider(sessionmaker),
         futures_metrics=DbFuturesMetricsProvider(sessionmaker),
@@ -371,9 +409,23 @@ async def _run_engine(
         len(warmup_candles),
     )
     stream = _chain_persist(warmup_candles, poller, sessionmaker, stop)
+    refresh_task: asyncio.Task[None] | None = None
+    if funding_client is not None:
+        refresh_task = asyncio.create_task(
+            _funding_refresh_loop(
+                funding_client,
+                sessionmaker,
+                [request.pair.base],
+                request.funding_refresh_seconds,
+                stop,
+            )
+        )
     try:
         result = await engine.run(stream, stop=stop, warmup=len(warmup_candles))
     finally:
+        if refresh_task is not None:
+            refresh_task.cancel()
+            await asyncio.gather(refresh_task, return_exceptions=True)
         venue.close()
     if result.halt_reason:
         from kaupo.core.notify import record_halt

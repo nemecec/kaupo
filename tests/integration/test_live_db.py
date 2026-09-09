@@ -14,7 +14,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from kaupo.config import Settings
+from kaupo.core.live_reconcile import ReconciliationRefused
 from kaupo.core.live_runner import LiveRequest, LiveTradingUnavailable, run_live
+from kaupo.core.recorder import SUPERSEDED_HALT_REASON
 from kaupo.data.candles import upsert_candles
 from kaupo.db.models import EquitySnapshotRow, EventRow, FillRow, OrderRow, RunRow
 from kaupo.db.session import get_sessionmaker
@@ -120,6 +122,17 @@ def armed_settings(**overrides: object) -> Settings:
     }
     base.update(overrides)
     return Settings(**base)  # type: ignore[arg-type]
+
+
+class FakeFundingClient:
+    """Stands in for the Binance funding client; serves an empty series."""
+
+    def __init__(self) -> None:
+        self.requested: list[str] = []
+
+    async def fetch_funding_rates(self, base_asset: str, since: datetime | None = None) -> list:
+        self.requested.append(base_asset)
+        return []
 
 
 @pytest.fixture
@@ -357,17 +370,74 @@ class TestKillSwitch:
 
 
 class TestReconciliationOnStart:
-    async def test_a_trade_the_books_never_saw_is_in_them_before_the_first_candle(
+    async def test_a_fresh_run_adopts_none_of_the_account_history(
+        self, session: AsyncSession, tmp_path: Path, bridge: AsyncBridge
+    ) -> None:
+        """No chain means no history: the account's own past stays out."""
+        (tmp_path / "hold.py").write_text(HOLD_STRATEGY)
+        now, history = await _seed_history(session)
+        stop = asyncio.Event()
+        trading = FakeKrakenClient(balances={"EUR": 1000.0, "SOL": 0.0})
+        # the account traded this pair before the platform did, netting flat
+        trading.add_trade("OLD-1", price=100.0, size=1.0, fee=0.16, ts=utc_now() - timedelta(days=2))
+        trading.add_trade(
+            "OLD-2",
+            price=110.0,
+            size=1.0,
+            fee=0.18,
+            ts=utc_now() - timedelta(days=2) + timedelta(hours=1),
+            side=Side.SELL,
+        )
+
+        result = await run_live(
+            _request(tmp_path, strategy_id="hold"),
+            get_sessionmaker(),
+            ScriptedCandles(history, [[hourly(0, now)]], stop),  # type: ignore[arg-type]
+            stop=stop,
+            trading=trading,
+            bridge=bridge,
+            settings=armed_settings(),
+        )
+
+        assert result.num_fills == 0
+        assert (await session.execute(select(FillRow))).scalars().all() == []
+        assert float(result.final_equity) == 1000.0  # the configured cash, untouched
+
+    async def test_a_resumed_run_recovers_the_trade_its_predecessor_lost(
         self, session: AsyncSession, tmp_path: Path, bridge: AsyncBridge
     ) -> None:
         (tmp_path / "hold.py").write_text(HOLD_STRATEGY)
         now, history = await _seed_history(session)
+        request = _request(tmp_path, strategy_id="hold")
+        chain_start = utc_now() - timedelta(hours=6)
+        # a predecessor of the same config, superseded by a restart
+        session.add(
+            RunRow(
+                id="predecessor",
+                mode="live",
+                strategy_id="hold",
+                strategy_version=request.strategy.version,
+                started_at=chain_start,
+                ended_at=utc_now() - timedelta(hours=1),
+                status="halted",
+                metrics={"halt_reason": SUPERSEDED_HALT_REASON},
+                config={
+                    "pair": str(PAIR),
+                    "timeframe": TF.value,
+                    "params": {},
+                    "starting_cash": 1000.0,
+                },
+            )
+        )
+        await session.commit()
+
         stop = asyncio.Event()
-        trading = FakeKrakenClient(balances={"EUR": 800.0, "SOL": 2.0})
-        trading.add_trade("LOST-1", price=100.0, size=2.0, fee=0.32, ts=utc_now() - timedelta(minutes=5))
+        trading = FakeKrakenClient(balances={"EUR": 799.68, "SOL": 2.0})
+        # it bought, then died before the fill was ever recorded
+        trading.add_trade("LOST-1", price=100.0, size=2.0, fee=0.32, ts=utc_now() - timedelta(minutes=30))
 
         result = await run_live(
-            _request(tmp_path, strategy_id="hold"),
+            request,
             get_sessionmaker(),
             ScriptedCandles(history, [[hourly(0, now)]], stop),  # type: ignore[arg-type]
             stop=stop,
@@ -385,3 +455,50 @@ class TestReconciliationOnStart:
         assert orders[0].exchange_order_id == "LOST-1"
         # 1000 - 200 - 0.32 in cash, plus 2 SOL marked at 100
         assert float(result.final_equity) == pytest.approx(999.68, abs=0.01)
+
+    async def test_a_ledger_that_disagrees_with_the_account_refuses_to_start(
+        self, session: AsyncSession, tmp_path: Path, bridge: AsyncBridge
+    ) -> None:
+        (tmp_path / "hold.py").write_text(HOLD_STRATEGY)
+        now, history = await _seed_history(session)
+        stop = asyncio.Event()
+        # the account holds base the books know nothing about
+        trading = FakeKrakenClient(balances={"EUR": 1000.0, "SOL": 5.0})
+
+        with pytest.raises(ReconciliationRefused, match="SOL"):
+            await run_live(
+                _request(tmp_path, strategy_id="hold"),
+                get_sessionmaker(),
+                ScriptedCandles(history, [[hourly(0, now)]], stop),  # type: ignore[arg-type]
+                stop=stop,
+                trading=trading,
+                bridge=bridge,
+                settings=armed_settings(),
+            )
+
+        assert trading.placed == []
+        assert (await session.execute(select(RunRow))).scalars().all() == []
+
+
+class TestFundingParity:
+    async def test_a_live_run_is_fed_the_same_funding_series_as_a_shadow_run(
+        self, session: AsyncSession, tmp_path: Path, bridge: AsyncBridge
+    ) -> None:
+        """A funding filter must not go quiet when a strategy goes live."""
+        (tmp_path / "hold.py").write_text(HOLD_STRATEGY)
+        now, history = await _seed_history(session)
+        stop = asyncio.Event()
+        funding = FakeFundingClient()
+
+        await run_live(
+            _request(tmp_path, strategy_id="hold"),
+            get_sessionmaker(),
+            ScriptedCandles(history, [[hourly(0, now)]], stop),  # type: ignore[arg-type]
+            stop=stop,
+            trading=FakeKrakenClient(balances={"EUR": 1000.0, "SOL": 0.0}),
+            bridge=bridge,
+            settings=armed_settings(),
+            funding_client=funding,  # type: ignore[arg-type]
+        )
+
+        assert funding.requested == ["SOL"]  # the refresh loop ran for the pair's base
