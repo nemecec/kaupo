@@ -382,6 +382,8 @@ class TestBalanceDrift:
             )
 
     async def test_quote_drift_refuses_a_resumed_run(self, session: AsyncSession) -> None:
+        # baseline 1000 + no recorded cash movement: the books imply 1000 EUR,
+        # the account holds 400 — money left the account outside the books
         client = FakeKrakenClient(balances={"EUR": 400.0, "SOL": 0.0})
 
         with pytest.raises(ReconciliationRefused, match="EUR"):
@@ -393,6 +395,65 @@ class TestBalanceDrift:
                 cash=Decimal("1000"),
                 history_since=CHAIN_START,
                 check_quote=True,
+                quote_baseline=1000.0,
+                starting_cash=1000.0,
+            )
+
+    async def test_quote_check_stands_down_without_a_baseline(self, session: AsyncSession) -> None:
+        """A chain that predates the baseline has nothing to compare against.
+
+        The runner adopts the current balance as the baseline instead; the
+        next resume checks against it.
+        """
+        client = FakeKrakenClient(balances={"EUR": 400.0, "SOL": 0.0})
+
+        result = await reconcile_live(
+            client,
+            get_sessionmaker(),
+            pair=PAIR,
+            positions={},
+            cash=Decimal("1000"),
+            history_since=CHAIN_START,
+            check_quote=True,
+        )
+
+        assert result.balances["EUR"] == 400.0
+
+    async def test_relative_quote_check_passes_on_an_unmatched_account(self, session: AsyncSession) -> None:
+        """The dust-pilot shape: born on an account that never held starting_cash."""
+        client = FakeKrakenClient(balances={"EUR": 97.6, "SOL": 0.0})
+
+        result = await reconcile_live(
+            client,
+            get_sessionmaker(),
+            pair=PAIR,
+            positions={},
+            cash=Decimal("100"),
+            history_since=CHAIN_START,
+            check_quote=True,
+            quote_baseline=97.6,
+            starting_cash=100.0,
+        )
+
+        # expected = 97.6 + (100 - 100) = the account's exact balance
+        assert result.balances["EUR"] == 97.6
+
+    async def test_relative_quote_check_catches_money_leaving_the_account(
+        self, session: AsyncSession
+    ) -> None:
+        client = FakeKrakenClient(balances={"EUR": 50.0, "SOL": 0.0})
+
+        with pytest.raises(ReconciliationRefused, match="EUR"):
+            await reconcile_live(
+                client,
+                get_sessionmaker(),
+                pair=PAIR,
+                positions={},
+                cash=Decimal("100"),
+                history_since=CHAIN_START,
+                check_quote=True,
+                quote_baseline=97.6,
+                starting_cash=100.0,
             )
 
     async def test_quote_drift_is_ignored_on_a_fresh_run(self, session: AsyncSession) -> None:
@@ -426,9 +487,12 @@ class TestBalanceDrift:
             cash=Decimal("1000"),
             history_since=CHAIN_START,
             check_quote=True,
+            quote_baseline=1000.0,
+            starting_cash=1000.0,
         )
 
-        # 1000 EUR minus the recovered 100 EUR buy matches the account's 900
+        # baseline 1000 plus the recovered 100 EUR buy: the books imply 900,
+        # matching the account's 900
         assert len(result.missed) == 1
 
 

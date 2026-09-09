@@ -122,6 +122,28 @@ async def test_stitch_chains_three_runs(session: AsyncSession) -> None:
     assert [p.equity for p in points] == [10_000, 10_100, 10_100, 10_200, 10_200, 10_100]
 
 
+async def test_stitch_resumed_run_with_open_position_takes_no_offset(session: AsyncSession) -> None:
+    """kaupo#38: a redeploy with an open position must not fabricate an offset.
+
+    The parent's last and the child's first snapshots straddle one candle;
+    that candle's real P&L move belongs in the curve, not absorbed into a
+    rebase offset that shifts the whole child segment.
+    """
+    parent = _mk_run("run-p", "shadow", "s", BASE)
+    child = _mk_run("run-c", "shadow", "s", BASE + timedelta(hours=4))
+    child.config = {"pair": "BTC/EUR", "timeframe": "1h", "resumed_from": "run-p"}
+    await _runs(session, parent, child)
+    # the parent ends holding a position with +10.14 unrealized at the close
+    _snaps(session, "run-p", [10_000.0, 10_010.14], BASE)
+    # the child resumes the same ledger; the price dipped over the boundary candle
+    _snaps(session, "run-c", [10_004.10, 10_001.26], BASE + timedelta(hours=4))
+    await session.commit()
+
+    points = await stitch_equity(session, "shadow", "s")
+
+    assert [p.equity for p in points] == [10_000.0, 10_010.14, 10_004.10, 10_001.26]
+
+
 async def test_stitch_skips_runs_without_snapshots(session: AsyncSession) -> None:
     await _runs(
         session,

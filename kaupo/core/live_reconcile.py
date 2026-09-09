@@ -183,15 +183,20 @@ def balance_drift(
     pair: Pair,
     positions: dict[Pair, Position],
     cash: Decimal,
+    expected_quote: float | None = None,
 ) -> tuple[float, float]:
     """(base drift, quote drift) between the exchange and the replayed ledger.
 
-    Positive means the exchange holds more than the books say.
+    Positive means the exchange holds more than the books say. ``expected_quote``
+    is the quote balance the books imply (chain baseline plus the recorded cash
+    movement); without it the raw ledger cash is compared, which is meaningful
+    only when the account started out matching the books.
     """
     position = positions.get(pair)
     ledger_base = position.size if position is not None else 0.0
     base_drift = balances.get(pair.base, 0.0) - ledger_base
-    quote_drift = balances.get(pair.quote, 0.0) - float(cash)
+    expected = float(cash) if expected_quote is None else expected_quote
+    quote_drift = balances.get(pair.quote, 0.0) - expected
     return base_drift, quote_drift
 
 
@@ -204,6 +209,8 @@ async def reconcile_live(
     cash: Decimal,
     history_since: datetime | None,
     check_quote: bool,
+    quote_baseline: float | None = None,
+    starting_cash: float | None = None,
     now: datetime | None = None,
     base_tolerance: float = BASE_TOLERANCE,
     quote_tolerance: float = QUOTE_TOLERANCE,
@@ -220,11 +227,14 @@ async def reconcile_live(
     one would invent fills the run never made. Its trade cursor is seeded at
     ``now`` instead, so only what this run does from here counts.
 
-    ``check_quote`` follows the same split: a fresh run's ledger opens at a
-    configured starting cash, which the account balance has no reason to
-    match. The base-asset check always applies — that one is comparable in
-    every case, and it is what catches an account that already holds the
-    base asset.
+    The quote check is RELATIVE: ``quote_baseline`` is the account's quote
+    balance at the chain's birth (recorded in the run config), and the books
+    imply ``quote_baseline + (cash - starting_cash)`` now. Without a baseline
+    the quote check is skipped — a configured starting cash is not an account
+    balance, and comparing against it refuses every resume of a chain born on
+    an unmatched account. The base-asset check always applies — that one is
+    comparable in every case, and it is what catches an account that already
+    holds the base asset.
 
     Raises :class:`ReconciliationRefused` when the drift is beyond tolerance.
     """
@@ -271,14 +281,23 @@ async def reconcile_live(
     balances = await _fetch_balances(client)
     carried = _with_missed(pair, positions, missed)
     carried_cash = cash + sum((_cash_delta(fill) for fill in (f for _, f in missed)), Decimal(0))
-    base_drift, quote_drift = balance_drift(balances, pair, carried, carried_cash)
+    # the quote the books imply: the chain's baseline plus its recorded cash
+    # movement; without a baseline there is nothing meaningful to compare, so
+    # the quote check stands down (a configured starting cash is not a balance)
+    expected_quote = (
+        quote_baseline + (float(carried_cash) - starting_cash)
+        if quote_baseline is not None and starting_cash is not None
+        else None
+    )
+    base_drift, quote_drift = balance_drift(balances, pair, carried, carried_cash, expected_quote)
     await _check_drift(
         pair,
         base_drift,
         quote_drift,
-        check_quote=check_quote,
+        check_quote=check_quote and expected_quote is not None,
         base_tolerance=base_tolerance,
         quote_tolerance=quote_tolerance,
+        expected_quote=expected_quote,
     )
     return ReconcileResult(
         cancelled_txids=cancelled,
@@ -384,15 +403,17 @@ async def _check_drift(
     check_quote: bool,
     base_tolerance: float,
     quote_tolerance: float,
+    expected_quote: float | None = None,
 ) -> None:
     """Accept dust, refuse anything larger. The human resolves real drift."""
     log.info(
-        "Reconciliation drift for %s: base %+.10f %s, quote %+.4f %s (quote checked: %s)",
+        "Reconciliation drift for %s: base %+.10f %s, quote %+.4f %s (expected %s, checked: %s)",
         pair,
         base_drift,
         pair.base,
         quote_drift,
         pair.quote,
+        f"{expected_quote:.4f}" if expected_quote is not None else "n/a",
         check_quote,
     )
     problems = []

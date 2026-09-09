@@ -1,11 +1,12 @@
 """Account-level equity: one curve stitched across the sequential runs of a strategy.
 
 A deploy/restart starts a new run. When the new run resumes its predecessor
-(shadow state carry), its ledger continues the chain and its curve already
-aligns; a fresh run starts at starting_cash and its curve resets. Stitching
-rebases each run's snapshots onto the end of the previous run, giving one
-continuous account-level series. The stored per-run snapshots are unchanged
-— the rebase is a read-time view.
+(shadow state carry), its ledger continues the chain and its curve is already
+absolute — it is stitched with NO offset (a rebase would swallow the real P&L
+move between the two runs' snapshot times, kaupo#38). A fresh run starts at
+starting_cash and its curve resets, so it is rebased onto the end of the
+previous run, giving one continuous account-level series. The stored per-run
+snapshots are unchanged — the stitch is a read-time view.
 """
 
 from dataclasses import dataclass
@@ -71,7 +72,12 @@ async def stitch_equity(session: AsyncSession, mode: str, strategy_id: str) -> l
         first_ts = rows[0].ts
         while stitched and stitched[-1].ts >= first_ts:
             stitched.pop()  # overlap: the later run wins
-        offset = stitched[-1].equity - rows[0].equity if stitched else 0.0
+        # a resumed run carries its predecessor's ledger: its equity is
+        # already absolute, so it takes no offset — a rebase would swallow
+        # the real P&L move between the two runs' snapshots and shift the
+        # whole segment (kaupo#38). Only a fresh ledger gets rebased.
+        resumed = (run.config or {}).get("resumed_from") is not None
+        offset = stitched[-1].equity - rows[0].equity if stitched and not resumed else 0.0
         stitched.extend(
             StitchedPoint(
                 ts=r.ts,

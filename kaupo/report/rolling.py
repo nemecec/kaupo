@@ -47,12 +47,13 @@ when the backtest side failed (no candles, a strategy that does not load,
 a lint failure). A failed assignment never fails the report: the rest of
 the entries still build.
 
-The shadow side feeds the chain's stitched equity (rebased onto the resume
-chain, root first — the same rebase stitch_equity applies, but keyed on the
-assignment's chain so two assignments sharing a strategy stay separate) and
-the chain's in-window fills through the same compute_metrics the backtest
-uses, with the assignment's starting cash. Sharpe is rebase-invariant, so
-the comparison is meaningful even when the chain predates the window.
+The shadow side feeds the chain's stitched equity (per-run segments in chain
+order, root first — the same stitch stitch_equity applies: no offset across a
+resume link, a rebase only onto a fresh ledger — keyed on the assignment's
+chain so two assignments sharing a strategy stay separate) and the chain's
+in-window fills through the same compute_metrics the backtest uses, with the
+assignment's starting cash. Sharpe is rebase-invariant, so the comparison is
+meaningful even when the chain predates the window.
 """
 
 import logging
@@ -139,21 +140,26 @@ def has_min_coverage(*, overlap_days: float, span_days: float) -> bool:
     return overlap_days >= MIN_OVERLAP_DAYS and span_days >= overlap_days * MIN_EQUITY_SPAN_FRACTION
 
 
-def stitch(groups: list[list[tuple[datetime, float]]]) -> list[tuple[datetime, float]]:
+def stitch(
+    groups: list[list[tuple[datetime, float]]], resumed: list[bool] | None = None
+) -> list[tuple[datetime, float]]:
     """One curve from per-run point groups in chain order (root first).
 
-    The same rebase stitch_equity applies: each run's points are offset so
-    the run's first point equals the previous run's last stitched point;
-    where runs overlap, the later run wins.
+    The same rebase stitch_equity applies, with the same resume distinction:
+    a run that resumed its predecessor carries absolute equity and takes no
+    offset (``resumed[i]``), while a fresh ledger is rebased onto the previous
+    run's last stitched point. Where runs overlap, the later run wins.
+    ``resumed`` defaults to all-fresh, the historical behavior.
     """
+    flags = resumed if resumed is not None else [False] * len(groups)
     stitched: list[tuple[datetime, float]] = []
-    for rows in groups:
+    for rows, is_resumed in zip(groups, flags, strict=True):
         if not rows:
             continue
         first_ts = rows[0][0]
         while stitched and stitched[-1][0] >= first_ts:
             stitched.pop()  # overlap: the later run wins
-        offset = stitched[-1][1] - rows[0][1] if stitched else 0.0
+        offset = stitched[-1][1] - rows[0][1] if stitched and not is_resumed else 0.0
         stitched.extend((ts, value + offset) for ts, value in rows)
     return stitched
 
@@ -288,7 +294,8 @@ async def _chain_equity(session: AsyncSession, chain: list[RunRow]) -> list[tupl
     by_run: dict[str, list[tuple[datetime, float]]] = {}
     for row in rows:
         by_run.setdefault(row.run_id, []).append((_aware(row.ts), row.equity))
-    return stitch([by_run.get(run.id, []) for run in chain])
+    resumed = [(run.config or {}).get("resumed_from") is not None for run in chain]
+    return stitch([by_run.get(run.id, []) for run in chain], resumed)
 
 
 async def _chain_window_fills(

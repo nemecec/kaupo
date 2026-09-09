@@ -217,7 +217,22 @@ async def run_live(
             # figure is a configured one the balance cannot match either
             history_since=_chain_start(resume),
             check_quote=resume is not None,
+            quote_baseline=resume.quote_baseline if resume is not None else None,
+            starting_cash=resume.starting_cash if resume is not None else None,
         )
+        # the chain's quote reference point for the drift check: inherited from
+        # the predecessor, else adopted from the account right now — a fresh
+        # start, or a chain whose books predate the relative quote check
+        quote_baseline = resume.quote_baseline if resume is not None else None
+        if quote_baseline is None:
+            quote_baseline = reconciled.balances.get(request.pair.quote, 0.0)
+            log.warning(
+                "Adopting the current %s balance %.2f as the quote baseline for the %s chain",
+                request.pair.quote,
+                quote_baseline,
+                request.pair,
+            )
+        config["quote_baseline"] = quote_baseline
         _apply_recovered(ledger, reconciled.missed_fills)
         venue = KrakenVenue(
             request.pair,

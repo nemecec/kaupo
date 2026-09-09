@@ -403,6 +403,29 @@ class TestReconciliationOnStart:
         assert (await session.execute(select(FillRow))).scalars().all() == []
         assert float(result.final_equity) == 1000.0  # the configured cash, untouched
 
+    async def test_a_fresh_run_writes_the_quote_baseline_into_its_config(
+        self, session: AsyncSession, tmp_path: Path, bridge: AsyncBridge
+    ) -> None:
+        """The relative quote check's reference point, adopted at chain birth."""
+        (tmp_path / "hold.py").write_text(HOLD_STRATEGY)
+        now, history = await _seed_history(session)
+        stop = asyncio.Event()
+        trading = FakeKrakenClient(balances={"EUR": 97.6, "SOL": 0.0})
+
+        await run_live(
+            _request(tmp_path, strategy_id="hold"),
+            get_sessionmaker(),
+            ScriptedCandles(history, [[hourly(0, now)]], stop),  # type: ignore[arg-type]
+            stop=stop,
+            trading=trading,
+            bridge=bridge,
+            settings=armed_settings(),
+        )
+
+        runs = (await session.execute(select(RunRow))).scalars().all()
+        assert len(runs) == 1
+        assert runs[0].config["quote_baseline"] == 97.6
+
     async def test_a_resumed_run_recovers_the_trade_its_predecessor_lost(
         self, session: AsyncSession, tmp_path: Path, bridge: AsyncBridge
     ) -> None:
@@ -455,6 +478,10 @@ class TestReconciliationOnStart:
         assert orders[0].exchange_order_id == "LOST-1"
         # 1000 - 200 - 0.32 in cash, plus 2 SOL marked at 100
         assert float(result.final_equity) == pytest.approx(999.68, abs=0.01)
+        # the predecessor predates the baseline: the new run adopts the
+        # account's balance as the chain's quote reference point
+        new_run = (await session.execute(select(RunRow).where(RunRow.id != "predecessor"))).scalars().one()
+        assert new_run.config["quote_baseline"] == 799.68
 
     async def test_a_ledger_that_disagrees_with_the_account_refuses_to_start(
         self, session: AsyncSession, tmp_path: Path, bridge: AsyncBridge

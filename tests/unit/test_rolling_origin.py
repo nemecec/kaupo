@@ -243,6 +243,23 @@ class TestStitch:
         # rebases onto the last stitched point (offset -50)
         assert rolling.stitch(groups) == [(NOW, 10_000.0), (NOW + timedelta(hours=1), 10_000.0)]
 
+    def test_a_resumed_run_takes_no_offset(self) -> None:
+        # kaupo#38: the boundary candle's P&L move is real, not an offset
+        groups = [
+            [(NOW, 10_000.0), (NOW + timedelta(hours=1), 10_010.14)],
+            [(NOW + timedelta(hours=5), 10_004.10), (NOW + timedelta(hours=6), 10_001.26)],
+        ]
+        stitched = rolling.stitch(groups, [False, True])
+        assert [v for _, v in stitched] == [10_000.0, 10_010.14, 10_004.10, 10_001.26]
+
+    def test_a_fresh_run_is_still_rebased(self) -> None:
+        groups = [
+            [(NOW, 10_000.0), (NOW + timedelta(hours=1), 10_100.0)],
+            [(NOW + timedelta(hours=2), 10_000.0), (NOW + timedelta(hours=3), 10_050.0)],
+        ]
+        stitched = rolling.stitch(groups, [False, False])
+        assert [v for _, v in stitched] == [10_000.0, 10_100.0, 10_100.0, 10_150.0]
+
 
 class TestPeriodAndEnvelope:
     def test_iso_week(self) -> None:

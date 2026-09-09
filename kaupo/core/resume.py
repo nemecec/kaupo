@@ -160,6 +160,11 @@ class ResumeState:
     chain_started_at: str  # ISO timestamp of the chain root's start
     cash: Decimal
     positions: dict[Pair, Position]
+    starting_cash: float
+    # the chain's quote-balance baseline for the live drift check, inherited
+    # from the nearest chain row that carries it; None on chains that predate
+    # the baseline (adopted at the next resume) and on shadow chains
+    quote_baseline: float | None = None
 
 
 async def _chain_rows(session: AsyncSession, tip: RunRow) -> list[RunRow] | None:
@@ -314,6 +319,11 @@ async def prepare_resume(
             )
             return None
         chain_started_at = (predecessor.config or {}).get("chain_started_at") or root.started_at.isoformat()
+        # the live drift baseline travels down the chain: each new run copies
+        # it forward, so the predecessor carries it whenever any ancestor did
+        quote_baseline = (predecessor.config or {}).get("quote_baseline")
+        if not isinstance(quote_baseline, (int, float)):
+            quote_baseline = None
         log.info(
             "Resuming run chain from %s: cash %.2f %s, %d open position(s), chain started %s",
             predecessor.id,
@@ -327,4 +337,6 @@ async def prepare_resume(
             chain_started_at=str(chain_started_at),
             cash=ledger.cash,
             positions=ledger.open_positions,
+            starting_cash=float(starting_cash),
+            quote_baseline=quote_baseline,
         )
