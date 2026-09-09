@@ -74,6 +74,7 @@ def build_engine(
     risk: RiskManager | None = None,
     control_probe=None,  # type: ignore[no-untyped-def]
     candle_timeout_seconds: float = 120.0,
+    mode: RunMode = RunMode.BACKTEST,
 ) -> Engine:
     return Engine(
         strategy=BuyAt3SellAt7(BuyAt3SellAt7.params_schema()),
@@ -83,7 +84,7 @@ def build_engine(
         recorder=recorder,
         config=EngineConfig(pair=PAIR, timeframe=Timeframe.H1),
         run_info=RunInfo(
-            mode=RunMode.BACKTEST,
+            mode=mode,
             strategy_id="scripted",
             strategy_version="v1",
             strategy_source_hash="x",
@@ -113,6 +114,38 @@ async def test_intents_fill_on_next_candle_open() -> None:
 
     # 10_000 - 103 + 107
     assert float(result.final_equity) == pytest.approx(10_004.0)
+
+
+class TestLiveFillAlerts:
+    """Every live fill pushes an ntfy alert; paper modes stay silent."""
+
+    @staticmethod
+    def _capture(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        sent: list[str] = []
+
+        async def fake_alert(message: str) -> None:
+            sent.append(message)
+
+        monkeypatch.setattr("kaupo.core.engine.send_alert", fake_alert)
+        return sent
+
+    async def test_live_fills_push_an_alert(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sent = self._capture(monkeypatch)
+        engine = build_engine(InMemoryRecorder(), mode=RunMode.LIVE)
+        result = await engine.run(aiter([candle(i) for i in range(10)]))
+
+        assert result.num_fills == 2
+        assert sent == [
+            "Live fill: buy 1.0 BTC/EUR @ 103.0 (fee 0.0)",
+            "Live fill: sell 1.0 BTC/EUR @ 107.0 (fee 0.0)",
+        ]
+
+    async def test_paper_fills_stay_silent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sent = self._capture(monkeypatch)
+        for mode in (RunMode.BACKTEST, RunMode.SHADOW):
+            engine = build_engine(InMemoryRecorder(), mode=mode)
+            await engine.run(aiter([candle(i) for i in range(10)]))
+        assert sent == []
 
 
 class HangingRecorder(InMemoryRecorder):

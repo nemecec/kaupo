@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from kaupo.core.funding import EmptyFundingProvider, FundingProvider
+from kaupo.core.notify import send_alert
 from kaupo.core.orderflow import EmptyOrderFlowProvider, OrderFlowProvider
 from kaupo.core.positioning import (
     EmptyFuturesMetricsProvider,
@@ -307,6 +308,11 @@ class Engine:
                 self.risk.notify_trade_result(float(realized))
             await self.recorder.record_fill(fill)
             self._fills += 1
+            if self.run_info.mode is RunMode.LIVE:
+                # real money moved: the human gets a push for every live fill
+                await send_alert(
+                    f"Live fill: {fill.side.value} {fill.size} {fill.pair} @ {fill.price} (fee {fill.fee})"
+                )
         for order in self._orders_touched(fills):
             await self.recorder.record_order(order)  # upsert final state
         if self.config.instrument == "perp":
