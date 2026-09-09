@@ -410,6 +410,52 @@ async def test_api_create_validation(client: AsyncClient, payload: dict) -> None
     assert rows == []
 
 
+async def test_api_create_accepts_a_single_pair_live_assignment(client: AsyncClient) -> None:
+    r = await client.post(
+        "/api/v1/assignments",
+        json={
+            "id": "live-1",
+            "strategy_id": "regime-switch",
+            "pair": "SOL/EUR",
+            "timeframe": "4h",
+            "mode": "live",
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["mode"] == "live"
+
+
+async def test_api_rejects_a_portfolio_live_assignment(client: AsyncClient) -> None:
+    r = await client.post(
+        "/api/v1/assignments",
+        json={
+            "strategy_id": "momentum-rotation",
+            "pairs": ["BTC/EUR", "SOL/EUR"],
+            "timeframe": "4h",
+            "mode": "live",
+        },
+    )
+    assert r.status_code == 422
+    assert "single-pair" in r.json()["detail"]
+    assert (await client.get("/api/v1/assignments")).json() == []
+
+
+async def test_api_refuses_to_widen_a_live_row_into_a_portfolio(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    await assignments_repo.create_assignment(
+        session, id="live-2", strategy_id="regime-switch", pair="SOL/EUR", timeframe="4h", mode="live"
+    )
+    await session.commit()
+
+    r = await client.put("/api/v1/assignments/live-2", json={"pairs": ["BTC/EUR", "SOL/EUR"]})
+
+    assert r.status_code == 422
+    session.expire_all()
+    row = await assignments_repo.get_assignment(session, "live-2")
+    assert row is not None and row.pairs is None  # nothing stored
+
+
 async def test_api_update(client: AsyncClient, session: AsyncSession) -> None:
     await assignments_repo.create_assignment(
         session, id="a1", strategy_id="regime-switch", pair="BTC/EUR", timeframe="1h"
@@ -539,6 +585,27 @@ async def test_halt_orphan_runs(session: AsyncSession) -> None:
     assert rows["orphan-disabled"].status == "halted"
     assert rows["bt"].status == "running"  # other modes untouched
     assert rows["old"].status == "halted"
+
+
+async def test_halt_orphan_runs_distinguishes_modes(session: AsyncSession) -> None:
+    """A live row and a shadow row of the same strategy are different slots."""
+    await assignments_repo.create_assignment(
+        session, id="a-live", strategy_id="sma-cross", pair="SOL/EUR", timeframe="4h", mode="live"
+    )
+    _add_run(session, "run-live", "live", "running", strategy_id="sma-cross", pair="SOL/EUR", timeframe="4h")
+    # no shadow assignment covers this row, even though a live one exists
+    _add_run(
+        session, "run-shadow", "shadow", "running", strategy_id="sma-cross", pair="SOL/EUR", timeframe="4h"
+    )
+    await session.commit()
+
+    halted = await sup.halt_orphan_runs(session)
+    await session.commit()
+    assert halted == 1
+
+    rows = {r.id: r for r in (await session.execute(select(RunRow))).scalars().all()}
+    assert rows["run-live"].status == "running"
+    assert rows["run-shadow"].status == "halted"
 
 
 async def test_halt_orphan_runs_distinguishes_timeframes(session: AsyncSession) -> None:

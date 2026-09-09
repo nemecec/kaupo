@@ -34,6 +34,17 @@ class Settings(BaseSettings):
     # Exchange
     exchange: str = "kraken"
 
+    # Live trading (Kraken spot). Credentials never appear in code, logs, or git;
+    # the production host supplies them through /etc/kaupo/kaupo.env.
+    kraken_api_key: str = ""
+    kraken_api_secret: str = ""
+    # Live runs are armed explicitly: without this, a live assignment never
+    # reaches the exchange, whatever the desired-state table says.
+    live_trading_enabled: bool = False
+    # Ceiling on a single live order's notional, in the quote currency. Applies
+    # on top of the risk-manager caps; the venue clamps an order down to it.
+    live_max_notional: float = 500.0
+
     # Alerts (ntfy topic; empty disables push alerts)
     notify_ntfy_topic: str = ""
 

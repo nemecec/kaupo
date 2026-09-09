@@ -1,4 +1,4 @@
-"""Shadow-run state carry: a superseded run's successor resumes its ledger.
+"""Run-state carry: a superseded shadow or live run's successor resumes its ledger.
 
 Every deploy or supervisor restart starts a fresh process whose DbRecorder
 supersedes the old run row ("superseded by a newer run of the same
@@ -101,6 +101,7 @@ def is_resumable(
     new_config_hash: str,
     new_strategy_version: str,
     recorded_halt_reason: str | None = None,
+    mode: RunMode = RunMode.SHADOW,
 ) -> bool:
     """True when the run row is a resumable predecessor running the same config.
 
@@ -125,7 +126,7 @@ def is_resumable(
         WATCHDOG_HALT_REASON,
     )
     graceful_stop = (
-        row.mode == RunMode.SHADOW.value
+        row.mode == mode.value
         and halt_reason is None
         and (
             row.status == RunStatus.COMPLETED.value
@@ -249,8 +250,9 @@ async def prepare_resume(
     params: dict[str, Any],
     quote_asset: str,
     assignment_id: str | None = None,
+    mode: RunMode = RunMode.SHADOW,
 ) -> ResumeState | None:
-    """The carried state for a new shadow run; None for a fresh start.
+    """The carried state for a new shadow or live run; None for a fresh start.
 
     Claims the slot first (superseding stale "running" rows, exactly what
     DbRecorder.start does again when the run starts), so a predecessor
@@ -258,11 +260,11 @@ async def prepare_resume(
     """
     async with sm_scope(sessionmaker) as session:
         await supersede_stale_runs(
-            session, mode=RunMode.SHADOW, strategy_id=strategy_id, pair=pair, timeframe=timeframe
+            session, mode=mode, strategy_id=strategy_id, pair=pair, timeframe=timeframe
         )
         stmt = (
             select(RunRow)
-            .where(RunRow.mode == RunMode.SHADOW.value, RunRow.ended_at.is_not(None))
+            .where(RunRow.mode == mode.value, RunRow.ended_at.is_not(None))
             .order_by(RunRow.started_at.desc())
             .limit(1)
         )
@@ -290,6 +292,7 @@ async def prepare_resume(
             new_config_hash=new_hash,
             new_strategy_version=strategy_version,
             recorded_halt_reason=recorded_halt_reason,
+            mode=mode,
         ):
             return None
         chain = await _chain_rows(session, predecessor)

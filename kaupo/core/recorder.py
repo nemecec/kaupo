@@ -171,6 +171,7 @@ class DbRecorder:
                 filled_ts=order.filled_ts,
                 fee=order.fee,
                 reason=order.reason,
+                exchange_order_id=order.exchange_order_id,
             )
         )
         await self._maybe_flush()
@@ -264,6 +265,7 @@ class DbRecorder:
                         "filled_price": stmt.excluded.filled_price,
                         "filled_ts": stmt.excluded.filled_ts,
                         "fee": stmt.excluded.fee,
+                        "exchange_order_id": stmt.excluded.exchange_order_id,
                     },
                 )
                 await session.execute(stmt)

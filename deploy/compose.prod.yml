@@ -57,6 +57,13 @@ services:
     environment:
       KAUPO_DATABASE_URL: postgresql+asyncpg://kaupo:${POSTGRES_PASSWORD:?}@db:5432/kaupo
       KAUPO_STRATEGIES_DIR: /strategies
+      # Live trading (mode='live' assignments). Values live only in
+      # /etc/kaupo/kaupo.env on the host, never in git. Unset means
+      # disarmed: a live assignment is skipped and never reaches Kraken.
+      KAUPO_LIVE_TRADING_ENABLED: ${KAUPO_LIVE_TRADING_ENABLED:-false}
+      KAUPO_LIVE_MAX_NOTIONAL: ${KAUPO_LIVE_MAX_NOTIONAL:-500}
+      KAUPO_KRAKEN_API_KEY: ${KAUPO_KRAKEN_API_KEY:-}
+      KAUPO_KRAKEN_API_SECRET: ${KAUPO_KRAKEN_API_SECRET:-}
     volumes:
       - ${KAUPO_STRATEGIES_HOST_DIR:-/opt/kaupo/examples/strategies}:/strategies:ro
     depends_on:

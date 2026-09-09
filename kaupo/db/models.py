@@ -188,6 +188,9 @@ class OrderRow(Base):
     filled_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fee: Mapped[float] = mapped_column(default=0.0)
     reason: Mapped[str] = mapped_column(Text, default="")
+    # the venue's own order id (Kraken txid) for live orders; null on paper
+    # orders, which never reach an exchange
+    exchange_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 
 class FillRow(Base):
