@@ -111,6 +111,12 @@ jobs:
           KAUPO_SHADOW_STRATEGY: ${{ vars.KAUPO_SHADOW_STRATEGY }}
           KAUPO_SHADOW_PAIR: ${{ vars.KAUPO_SHADOW_PAIR }}
           KAUPO_SHADOW_TIMEFRAME: ${{ vars.KAUPO_SHADOW_TIMEFRAME }}
+          # Live trading (Kraken spot). Empty until the secrets exist; the
+          # compose defaults (disabled, empty credentials) keep it disarmed.
+          KAUPO_LIVE_TRADING_ENABLED: ${{ secrets.KAUPO_LIVE_TRADING_ENABLED }}
+          KAUPO_LIVE_MAX_NOTIONAL: ${{ secrets.KAUPO_LIVE_MAX_NOTIONAL }}
+          KAUPO_KRAKEN_API_KEY: ${{ secrets.KAUPO_KRAKEN_API_KEY }}
+          KAUPO_KRAKEN_API_SECRET: ${{ secrets.KAUPO_KRAKEN_API_SECRET }}
         run: |
           {
             echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
@@ -124,6 +130,10 @@ jobs:
             echo "KAUPO_SHADOW_STRATEGY=$KAUPO_SHADOW_STRATEGY"
             echo "KAUPO_SHADOW_PAIR=$KAUPO_SHADOW_PAIR"
             echo "KAUPO_SHADOW_TIMEFRAME=$KAUPO_SHADOW_TIMEFRAME"
+            echo "KAUPO_LIVE_TRADING_ENABLED=$KAUPO_LIVE_TRADING_ENABLED"
+            echo "KAUPO_LIVE_MAX_NOTIONAL=$KAUPO_LIVE_MAX_NOTIONAL"
+            echo "KAUPO_KRAKEN_API_KEY=$KAUPO_KRAKEN_API_KEY"
+            echo "KAUPO_KRAKEN_API_SECRET=$KAUPO_KRAKEN_API_SECRET"
           } | ssh -i ~/.ssh/deploy_key -o BatchMode=yes root@"${{ vars.HETZNER_HOST }}" \
             'install -d /etc/kaupo && install -m 600 /dev/null /etc/kaupo/kaupo.env && cat > /etc/kaupo/kaupo.env'
 
