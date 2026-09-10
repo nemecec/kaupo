@@ -17,6 +17,7 @@ from kaupo.backtest.sweep import validate_sweep_keys
 from kaupo.domain import Pair, Timeframe
 from kaupo.sdk.loader import load_strategies
 from kaupo.sdk.protocol import LoadedStrategy
+from kaupo.venues.paper import DEFAULT_MARKETABLE_LIMIT
 
 
 class LintViolationsError(ValueError):
@@ -68,6 +69,9 @@ def build_backtest_request(
         max_daily_loss_quote=body.max_daily_loss_quote,
     )
     timeframe = Timeframe.parse(body.timeframe)
+    # null means the legacy maker model: an ad-hoc backtest stays comparable
+    # with every recorded number unless it asks not to be
+    marketable_limit = body.marketable_limit or DEFAULT_MARKETABLE_LIMIT
     if body.pairs is not None:
         if not loaded.is_portfolio:
             raise ValueError(f"strategy {body.strategy!r} is not a portfolio strategy; pass pair")
@@ -83,6 +87,7 @@ def build_backtest_request(
             starting_cash=body.starting_cash,
             exchange=body.exchange,
             risk=risk,
+            marketable_limit=marketable_limit,
         )
     if loaded.is_portfolio:
         raise ValueError(f"strategy {body.strategy!r} is a portfolio strategy; pass pairs")
@@ -98,4 +103,5 @@ def build_backtest_request(
         exchange=body.exchange,
         instrument=body.instrument,
         risk=risk,
+        marketable_limit=marketable_limit,
     )

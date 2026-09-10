@@ -181,3 +181,5 @@ async def test_backtest_uses_only_requested_exchange(session: AsyncSession, tmp_
 
     run = (await session.execute(select(RunRow).where(RunRow.id == run_id))).scalar_one()
     assert run.config["exchange"] == "binance"
+    # an ad-hoc backtest records the legacy maker model it ran (kaupo#36)
+    assert run.config["fees"]["marketable_limit"] == "maker"

@@ -13,6 +13,7 @@ from kaupo.db.models import EquitySnapshotRow, RunRow
 from kaupo.db.session import get_sessionmaker, sm_scope
 from kaupo.domain import Candle, Pair, Timeframe
 from kaupo.sdk.loader import load_strategies
+from kaupo.venues.paper import LIVE_MIRROR_MARKETABLE_LIMIT
 
 pytestmark = pytest.mark.integration
 
@@ -103,6 +104,9 @@ async def test_shadow_run_processes_new_candles(session: AsyncSession, tmp_path:
     assert len(runs) == 1
     assert runs[0].mode == "shadow"
     assert runs[0].status in ("completed", "halted")
+    # a shadow run mirrors the live venue's post-only limits, and its config
+    # says so, so the audit trail explains the fee tiers later (kaupo#36)
+    assert runs[0].config["fees"]["marketable_limit"] == LIVE_MIRROR_MARKETABLE_LIMIT == "skip"
 
     # exactly one processed candle -> one equity snapshot
     snapshots = (await session.execute(select(EquitySnapshotRow))).scalars().all()

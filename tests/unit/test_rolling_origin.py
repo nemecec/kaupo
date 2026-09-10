@@ -30,6 +30,7 @@ from kaupo.report.rolling import (
     VERDICT_TRACKS,
     VERDICT_UNKNOWN,
 )
+from kaupo.venues.paper import LIVE_MIRROR_MARKETABLE_LIMIT
 
 NOW = datetime(2026, 8, 27, 12, 0, tzinfo=UTC)  # a Thursday, ISO week 2026-W35
 TF = Timeframe.H1
@@ -412,10 +413,17 @@ async def test_build_report_success_notes_and_exclusions(
 
     # the runs row marker ties the backtest to the report, assignment, and slice
     assert seen[0].rolling_origin == {"period": "2026-W35", "assignment": "a1", "start": start.isoformat()}
+    # the re-backtest must model the same venue the shadow run does, or the
+    # triage compares two different venues (kaupo#36)
+    assert seen[0].marketable_limit == LIVE_MIRROR_MARKETABLE_LIMIT
+    assert portfolio_seen[0].marketable_limit == LIVE_MIRROR_MARKETABLE_LIMIT
     assert seen[0].start == start
 
     a1 = by_id["a1"]
     assert a1["start"] == start.isoformat()  # chain age == window: the full window is compared
+    # every entry names the venue model it compared under, so the maker-to-skip
+    # boundary in the weekly series is visible in the report itself (kaupo#36)
+    assert a1["marketable_limit"] == LIVE_MIRROR_MARKETABLE_LIMIT == "skip"
     assert a1["backtest"]["run_id"] == "bt-1"
     assert a1["backtest"]["sharpe"] == 1.0
     expected_shadow = compute_metrics(
@@ -434,6 +442,9 @@ async def test_build_report_success_notes_and_exclusions(
 
     assert by_id["a2"]["verdict"] == VERDICT_ERROR
     assert "unknown strategy" in by_id["a2"]["error"]
+    # error and no-chain entries carry the key too, not only full verdicts
+    assert by_id["a2"]["marketable_limit"] == LIVE_MIRROR_MARKETABLE_LIMIT
+    assert by_id["a3"]["marketable_limit"] == LIVE_MIRROR_MARKETABLE_LIMIT
     assert by_id["a3"]["shadow"] == {"note": "no shadow runs yet"}
     assert by_id["a3"]["verdict"] == VERDICT_UNKNOWN
     assert by_id["a3"]["start"] == start.isoformat()  # no chain: the backtest keeps the full window

@@ -247,6 +247,9 @@ class TestLiveRun:
         runs = (await session.execute(select(RunRow))).scalars().all()
         assert [r.mode for r in runs] == ["live"]
         assert runs[0].config["live_max_notional"] == 500.0
+        # KrakenVenue posts post-only, so the config records the paper
+        # mode that models it — not a setting, a fact (kaupo#36)
+        assert runs[0].config["fees"]["marketable_limit"] == "skip"
 
         orders = (await session.execute(select(OrderRow))).scalars().all()
         assert len(orders) == 1

@@ -25,7 +25,7 @@ from kaupo.domain import Candle, Pair, RunId, RunMode, Timeframe
 from kaupo.ledger.ledger import Ledger
 from kaupo.risk.manager import RiskConfig, RiskManager
 from kaupo.sdk.protocol import LoadedStrategy, StrategyBase
-from kaupo.venues.paper import PaperVenue
+from kaupo.venues.paper import DEFAULT_MARKETABLE_LIMIT, MarketableLimit, PaperVenue
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +54,9 @@ class BacktestRequest:
     sweep: dict[str, Any] | None = None
     # rolling-origin report marker for the run config: {"period", "assignment"}
     rolling_origin: dict[str, Any] | None = None
+    # how a limit marketable at posting is priced and charged (kaupo#36);
+    # the default is the legacy maker model, so recorded numbers stay comparable
+    marketable_limit: MarketableLimit = DEFAULT_MARKETABLE_LIMIT
 
 
 def backtest_risk_config(
@@ -138,7 +141,12 @@ async def run_backtest(
         )
     engine = Engine(
         strategy=strategy,
-        venue=PaperVenue(request.taker_fee_bps, request.maker_fee_bps, request.slippage_bps),
+        venue=PaperVenue(
+            request.taker_fee_bps,
+            request.maker_fee_bps,
+            request.slippage_bps,
+            marketable_limit=request.marketable_limit,
+        ),
         risk=risk,
         ledger=Ledger(
             request.pair.quote,
@@ -179,6 +187,7 @@ async def run_backtest(
                     "taker_bps": request.taker_fee_bps,
                     "maker_bps": request.maker_fee_bps,
                     "slippage_bps": request.slippage_bps,
+                    "marketable_limit": request.marketable_limit,
                 },
                 "risk": asdict(risk_config),  # the effective config (fee/instrument sync applied)
                 "lookback": request.lookback,

@@ -16,6 +16,12 @@ runs-row marker's "start") records the slice used. Without this, a healthy
 young chain looks like it lags: the full-window backtest shows trades that
 fired before the chain existed (issue #25).
 
+Venue model: the re-backtest runs the same marketable-limit mode as the
+shadow run it is compared against (LIVE_MIRROR_MARKETABLE_LIMIT, kaupo#36),
+and every entry records it as "marketable_limit". Rows written before that
+change were produced under the legacy maker model, so the key marks the
+boundary in the weekly series instead of leaving it silent.
+
 Coverage guard: a verdict is emitted only when the chain's overlap with the
 window is at least MIN_OVERLAP_DAYS and the chain's in-window equity spans
 at least MIN_EQUITY_SPAN_FRACTION of that overlap (a chain that died inside
@@ -75,6 +81,7 @@ from kaupo.db.models import EquitySnapshotRow, FillRow, ReportRow, RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Fill, OrderId, Pair, RunMode, Side, Timeframe, new_id, utc_now
 from kaupo.sdk.protocol import LoadedStrategy
+from kaupo.venues.paper import LIVE_MIRROR_MARKETABLE_LIMIT
 
 log = logging.getLogger(__name__)
 
@@ -390,6 +397,10 @@ async def _assignment_entry(
         "pairs": assignment.pairs,
         "timeframe": assignment.timeframe,
         "start": compare_start.isoformat(),  # the comparison slice both sides run over
+        # the venue model both sides run under. Every entry before the kaupo#36
+        # deploy is maker-mode and every entry after is skip-mode; marking it
+        # here keeps that boundary visible in the series the kill decisions read
+        "marketable_limit": LIVE_MIRROR_MARKETABLE_LIMIT,
     }
     try:
         timeframe = Timeframe.parse(assignment.timeframe)
@@ -436,6 +447,9 @@ async def _assignment_entry(
                 end=end,
                 starting_cash=cash,
                 rolling_origin=marker,
+                # the same venue model the shadow run uses, or the triage
+                # compares two different venues and its verdicts are noise
+                marketable_limit=LIVE_MIRROR_MARKETABLE_LIMIT,
             )
             run_id, _, metrics = await run_portfolio_backtest(portfolio_request, sessionmaker)
         else:
@@ -448,6 +462,7 @@ async def _assignment_entry(
                 end=end,
                 starting_cash=cash,
                 rolling_origin=marker,
+                marketable_limit=LIVE_MIRROR_MARKETABLE_LIMIT,  # as in run_shadow
             )
             run_id, _, metrics = await run_backtest(request, sessionmaker)
     except Exception as exc:

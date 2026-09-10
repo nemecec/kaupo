@@ -42,7 +42,7 @@ from kaupo.domain import (
 from kaupo.ledger.ledger import Ledger
 from kaupo.risk.manager import RiskConfig, RiskManager
 from kaupo.sdk.protocol import LoadedStrategy, PortfolioStrategyBase
-from kaupo.venues.paper import PaperVenue
+from kaupo.venues.paper import DEFAULT_MARKETABLE_LIMIT, MarketableLimit, PaperVenue
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +70,9 @@ class PortfolioBacktestRequest:
     sweep: dict[str, Any] | None = None
     # rolling-origin report marker for the run config: {"period", "assignment"}
     rolling_origin: dict[str, Any] | None = None
+    # how a limit marketable at posting is priced and charged (kaupo#36);
+    # the default is the legacy maker model, so recorded numbers stay comparable
+    marketable_limit: MarketableLimit = DEFAULT_MARKETABLE_LIMIT
 
     def __post_init__(self) -> None:
         if len(self.pairs) < 2:
@@ -158,7 +161,12 @@ async def run_portfolio_backtest(
     engine = PortfolioEngine(
         strategy=strategy,
         venues={
-            pair: PaperVenue(request.taker_fee_bps, request.maker_fee_bps, request.slippage_bps)
+            pair: PaperVenue(
+                request.taker_fee_bps,
+                request.maker_fee_bps,
+                request.slippage_bps,
+                marketable_limit=request.marketable_limit,
+            )
             for pair in request.pairs
         },
         risk=risk,
@@ -197,6 +205,7 @@ async def run_portfolio_backtest(
                     "taker_bps": request.taker_fee_bps,
                     "maker_bps": request.maker_fee_bps,
                     "slippage_bps": request.slippage_bps,
+                    "marketable_limit": request.marketable_limit,
                 },
                 "risk": asdict(request.risk),
                 "lookback": request.lookback,
