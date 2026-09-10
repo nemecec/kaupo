@@ -421,6 +421,9 @@ async def test_build_report_success_notes_and_exclusions(
 
     a1 = by_id["a1"]
     assert a1["start"] == start.isoformat()  # chain age == window: the full window is compared
+    # every entry names the venue model it compared under, so the maker-to-skip
+    # boundary in the weekly series is visible in the report itself (kaupo#36)
+    assert a1["marketable_limit"] == LIVE_MIRROR_MARKETABLE_LIMIT == "skip"
     assert a1["backtest"]["run_id"] == "bt-1"
     assert a1["backtest"]["sharpe"] == 1.0
     expected_shadow = compute_metrics(
@@ -439,6 +442,9 @@ async def test_build_report_success_notes_and_exclusions(
 
     assert by_id["a2"]["verdict"] == VERDICT_ERROR
     assert "unknown strategy" in by_id["a2"]["error"]
+    # error and no-chain entries carry the key too, not only full verdicts
+    assert by_id["a2"]["marketable_limit"] == LIVE_MIRROR_MARKETABLE_LIMIT
+    assert by_id["a3"]["marketable_limit"] == LIVE_MIRROR_MARKETABLE_LIMIT
     assert by_id["a3"]["shadow"] == {"note": "no shadow runs yet"}
     assert by_id["a3"]["verdict"] == VERDICT_UNKNOWN
     assert by_id["a3"]["start"] == start.isoformat()  # no chain: the backtest keeps the full window
