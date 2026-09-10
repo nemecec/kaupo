@@ -35,7 +35,7 @@ from kaupo.domain import Candle, Pair, RunMode, Timeframe
 from kaupo.ledger.ledger import Ledger
 from kaupo.risk.manager import RiskConfig, RiskManager
 from kaupo.sdk.protocol import LoadedStrategy, PortfolioStrategyBase, StrategyBase
-from kaupo.venues.paper import PaperVenue
+from kaupo.venues.paper import LIVE_MIRROR_MARKETABLE_LIMIT, PaperVenue
 
 log = logging.getLogger(__name__)
 
@@ -206,6 +206,7 @@ async def run_shadow(
             "taker_bps": request.taker_fee_bps,
             "maker_bps": request.maker_fee_bps,
             "slippage_bps": request.slippage_bps,
+            "marketable_limit": LIVE_MIRROR_MARKETABLE_LIMIT,
         },
         "risk": asdict(request.risk),
         "lookback": request.lookback,
@@ -247,7 +248,15 @@ async def run_shadow(
     )
     engine = Engine(
         strategy=strategy,
-        venue=PaperVenue(request.taker_fee_bps, request.maker_fee_bps, request.slippage_bps),
+        venue=PaperVenue(
+            request.taker_fee_bps,
+            request.maker_fee_bps,
+            request.slippage_bps,
+            # shadow mirrors the live venue's post-only limits, so the two
+            # stay calibrated (kaupo#36); the rolling-origin re-backtest
+            # reads the same constant
+            marketable_limit=LIVE_MIRROR_MARKETABLE_LIMIT,
+        ),
         risk=RiskManager(
             replace(
                 request.risk,
@@ -534,6 +543,7 @@ async def run_portfolio_shadow(
             "taker_bps": request.taker_fee_bps,
             "maker_bps": request.maker_fee_bps,
             "slippage_bps": request.slippage_bps,
+            "marketable_limit": LIVE_MIRROR_MARKETABLE_LIMIT,
         },
         "risk": asdict(request.risk),
         "lookback": request.lookback,
@@ -576,7 +586,12 @@ async def run_portfolio_shadow(
     engine = PortfolioEngine(
         strategy=strategy,
         venues={
-            pair: PaperVenue(request.taker_fee_bps, request.maker_fee_bps, request.slippage_bps)
+            pair: PaperVenue(
+                request.taker_fee_bps,
+                request.maker_fee_bps,
+                request.slippage_bps,
+                marketable_limit=LIVE_MIRROR_MARKETABLE_LIMIT,  # as in run_shadow
+            )
             for pair in request.pairs
         },
         risk=RiskManager(

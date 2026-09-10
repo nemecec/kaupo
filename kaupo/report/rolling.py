@@ -75,6 +75,7 @@ from kaupo.db.models import EquitySnapshotRow, FillRow, ReportRow, RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Fill, OrderId, Pair, RunMode, Side, Timeframe, new_id, utc_now
 from kaupo.sdk.protocol import LoadedStrategy
+from kaupo.venues.paper import LIVE_MIRROR_MARKETABLE_LIMIT
 
 log = logging.getLogger(__name__)
 
@@ -436,6 +437,9 @@ async def _assignment_entry(
                 end=end,
                 starting_cash=cash,
                 rolling_origin=marker,
+                # the same venue model the shadow run uses, or the triage
+                # compares two different venues and its verdicts are noise
+                marketable_limit=LIVE_MIRROR_MARKETABLE_LIMIT,
             )
             run_id, _, metrics = await run_portfolio_backtest(portfolio_request, sessionmaker)
         else:
@@ -448,6 +452,7 @@ async def _assignment_entry(
                 end=end,
                 starting_cash=cash,
                 rolling_origin=marker,
+                marketable_limit=LIVE_MIRROR_MARKETABLE_LIMIT,  # as in run_shadow
             )
             run_id, _, metrics = await run_backtest(request, sessionmaker)
     except Exception as exc:

@@ -30,6 +30,7 @@ from kaupo.report.rolling import (
     VERDICT_TRACKS,
     VERDICT_UNKNOWN,
 )
+from kaupo.venues.paper import LIVE_MIRROR_MARKETABLE_LIMIT
 
 NOW = datetime(2026, 8, 27, 12, 0, tzinfo=UTC)  # a Thursday, ISO week 2026-W35
 TF = Timeframe.H1
@@ -412,6 +413,10 @@ async def test_build_report_success_notes_and_exclusions(
 
     # the runs row marker ties the backtest to the report, assignment, and slice
     assert seen[0].rolling_origin == {"period": "2026-W35", "assignment": "a1", "start": start.isoformat()}
+    # the re-backtest must model the same venue the shadow run does, or the
+    # triage compares two different venues (kaupo#36)
+    assert seen[0].marketable_limit == LIVE_MIRROR_MARKETABLE_LIMIT
+    assert portfolio_seen[0].marketable_limit == LIVE_MIRROR_MARKETABLE_LIMIT
     assert seen[0].start == start
 
     a1 = by_id["a1"]

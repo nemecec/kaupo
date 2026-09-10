@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from kaupo.backtest.sweep import validate_sweep_spec
+from kaupo.venues.paper import MarketableLimit
 
 
 class StatusOut(BaseModel):
@@ -172,6 +173,10 @@ class BacktestIn(BaseModel):
     # metrics; keys are strategy param names, values scalars; not combinable
     # with stability_windows
     sweep: dict[str, list[Any]] | None = None
+    # how a limit marketable at posting is priced and charged (kaupo#36).
+    # null keeps the legacy maker model, so every recorded backtest number
+    # stays comparable; "taker" and "skip" are opt-in impact measurements
+    marketable_limit: MarketableLimit | None = None
     # research overrides for the backtest risk caps; null keeps the live defaults
     max_position_quote: float | None = Field(default=None, gt=0)
     max_gross_exposure_quote: float | None = Field(default=None, gt=0)

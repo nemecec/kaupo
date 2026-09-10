@@ -9,6 +9,9 @@ Execution model (identical in backtest and shadow):
 - a limit order lives for ONE candle only: submitted after a strategy decision,
   it is eligible on the next candle and expires unfilled at that candle's
   close (status cancelled; reported via drain_expired)
+- a limit that is MARKETABLE AT POSTING — one that would take liquidity the
+  moment it rests on the book (buy: limit >= open, sell: limit <= open) — is
+  handled by ``marketable_limit``; see :func:`is_marketable_at_posting`
 - stop-loss / take-profit attached to an order become active once that order
   fills and are evaluated on every subsequent candle; if both trigger in one
   candle the stop-loss wins (conservative)
@@ -16,12 +19,21 @@ Execution model (identical in backtest and shadow):
 Protections are position-aware: the venue tracks the net position from its own
 fills, drops protections when the position is closed by other means (e.g. a
 strategy exit), and clamps protection exits to the remaining position.
+
+**Fee-tier fidelity on marketable limits (kaupo#36).** Charging the maker fee
+on a limit that would have taken liquidity flatters a maker strategy: the live
+venue posts every limit post-only, so Kraken rejects such an order outright and
+no fill happens at all. ``marketable_limit`` selects which of the three
+plausible venues this one imitates. Only limits marketable at posting are
+affected; every other limit keeps the touch rule, the maker fee, and its
+one-candle life in all three modes.
 """
 
 import logging
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal, get_args
 
 from kaupo.domain import (
     Candle,
@@ -36,6 +48,44 @@ from kaupo.domain import (
 
 log = logging.getLogger(__name__)
 
+#: How the venue treats a limit order that is marketable at posting.
+#:
+#: - ``maker``: fill at limit (or the open on gap-through) and charge the
+#:   maker fee. The legacy model, and the default, so every recorded backtest
+#:   number stays comparable.
+#: - ``taker``: fill at the same price and charge the TAKER fee, no slippage
+#:   (the limit bounds the price). Models a plain limit order on a real venue.
+#: - ``skip``: no fill at all; the order expires and the strategy re-decides
+#:   next candle. Models Kraken post-only, which is what the live venue posts.
+MarketableLimit = Literal["maker", "taker", "skip"]
+
+MARKETABLE_LIMIT_MODES: tuple[MarketableLimit, ...] = get_args(MarketableLimit)
+
+#: Legacy behaviour: what an ad-hoc backtest gets unless it opts out.
+DEFAULT_MARKETABLE_LIMIT: MarketableLimit = "maker"
+
+#: The mode that mirrors the live venue (post-only limits, kaupo#36).
+#: Shadow runs and the rolling-origin re-backtests of those runs must BOTH
+#: read this constant, never the literal: the moment they disagree, the
+#: triage compares two different venue models and its verdicts are noise.
+LIVE_MIRROR_MARKETABLE_LIMIT: MarketableLimit = "skip"
+
+
+def is_marketable_at_posting(side: Side, limit_price: float, open_price: float) -> bool:
+    """True when the limit would take liquidity the moment it is posted.
+
+    The strategy posts within seconds of the decision candle's close, so the
+    fill candle's open is the closest deterministic proxy for the book at
+    posting that a candle model has. A buy at or above the open crosses the
+    ask; a sell at or below it crosses the bid.
+
+    Note that a marketable limit always fills under the touch rule: a buy
+    with ``limit >= open >= low`` is touched by construction, and a sell with
+    ``limit <= open <= high`` likewise. So the modes only ever change what
+    happens to an order that would otherwise have filled.
+    """
+    return limit_price >= open_price if side is Side.BUY else limit_price <= open_price
+
 
 @dataclass
 class _Protection:
@@ -44,10 +94,21 @@ class _Protection:
 
 
 class PaperVenue:
-    def __init__(self, taker_fee_bps: float, maker_fee_bps: float, slippage_bps: float) -> None:
+    def __init__(
+        self,
+        taker_fee_bps: float,
+        maker_fee_bps: float,
+        slippage_bps: float,
+        *,
+        marketable_limit: MarketableLimit = DEFAULT_MARKETABLE_LIMIT,
+    ) -> None:
+        if marketable_limit not in MARKETABLE_LIMIT_MODES:
+            valid = ", ".join(MARKETABLE_LIMIT_MODES)
+            raise ValueError(f"Unknown marketable_limit {marketable_limit!r}; valid: {valid}")
         self._taker = taker_fee_bps / 10_000
         self._maker = maker_fee_bps / 10_000
         self._slip = slippage_bps / 10_000
+        self._marketable_limit = marketable_limit
         self._market_queue: list[Order] = []
         self._limit_open: list[Order] = []
         self._expired: list[Order] = []
@@ -148,16 +209,20 @@ class PaperVenue:
         limits = self._limit_open
         self._limit_open = []
         for order in limits:
-            limit_fill = self._try_limit(order, candle)
+            skipped = self._skips_as_marketable(order, candle)
+            limit_fill = None if skipped else self._try_limit(order, candle)
             if limit_fill is None:
                 order.status = OrderStatus.CANCELLED
                 self._expired.append(order)
                 log.info(
-                    "Limit order %s (%s %s @ %s) expired unfilled on %s",
+                    "Limit order %s (%s %s @ %s) %s on %s",
                     order.id,
                     order.side.value,
                     order.pair,
                     order.limit_price,
+                    f"was marketable at the open {candle.open} and post-only would have rejected it"
+                    if skipped
+                    else "expired unfilled",
                     candle.ts,
                 )
             else:
@@ -239,15 +304,39 @@ class PaperVenue:
     def _fill_market(self, order: Order, candle: Candle) -> Fill:
         return self._make_fill(order, candle.ts, self._slipped(candle.open, order.side), self._taker)
 
+    def _skips_as_marketable(self, order: Order, candle: Candle) -> bool:
+        """True when ``skip`` mode drops this limit: it was marketable at posting.
+
+        Only ``skip`` mode removes a fill. The other two modes let the touch
+        rule decide and differ solely in the fee tier.
+        """
+        if self._marketable_limit != "skip" or order.limit_price is None:
+            return False
+        return is_marketable_at_posting(order.side, order.limit_price, candle.open)
+
+    def _limit_fee_rate(self, order: Order, candle: Candle) -> float:
+        """Maker, unless ``taker`` mode meets a limit marketable at posting."""
+        assert order.limit_price is not None
+        if self._marketable_limit == "taker" and is_marketable_at_posting(
+            order.side, order.limit_price, candle.open
+        ):
+            return self._taker
+        return self._maker
+
     def _try_limit(self, order: Order, candle: Candle) -> Fill | None:
         assert order.limit_price is not None
         limit = order.limit_price
+        # a marketable limit's fill price is the open in both filling modes:
+        # buy min(limit, open) and sell max(limit, open) both collapse to the
+        # open once the limit is on the far side of it, so the mode changes
+        # the fee tier and nothing else
+        fee_rate = self._limit_fee_rate(order, candle)
         if order.side is Side.BUY and candle.low <= limit:
             price = min(limit, candle.open)  # gapped through -> get the open
-            return self._make_fill(order, candle.ts, price, self._maker)
+            return self._make_fill(order, candle.ts, price, fee_rate)
         if order.side is Side.SELL and candle.high >= limit:
             price = max(limit, candle.open)
-            return self._make_fill(order, candle.ts, price, self._maker)
+            return self._make_fill(order, candle.ts, price, fee_rate)
         return None
 
     def _check_protection(self, order: Order, prot: _Protection, candle: Candle) -> Fill | None:

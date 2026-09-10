@@ -54,6 +54,7 @@ from kaupo.venues.kraken_client import (
     TradingClient,
 )
 from kaupo.venues.kraken_live import KrakenVenue
+from kaupo.venues.paper import LIVE_MIRROR_MARKETABLE_LIMIT
 
 log = logging.getLogger(__name__)
 
@@ -332,6 +333,10 @@ def _run_config(request: LiveRequest, settings: Settings) -> dict[str, Any]:
             "taker_bps": request.taker_fee_bps,
             "maker_bps": request.maker_fee_bps,
             "slippage_bps": request.slippage_bps,
+            # not a setting here but a fact: KrakenVenue posts every limit
+            # post-only, so a limit marketable at posting is rejected and
+            # never fills. The paper venue's "skip" mode imitates this one.
+            "marketable_limit": LIVE_MIRROR_MARKETABLE_LIMIT,
         },
         "risk": asdict(request.risk),
         "lookback": request.lookback,
