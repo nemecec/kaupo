@@ -105,6 +105,30 @@ def watchdog_is_stale(
     return now - reference > watchdog_stale_after(timeframe, grace)
 
 
+def staleness_reference(
+    task_started_at: datetime, row_started_at: datetime, last_snapshot_ts: datetime | None
+) -> datetime:
+    """The clock the watchdog measures against.
+
+    A row older than the task belongs to a predecessor: the new run has not
+    written its own row yet (warm-up, resume, and — for live runs — exchange
+    reconciliation come first), so it is measured from the task's birth. Without
+    that, a predecessor that went stale while the platform was down kills every
+    startup attempt at the first watchdog pass (the 2026-09-11 live-run kill
+    loop after the disk-full outage). The task's own row is always written
+    after the task starts, so anything newer is measured normally.
+
+    For the run's own row the newest SNAPSHOT is the progress signal; the
+    row's start only stands in until the first snapshot exists. A fresh row
+    must not hide old snapshots behind its start time, and a healthy run
+    never sees the difference (its snapshots open at most one timeframe
+    before its row time, inside the healthy band).
+    """
+    if row_started_at < task_started_at:
+        return task_started_at
+    return last_snapshot_ts if last_snapshot_ts is not None else row_started_at
+
+
 @dataclass(frozen=True)
 class ReconcilePlan:
     start: list[str]  # assignment ids to start
@@ -128,6 +152,7 @@ class _LiveRun:
     config_hash: str
     stop: asyncio.Event
     task: asyncio.Task[RunResult]
+    started_at: datetime  # the task's own birth: the watchdog's startup grace
 
 
 @dataclass(frozen=True)
@@ -309,7 +334,7 @@ async def _stalled_runs(
     stalled: list[str] = []
     now = utc_now()
     async with sm_scope(sessionmaker) as session:
-        for aid in live:
+        for aid, lr in live.items():
             assignment = assignments.get(aid)
             if assignment is None:
                 continue  # not desired anymore; reconcile stops it this pass
@@ -321,7 +346,7 @@ async def _stalled_runs(
                     select(func.max(EquitySnapshotRow.ts)).where(EquitySnapshotRow.run_id == row.id)
                 )
             ).scalar_one_or_none()
-            reference = max(row.started_at, last_ts) if last_ts is not None else row.started_at
+            reference = staleness_reference(lr.started_at, row.started_at, last_ts)
             if watchdog_is_stale(reference, now, Timeframe.parse(assignment.timeframe)):
                 stalled.append(aid)
     return stalled
@@ -508,7 +533,9 @@ async def run_supervisor(
                     ),
                     name=f"assignment-{aid}",
                 )
-                live[aid] = _LiveRun(config_hash=desired[aid], stop=stop_event, task=task)
+                live[aid] = _LiveRun(
+                    config_hash=desired[aid], stop=stop_event, task=task, started_at=utc_now()
+                )
                 log.info(
                     "Started %s run for assignment %s: %s on %s %s",
                     assignment.mode,

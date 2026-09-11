@@ -16,7 +16,7 @@ from kaupo.core import supervisor as sup
 from kaupo.core.recorder import WATCHDOG_HALT_REASON
 from kaupo.core.runner import DbControlProbe
 from kaupo.data import assignments as assignments_repo
-from kaupo.db.models import EventRow, RunRow
+from kaupo.db.models import EquitySnapshotRow, EventRow, RunRow
 from kaupo.db.session import dispose_engine, get_sessionmaker, sm_scope
 from kaupo.domain import new_id, utc_now
 from kaupo.sdk.loader import load_strategies
@@ -799,9 +799,10 @@ async def test_supervisor_watchdog_restarts_a_stalled_run(
 
     async def fake_run(request, sm, client, stop, funding_client=None):
         run_id = new_id()
-        # the first run looks three hours old with zero snapshots (stalled);
-        # the restart is fresh and healthy
-        started_at = utc_now() - timedelta(hours=3) if not started else utc_now()
+        # the first run's newest snapshot is three hours old (stalled); the
+        # restart has none yet (healthy). A backdated row no longer works as
+        # the stall signal: the watchdog measures a predecessor row from the
+        # task's own birth, so the staleness lives in the snapshot ts.
         config = {"pair": str(request.pair), "timeframe": request.timeframe.value}
         config["assignment_id"] = request.assignment_id
         async with sm_scope(sm) as s:
@@ -811,11 +812,23 @@ async def test_supervisor_watchdog_restarts_a_stalled_run(
                     mode="shadow",
                     strategy_id=request.strategy.id,
                     strategy_version="v",
-                    started_at=started_at,
+                    started_at=utc_now(),
                     status="running",
                     config=config,
                 )
             )
+            if not started:
+                await s.flush()  # the run row must exist before its snapshot (FK)
+                s.add(
+                    EquitySnapshotRow(
+                        id=new_id(),
+                        run_id=run_id,
+                        ts=utc_now() - timedelta(hours=3),
+                        equity=10_000.0,
+                        cash=10_000.0,
+                        unrealized_pnl=0.0,
+                    )
+                )
         started.append((request.assignment_id, run_id))
         try:
             await stop.wait()  # wedged on progress: no candles, no snapshots

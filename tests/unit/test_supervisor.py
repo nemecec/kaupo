@@ -9,6 +9,7 @@ from kaupo.core.supervisor import (
     in_backoff,
     reconcile,
     resume_cleared,
+    staleness_reference,
     watchdog_is_stale,
     watchdog_stale_after,
 )
@@ -134,3 +135,48 @@ class TestWatchdog:
     def test_fresh_run_waiting_for_its_first_candle_is_not_stale(self) -> None:
         # a daily run started 12h ago has nothing to snapshot yet
         assert not watchdog_is_stale(NOW - timedelta(hours=12), NOW, Timeframe.D1)
+
+    def test_a_starting_task_is_measured_from_its_own_birth(self) -> None:
+        # the 2026-09-11 kill loop: the predecessor's last snapshot went stale
+        # during an outage, and every startup attempt died at the first pass
+        reference = staleness_reference(
+            task_started_at=NOW - timedelta(seconds=15),
+            row_started_at=NOW - timedelta(hours=20),
+            last_snapshot_ts=NOW - timedelta(hours=9),
+        )
+        assert not watchdog_is_stale(reference, NOW, Timeframe.H4)
+
+    def test_an_old_task_with_stale_snapshots_is_still_stale(self) -> None:
+        # startup grace must not hide a run that wedged long after its birth
+        reference = staleness_reference(
+            task_started_at=NOW - timedelta(hours=20),
+            row_started_at=NOW - timedelta(hours=20),
+            last_snapshot_ts=NOW - timedelta(hours=9),
+        )
+        assert watchdog_is_stale(reference, NOW, Timeframe.H4)
+
+    def test_reference_prefers_the_newest_input(self) -> None:
+        assert staleness_reference(NOW, NOW - timedelta(hours=3), None) == NOW
+        # own row: the snapshot is the progress signal, here newer than the row
+        assert staleness_reference(
+            NOW - timedelta(hours=3), NOW - timedelta(hours=2), NOW - timedelta(hours=1)
+        ) == NOW - timedelta(hours=1)
+
+    def test_a_fresh_row_does_not_hide_old_snapshots(self) -> None:
+        # the stall signal lives in the snapshot, not the row's start time
+        reference = staleness_reference(
+            task_started_at=NOW - timedelta(seconds=5),
+            row_started_at=NOW - timedelta(seconds=2),
+            last_snapshot_ts=NOW - timedelta(hours=3),
+        )
+        assert watchdog_is_stale(reference, NOW, Timeframe.H1)
+
+    def test_a_healthy_fresh_run_inside_the_band_is_not_stale(self) -> None:
+        # a fresh run's first snapshot can open up to one timeframe before
+        # its row time and still sit inside the healthy band
+        reference = staleness_reference(
+            task_started_at=NOW - timedelta(minutes=30),
+            row_started_at=NOW - timedelta(minutes=29),
+            last_snapshot_ts=NOW - timedelta(hours=1),
+        )
+        assert not watchdog_is_stale(reference, NOW, Timeframe.H1)
