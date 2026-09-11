@@ -81,6 +81,11 @@ cat > /etc/cron.d/kaupo-rolling <<'EOF'
 13 5 * * * root /opt/kaupo/deploy/rolling-report.sh >> /var/log/kaupo-rolling.log 2>&1
 EOF
 
+# Disk watchdog every 15 minutes (ntfy on 85%/95% transitions and recovery)
+cat > /etc/cron.d/kaupo-diskwatch <<'EOF'
+*/15 * * * * root /opt/kaupo/deploy/disk-watch.sh >> /var/log/kaupo-diskwatch.log 2>&1
+EOF
+
 echo
 echo "Bootstrap done. Add this deploy key to the kaupo-strategies repository:"
 cat /root/.ssh/kaupo-strategies.pub

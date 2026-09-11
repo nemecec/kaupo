@@ -72,5 +72,8 @@ if [[ "$before" != "none" && "$before" != "$after" ]]; then
   compose restart supervisor
 fi
 systemctl enable kaupo.service
-docker image prune -f
+# On the containerd image store a plain `prune -f` misses the old tagged
+# deploy digests and the disk fills over weeks (the 2026-09-11 outage);
+# `-a` keeps only what running containers use
+docker image prune -a -f
 compose ps
