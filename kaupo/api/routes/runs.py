@@ -122,6 +122,8 @@ async def run_orders(
     return [
         OrderOut(
             id=r.id,
+            taker_or_maker=r.taker_or_maker,
+            fee_currency=r.fee_currency,
             ts=r.ts,
             pair=r.pair,
             side=r.side,
@@ -160,6 +162,8 @@ async def run_trades(
         FillOut(
             id=r.id,
             order_id=r.order_id,
+            taker_or_maker=r.taker_or_maker,
+            fee_currency=r.fee_currency,
             ts=r.ts,
             pair=r.pair,
             side=r.side,

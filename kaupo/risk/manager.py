@@ -13,6 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from kaupo.config import default_taker_bps
 from kaupo.domain import OrderIntent, Pair, Position, Side
 
 
@@ -33,7 +34,7 @@ class RiskConfig:
     leverage: float = 1.0  # 1x everywhere: spot, and perp fully-collateralized; >1 rejected
     instrument: str = "spot"  # "spot": long-only. "perp": shorts allowed (1x, funding charged)
     # worst-case costs used to deflate the cash budget (must match the venue)
-    taker_fee_bps: float = 26.0
+    taker_fee_bps: float = field(default_factory=default_taker_bps)
     slippage_bps: float = 5.0
     # cushion for adverse price movement between the decision candle's close
     # and the fill at the next candle's open (bigger moves -> ledger backstop)

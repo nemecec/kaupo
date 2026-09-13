@@ -61,6 +61,8 @@ class OrderOut(BaseModel):
     filled_price: float | None
     filled_ts: datetime | None
     fee: float
+    taker_or_maker: str | None = None
+    fee_currency: str | None = None
     reason: str
 
 
@@ -73,6 +75,8 @@ class FillOut(BaseModel):
     price: float
     size: float
     fee: float
+    taker_or_maker: str | None = None
+    fee_currency: str | None = None
 
 
 class PositionOut(BaseModel):

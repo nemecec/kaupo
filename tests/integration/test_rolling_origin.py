@@ -159,6 +159,11 @@ async def test_report_matches_backtest_and_shadow_reality(session: AsyncSession,
             start=start,
             end=NOW,
             starting_cash=10_000.0,
+            # the report names its fees, so this side names them too: the
+            # metrics below must match by construction, not because two
+            # defaults happen to hold the same numbers (kaupo#44)
+            taker_fee_bps=entry["fees"]["taker_bps"],
+            maker_fee_bps=entry["fees"]["maker_bps"],
         ),
         get_sessionmaker(),
     )

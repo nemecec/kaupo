@@ -172,6 +172,8 @@ class DbRecorder:
                 fee=order.fee,
                 reason=order.reason,
                 exchange_order_id=order.exchange_order_id,
+                taker_or_maker=order.taker_or_maker,
+                fee_currency=order.fee_currency,
             )
         )
         await self._maybe_flush()
@@ -188,6 +190,8 @@ class DbRecorder:
                 price=fill.price,
                 size=fill.size,
                 fee=fill.fee,
+                taker_or_maker=fill.taker_or_maker,
+                fee_currency=fill.fee_currency,
             )
         )
         await self._maybe_flush()

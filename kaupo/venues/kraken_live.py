@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -70,6 +70,7 @@ from kaupo.venues.kraken_client import (
     TradingClient,
     floor_to_step,
     retry_delay,
+    round_price_to_step,
 )
 
 log = logging.getLogger(__name__)
@@ -104,6 +105,18 @@ class _LiveOrder:
     placed_size: float  # what was actually sent, after rounding and clamping
 
 
+def _agreed(values: Iterable[str | None]) -> str | None:
+    """The value every trade agrees on, or ``"mixed"`` when they disagree.
+
+    One order can fill partly as maker and partly as taker, and the fee then
+    belongs to neither tier. Saying so beats picking one of them.
+    """
+    distinct = {v for v in values if v}
+    if not distinct:
+        return None
+    return distinct.pop() if len(distinct) == 1 else "mixed"
+
+
 def aggregate_trades(order_id: OrderId, pair: Pair, trades: list[ExchangeTrade]) -> Fill:
     """One fill from one order's trades: weighted average price, summed fee.
 
@@ -121,6 +134,8 @@ def aggregate_trades(order_id: OrderId, pair: Pair, trades: list[ExchangeTrade])
         price=float(notional / size) if size > 0 else trades[0].price,
         size=float(size),
         fee=float(fee),
+        taker_or_maker=_agreed(t.taker_or_maker for t in trades),
+        fee_currency=_agreed(t.fee_currency for t in trades),
     )
 
 
@@ -170,6 +185,8 @@ class KrakenVenue:
     def submit(self, order: Order) -> None:
         """Place the order on Kraken now; its fills arrive on a later candle."""
         self._orders[order.id] = order
+        if not self._round_limit_price(order):
+            return
         sized = self._size_for_exchange(order)
         if sized is None:
             return
@@ -430,6 +447,39 @@ class KrakenVenue:
             return None
         return size
 
+    def _round_limit_price(self, order: Order) -> bool:
+        """Snap a limit price to the pair's tick. False when the order dies.
+
+        The rounded price is written back onto the order, so the row the
+        audit trail keeps is the order Kraken actually holds. ccxt rounds to
+        the nearest tick on the way out, which leaves the record disagreeing
+        with the exchange and can make a resting buy marketable (kaupo#42).
+        """
+        if order.order_type is not OrderType.LIMIT or order.limit_price is None:
+            return True
+        try:
+            meta = self._meta()
+        except ExchangeError as exc:
+            self._skip(order, f"the {self._pair} market rules are unavailable: {exc}")
+            return False
+        rounded = round_price_to_step(order.limit_price, meta.price_step, order.side)
+        if rounded <= 0:
+            self._skip(
+                order, f"limit price {order.limit_price} rounds to zero at a tick of {meta.price_step}"
+            )
+            return False
+        if rounded != order.limit_price:
+            log.info(
+                "Rounded the %s %s limit from %s to %s (tick %s)",
+                order.side.value,
+                self._pair,
+                order.limit_price,
+                rounded,
+                meta.price_step,
+            )
+            order.limit_price = rounded
+        return True
+
     def _skip(self, order: Order, reason: str) -> None:
         order.status = OrderStatus.REJECTED
         self._expired.append(order)
@@ -533,6 +583,8 @@ class KrakenVenue:
         order.filled_price = fill.price
         order.filled_ts = fill.ts
         order.fee = fill.fee
+        order.taker_or_maker = fill.taker_or_maker
+        order.fee_currency = fill.fee_currency
 
     def _finalize(self, still_open: dict[OrderId, _LiveOrder]) -> None:
         """Retire this candle's orders: filled ones are done, the rest expired."""

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import kaupo.report.rolling as rolling
 from kaupo.backtest.metrics import compute_metrics
+from kaupo.config import default_maker_bps, default_taker_bps
 from kaupo.data.assignments import create_assignment
 from kaupo.db.models import Base, EquitySnapshotRow, FillRow, OrderRow, RunRow
 from kaupo.db.session import sm_scope
@@ -417,6 +418,12 @@ async def test_build_report_success_notes_and_exclusions(
     # triage compares two different venues (kaupo#36)
     assert seen[0].marketable_limit == LIVE_MIRROR_MARKETABLE_LIMIT
     assert portfolio_seen[0].marketable_limit == LIVE_MIRROR_MARKETABLE_LIMIT
+    # and the same fee tier, named rather than inherited, so the entry's
+    # stamp is the tier that actually ran (kaupo#44)
+    assert seen[0].taker_fee_bps == default_taker_bps()
+    assert seen[0].maker_fee_bps == default_maker_bps()
+    assert portfolio_seen[0].taker_fee_bps == default_taker_bps()
+    assert portfolio_seen[0].maker_fee_bps == default_maker_bps()
     assert seen[0].start == start
 
     a1 = by_id["a1"]
@@ -424,6 +431,10 @@ async def test_build_report_success_notes_and_exclusions(
     # every entry names the venue model it compared under, so the maker-to-skip
     # boundary in the weekly series is visible in the report itself (kaupo#36)
     assert a1["marketable_limit"] == LIVE_MIRROR_MARKETABLE_LIMIT == "skip"
+    # and the fee tier, for the same reason: the 26/16 to 80/40 move shifts
+    # every sharpe in the series, and a silent shift reads as decay
+    assert a1["fees"] == {"taker_bps": default_taker_bps(), "maker_bps": default_maker_bps()}
+    assert a1["fees"] == {"taker_bps": 80.0, "maker_bps": 40.0}
     assert a1["backtest"]["run_id"] == "bt-1"
     assert a1["backtest"]["sharpe"] == 1.0
     expected_shadow = compute_metrics(
@@ -445,6 +456,10 @@ async def test_build_report_success_notes_and_exclusions(
     # error and no-chain entries carry the key too, not only full verdicts
     assert by_id["a2"]["marketable_limit"] == LIVE_MIRROR_MARKETABLE_LIMIT
     assert by_id["a3"]["marketable_limit"] == LIVE_MIRROR_MARKETABLE_LIMIT
+    expected_fees = {"taker_bps": default_taker_bps(), "maker_bps": default_maker_bps()}
+    assert by_id["a2"]["fees"] == expected_fees
+    assert by_id["a3"]["fees"] == expected_fees
+    assert by_id["a4"]["fees"] == expected_fees  # the no-verdict entry carries it too
     assert by_id["a3"]["shadow"] == {"note": "no shadow runs yet"}
     assert by_id["a3"]["verdict"] == VERDICT_UNKNOWN
     assert by_id["a3"]["start"] == start.isoformat()  # no chain: the backtest keeps the full window

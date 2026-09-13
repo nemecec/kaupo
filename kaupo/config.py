@@ -64,8 +64,13 @@ class Settings(BaseSettings):
     # Default paper-trading economics
     default_quote_currency: str = "EUR"
     default_starting_cash: float = 10_000.0
-    default_taker_fee_bps: float = 26.0  # Kraken ~0.26% taker
-    default_maker_fee_bps: float = 16.0  # Kraken ~0.16% maker
+    # The live Kraken account's own tier, read from TradeVolume on 2026-09-13
+    # and confirmed by the first live fill (kaupo#44). The old 26/16 pair
+    # described a volume tier this account does not hold, so every backtest
+    # under it understated a maker leg by 24 bps. The tier improves with
+    # 30-day volume, so these stay overridable through the environment.
+    default_taker_fee_bps: float = 80.0  # Kraken starter tier, 0.80% taker
+    default_maker_fee_bps: float = 40.0  # Kraken starter tier, 0.40% maker
     default_slippage_bps: float = 5.0
 
     @property
@@ -76,3 +81,17 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def default_taker_bps() -> float:
+    """The taker fee a run models when the caller names none.
+
+    Every request dataclass reads the tier through this one function, so the
+    modelled cost and the account's real tier move together (kaupo#44).
+    """
+    return get_settings().default_taker_fee_bps
+
+
+def default_maker_bps() -> float:
+    """The maker fee a run models when the caller names none. See above."""
+    return get_settings().default_maker_fee_bps

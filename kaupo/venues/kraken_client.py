@@ -31,7 +31,7 @@ import threading
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Protocol, Self, TypeVar
 
 import ccxt.async_support as ccxt
@@ -96,6 +96,10 @@ class ExchangeTrade:
     size: float
     fee: float
     fee_currency: str
+    # which side of the book this trade took, as the exchange classified it.
+    # Kraken reports it per trade, and it is the only authoritative answer to
+    # "was this fee the maker fee?" (kaupo#42). None when the venue omits it.
+    taker_or_maker: str | None = None
 
 
 class TradingClient(Protocol):
@@ -155,6 +159,26 @@ def floor_to_step(size: float, step: Decimal) -> float:
     if step <= 0:
         return size
     quantized = (Decimal(str(size)) / step).to_integral_value(rounding=ROUND_DOWN) * step
+    return float(quantized)
+
+
+def round_price_to_step(price: float, step: Decimal, side: Side) -> float:
+    """Round ``price`` to the pair's tick, never in the aggressive direction.
+
+    A buy rounds DOWN and a sell rounds UP, so the order the exchange holds
+    is never keener than the one the strategy asked for.
+
+    Without this, ccxt rounds to the *nearest* tick inside ``create_order``
+    (``price_to_precision`` uses ROUND), which moves a buy limit up. Two
+    things follow. The recorded ``limit_price`` stops matching the order
+    Kraken holds, so a fill can look like it beat its own limit. A limit
+    resting a fraction of a tick under the market also becomes marketable,
+    and Kraken then rejects the post-only order. See kaupo#42.
+    """
+    if step <= 0:
+        return price
+    rounding = ROUND_DOWN if side is Side.BUY else ROUND_UP
+    quantized = (Decimal(str(price)) / step).to_integral_value(rounding=rounding) * step
     return float(quantized)
 
 
@@ -375,6 +399,15 @@ class KrakenTradingClient:
         return {str(asset): _as_float(amount) for asset, amount in total.items()}
 
 
+def _as_liquidity(value: Any) -> str | None:
+    """ccxt's ``takerOrMaker``, kept only when it is one of the two words.
+
+    Kraken fills it from the trade record's own ``maker`` boolean, so it is
+    the exchange's verdict rather than a guess from the order type.
+    """
+    return value if value in ("taker", "maker") else None
+
+
 def _parse_trade(entry: dict[str, Any], pair: Pair) -> ExchangeTrade | None:
     """Normalize one ccxt trade; a malformed row is dropped with a warning.
 
@@ -403,4 +436,5 @@ def _parse_trade(entry: dict[str, Any], pair: Pair) -> ExchangeTrade | None:
         size=float(amount),
         fee=_as_float(fee.get("cost")),
         fee_currency=str(fee.get("currency") or pair.quote),
+        taker_or_maker=_as_liquidity(entry.get("takerOrMaker")),
     )

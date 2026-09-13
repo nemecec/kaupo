@@ -191,6 +191,10 @@ class OrderRow(Base):
     # the venue's own order id (Kraken txid) for live orders; null on paper
     # orders, which never reach an exchange
     exchange_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # the fee tier the fill paid, as the exchange classified it, and the
+    # asset it was charged in. Null on rows written before kaupo#42.
+    taker_or_maker: Mapped[str | None] = mapped_column(String(6), nullable=True)
+    fee_currency: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
 
 class FillRow(Base):
@@ -205,6 +209,8 @@ class FillRow(Base):
     price: Mapped[float]
     size: Mapped[float]
     fee: Mapped[float]
+    taker_or_maker: Mapped[str | None] = mapped_column(String(6), nullable=True)
+    fee_currency: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
 
 class LedgerEntryRow(Base):

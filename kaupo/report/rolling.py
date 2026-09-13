@@ -22,6 +22,13 @@ and every entry records it as "marketable_limit". Rows written before that
 change were produced under the legacy maker model, so the key marks the
 boundary in the weekly series instead of leaving it silent.
 
+Fee model: the same reasoning applies to the fee tier, which moved from
+26/16 bps to the account's real 80/40 (kaupo#44). A sharpe computed under
+one tier does not compare with a sharpe computed under another, so every
+entry records the rates both sides ran under as "fees". The report passes
+them to the backtest explicitly rather than letting the request inherit a
+default, so the recorded numbers are the numbers that ran.
+
 Coverage guard: a verdict is emitted only when the chain's overlap with the
 window is at least MIN_OVERLAP_DAYS and the chain's in-window equity spans
 at least MIN_EQUITY_SPAN_FRACTION of that overlap (a chain that died inside
@@ -74,7 +81,7 @@ from kaupo.backtest.metrics import compute_metrics
 from kaupo.backtest.plan import lint_and_load_strategies
 from kaupo.backtest.portfolio import PortfolioBacktestRequest, run_portfolio_backtest
 from kaupo.backtest.run import BacktestRequest, run_backtest
-from kaupo.config import get_settings
+from kaupo.config import default_maker_bps, default_taker_bps, get_settings
 from kaupo.core.notify import send_alert
 from kaupo.data.assignments import Assignment, list_assignments
 from kaupo.db.models import EquitySnapshotRow, FillRow, ReportRow, RunRow
@@ -390,6 +397,8 @@ async def _assignment_entry(
         chain = await _chain_rows(session, assignment.id)
     chain_start = _chain_start(chain)
     compare_start = compare_window(start, chain_start)
+    taker_bps = default_taker_bps()
+    maker_bps = default_maker_bps()
     entry: dict[str, Any] = {
         "id": assignment.id,
         "strategy_id": assignment.strategy_id,
@@ -401,6 +410,10 @@ async def _assignment_entry(
         # deploy is maker-mode and every entry after is skip-mode; marking it
         # here keeps that boundary visible in the series the kill decisions read
         "marketable_limit": LIVE_MIRROR_MARKETABLE_LIMIT,
+        # the fee tier both sides run under, for the same reason: the 26/16
+        # to 80/40 move (kaupo#44) shifts every sharpe in the series, and a
+        # silent shift reads as strategy decay to whoever kills the strategy
+        "fees": {"taker_bps": taker_bps, "maker_bps": maker_bps},
     }
     try:
         timeframe = Timeframe.parse(assignment.timeframe)
@@ -450,6 +463,10 @@ async def _assignment_entry(
                 # the same venue model the shadow run uses, or the triage
                 # compares two different venues and its verdicts are noise
                 marketable_limit=LIVE_MIRROR_MARKETABLE_LIMIT,
+                # named, not inherited, so the entry's "fees" stamp is the
+                # tier that actually ran
+                taker_fee_bps=taker_bps,
+                maker_fee_bps=maker_bps,
             )
             run_id, _, metrics = await run_portfolio_backtest(portfolio_request, sessionmaker)
         else:
@@ -463,6 +480,8 @@ async def _assignment_entry(
                 starting_cash=cash,
                 rolling_origin=marker,
                 marketable_limit=LIVE_MIRROR_MARKETABLE_LIMIT,  # as in run_shadow
+                taker_fee_bps=taker_bps,  # as in the entry's "fees" stamp
+                maker_fee_bps=maker_bps,
             )
             run_id, _, metrics = await run_backtest(request, sessionmaker)
     except Exception as exc:
