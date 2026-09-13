@@ -175,6 +175,8 @@ def _remainder_fill(fill: Fill, remainder: float) -> Fill:
         price=fill.price,
         size=remainder,
         fee=float(Decimal(str(fill.fee)) * share),
+        taker_or_maker=fill.taker_or_maker,
+        fee_currency=fill.fee_currency,
     )
 
 

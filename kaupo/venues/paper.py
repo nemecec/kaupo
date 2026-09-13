@@ -154,7 +154,7 @@ class PaperVenue:
         )
         self._orders[order.id] = order
         self._new_orders.append(order)
-        fill = self._make_fill(order, candle.ts, self._slipped(candle.close, side), self._taker)
+        fill = self._make_fill(order, candle.ts, self._slipped(candle.close, side), self._taker, "taker")
         self._track_position(fill)
         return fill
 
@@ -286,11 +286,15 @@ class PaperVenue:
     def _slipped(self, price: float, side: Side) -> float:
         return price * (1 + self._slip) if side is Side.BUY else price * (1 - self._slip)
 
-    def _make_fill(self, order: Order, ts: datetime, price: float, fee_rate: float) -> Fill:
+    def _make_fill(self, order: Order, ts: datetime, price: float, fee_rate: float, tier: str) -> Fill:
+        """``tier`` names the fee the model charged, so a shadow run records
+        the same fact a live run reads back from the exchange (kaupo#42)."""
         order.status = OrderStatus.FILLED
         order.filled_price = price
         order.filled_ts = ts
         order.fee = price * order.size * fee_rate
+        order.taker_or_maker = tier
+        order.fee_currency = order.pair.quote
         return Fill(
             order_id=order.id,
             pair=order.pair,
@@ -299,10 +303,12 @@ class PaperVenue:
             price=price,
             size=order.size,
             fee=order.fee,
+            taker_or_maker=tier,
+            fee_currency=order.pair.quote,
         )
 
     def _fill_market(self, order: Order, candle: Candle) -> Fill:
-        return self._make_fill(order, candle.ts, self._slipped(candle.open, order.side), self._taker)
+        return self._make_fill(order, candle.ts, self._slipped(candle.open, order.side), self._taker, "taker")
 
     def _skips_as_marketable(self, order: Order, candle: Candle) -> bool:
         """True when ``skip`` mode drops this limit: it was marketable at posting.
@@ -314,14 +320,18 @@ class PaperVenue:
             return False
         return is_marketable_at_posting(order.side, order.limit_price, candle.open)
 
-    def _limit_fee_rate(self, order: Order, candle: Candle) -> float:
-        """Maker, unless ``taker`` mode meets a limit marketable at posting."""
+    def _limit_fee_rate(self, order: Order, candle: Candle) -> tuple[float, str]:
+        """Maker, unless ``taker`` mode meets a limit marketable at posting.
+
+        Returns the rate and the tier it belongs to, because the fill records
+        the tier and the two must never disagree.
+        """
         assert order.limit_price is not None
         if self._marketable_limit == "taker" and is_marketable_at_posting(
             order.side, order.limit_price, candle.open
         ):
-            return self._taker
-        return self._maker
+            return self._taker, "taker"
+        return self._maker, "maker"
 
     def _try_limit(self, order: Order, candle: Candle) -> Fill | None:
         assert order.limit_price is not None
@@ -330,13 +340,13 @@ class PaperVenue:
         # buy min(limit, open) and sell max(limit, open) both collapse to the
         # open once the limit is on the far side of it, so the mode changes
         # the fee tier and nothing else
-        fee_rate = self._limit_fee_rate(order, candle)
+        fee_rate, tier = self._limit_fee_rate(order, candle)
         if order.side is Side.BUY and candle.low <= limit:
             price = min(limit, candle.open)  # gapped through -> get the open
-            return self._make_fill(order, candle.ts, price, fee_rate)
+            return self._make_fill(order, candle.ts, price, fee_rate, tier)
         if order.side is Side.SELL and candle.high >= limit:
             price = max(limit, candle.open)
-            return self._make_fill(order, candle.ts, price, fee_rate)
+            return self._make_fill(order, candle.ts, price, fee_rate, tier)
         return None
 
     def _check_protection(self, order: Order, prot: _Protection, candle: Candle) -> Fill | None:
@@ -363,7 +373,7 @@ class PaperVenue:
                 self._new_orders.append(exit_order)
                 self._prot_by_exit[exit_order.id] = (order, prot)
                 price = self._slipped(min(prot.stop_loss, candle.open), exit_order.side)
-                return self._make_fill(exit_order, candle.ts, price, self._taker)
+                return self._make_fill(exit_order, candle.ts, price, self._taker, "taker")
         if prot.take_profit is not None:
             hit = (
                 candle.high >= prot.take_profit if order.side is Side.BUY else candle.low <= prot.take_profit
@@ -373,5 +383,5 @@ class PaperVenue:
                 self._new_orders.append(exit_order)
                 self._prot_by_exit[exit_order.id] = (order, prot)
                 price = max(prot.take_profit, candle.open)
-                return self._make_fill(exit_order, candle.ts, price, self._maker)
+                return self._make_fill(exit_order, candle.ts, price, self._maker, "maker")
         return None  # still armed

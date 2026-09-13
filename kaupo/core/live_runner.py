@@ -29,7 +29,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from kaupo.config import Settings, get_settings
+from kaupo.config import Settings, default_maker_bps, default_taker_bps, get_settings
 from kaupo.core.engine import Engine, EngineConfig, RunResult
 from kaupo.core.funding import DbFundingProvider, EmptyFundingProvider, FundingProvider
 from kaupo.core.live_reconcile import ReconciliationRefused, reconcile_live
@@ -72,8 +72,8 @@ class LiveRequest:
     pair: Pair
     timeframe: Timeframe
     starting_cash: float = 10_000.0
-    taker_fee_bps: float = 26.0
-    maker_fee_bps: float = 16.0
+    taker_fee_bps: float = field(default_factory=default_taker_bps)
+    maker_fee_bps: float = field(default_factory=default_maker_bps)
     slippage_bps: float = 5.0
     risk: RiskConfig = field(default_factory=RiskConfig)
     lookback: int = 300

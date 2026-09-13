@@ -300,6 +300,11 @@ class Order:
     fee: float = 0.0
     # the exchange's own order id, set by a live venue; None on paper orders
     exchange_order_id: str | None = None
+    # which fee tier the fill actually paid ("maker" or "taker"), and the
+    # asset the fee was charged in. A live venue copies both from the
+    # exchange's trade record; the paper venue reports the tier it modelled.
+    taker_or_maker: str | None = None
+    fee_currency: str | None = None
 
 
 @dataclass(frozen=True)
@@ -311,6 +316,9 @@ class Fill:
     price: float
     size: float
     fee: float
+    # see Order: the fee tier this fill paid, and the fee's currency
+    taker_or_maker: str | None = None
+    fee_currency: str | None = None
 
     @property
     def quote_amount(self) -> float:

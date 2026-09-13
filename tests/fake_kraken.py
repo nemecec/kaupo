@@ -87,6 +87,7 @@ class FakeKrakenClient:
         ts: datetime,
         side: Side = Side.BUY,
         trade_id: str | None = None,
+        taker_or_maker: str | None = None,
     ) -> ExchangeTrade:
         """Script one executed trade, as Kraken would report it."""
         trade = ExchangeTrade(
@@ -98,11 +99,20 @@ class FakeKrakenClient:
             size=size,
             fee=fee,
             fee_currency="EUR",
+            taker_or_maker=taker_or_maker,
         )
         self.trades.append(trade)
         return trade
 
-    def fill_last(self, *, price: float, size: float | None = None, fee: float = 0.0, ts: datetime) -> None:
+    def fill_last(
+        self,
+        *,
+        price: float,
+        size: float | None = None,
+        fee: float = 0.0,
+        ts: datetime,
+        taker_or_maker: str | None = None,
+    ) -> None:
         """Fill the most recently placed order, wholly or in part."""
         placed = self.placed[-1]
         self.add_trade(
@@ -112,6 +122,7 @@ class FakeKrakenClient:
             fee=fee,
             ts=ts,
             side=placed.side,
+            taker_or_maker=taker_or_maker,
         )
 
     # -- TradingClient -----------------------------------------------------

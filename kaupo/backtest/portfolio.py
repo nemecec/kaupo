@@ -17,6 +17,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.backtest.metrics import compute_metrics
+from kaupo.config import default_maker_bps, default_taker_bps
 from kaupo.core.engine import RunResult
 from kaupo.core.funding import StaticFundingProvider
 from kaupo.core.orderflow import DbOrderFlowProvider
@@ -56,8 +57,8 @@ class PortfolioBacktestRequest:
     start: datetime
     end: datetime
     starting_cash: float = 10_000.0
-    taker_fee_bps: float = 26.0
-    maker_fee_bps: float = 16.0
+    taker_fee_bps: float = field(default_factory=default_taker_bps)
+    maker_fee_bps: float = field(default_factory=default_maker_bps)
     slippage_bps: float = 5.0
     risk: RiskConfig = field(default_factory=RiskConfig)
     lookback: int = 300

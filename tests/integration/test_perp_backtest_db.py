@@ -79,6 +79,11 @@ async def test_perp_short_with_funding_point_in_time(session: AsyncSession, tmp_
             start=BASE,
             end=BASE + timedelta(hours=20),
             instrument="perp",
+            # the arithmetic below is hand-computed at these rates; this test
+            # is about funding, so it states its costs instead of inheriting
+            # the account's tier (kaupo#44)
+            taker_fee_bps=26.0,
+            maker_fee_bps=16.0,
         ),
         get_sessionmaker(),
     )
@@ -108,6 +113,9 @@ async def test_perp_liquidation_rail_halts_the_run(session: AsyncSession, tmp_pa
             end=BASE + timedelta(hours=4),
             starting_cash=1_000.0,
             instrument="perp",
+            # hand-computed at these rates, like the funding test above
+            taker_fee_bps=26.0,
+            maker_fee_bps=16.0,
         ),
         get_sessionmaker(),
     )
