@@ -100,6 +100,7 @@ def is_resumable(
     *,
     new_config_hash: str,
     new_strategy_version: str,
+    new_behaviour_hash: str | None = None,
     recorded_halt_reason: str | None = None,
     mode: RunMode = RunMode.SHADOW,
 ) -> bool:
@@ -135,9 +136,23 @@ def is_resumable(
     )
     if not (deliberate_restart or graceful_stop):
         return False
-    if row.strategy_version != new_strategy_version:
+    if not _same_strategy(row, new_strategy_version, new_behaviour_hash):
         return False
     return run_config_hash(row) == new_config_hash
+
+
+def _same_strategy(row: RunRow, new_strategy_version: str, new_behaviour_hash: str | None) -> bool:
+    """True when the predecessor ran the same strategy behaviour.
+
+    The behaviour hash ignores comments and docstrings, so documentation no
+    longer orphans a chain (kaupo#46). A predecessor recorded before that
+    hash existed has no such key, and a caller that passes none keeps the
+    old rule: compare the file hash instead.
+    """
+    recorded = (row.config or {}).get("behaviour_hash")
+    if recorded and new_behaviour_hash:
+        return bool(recorded == new_behaviour_hash)
+    return row.strategy_version == new_strategy_version
 
 
 def replay_fills(quote_asset: str, starting_cash: float, ts: datetime, fills: Iterable[Fill]) -> Ledger:
@@ -255,6 +270,7 @@ async def prepare_resume(
     params: dict[str, Any],
     quote_asset: str,
     assignment_id: str | None = None,
+    behaviour_hash: str | None = None,
     mode: RunMode = RunMode.SHADOW,
 ) -> ResumeState | None:
     """The carried state for a new shadow or live run; None for a fresh start.
@@ -296,6 +312,7 @@ async def prepare_resume(
             predecessor,
             new_config_hash=new_hash,
             new_strategy_version=strategy_version,
+            new_behaviour_hash=behaviour_hash,
             recorded_halt_reason=recorded_halt_reason,
             mode=mode,
         ):

@@ -393,6 +393,9 @@ def _with_missed(
         pair=pair,
         size=float(size),
         avg_entry=current.avg_entry if current is not None else 0.0,
+        # the replayed position keeps its opening time; a position that only
+        # the recovered fills created has none to inherit
+        entry_ts=current.entry_ts if current is not None else None,
     )
     return merged
 

@@ -1,8 +1,9 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
+from kaupo.core.resume import replay_fills
 from kaupo.domain import Fill, OrderId, Pair, Position, Side
 from kaupo.ledger.ledger import InsufficientFunds, InsufficientPosition, Ledger
 
@@ -125,6 +126,59 @@ def test_seeded_ledger_continues_accounting() -> None:
     assert pos.size == 2.0
     assert pos.avg_entry == pytest.approx(150.0)
     assert ledger.cash == Decimal("700")
+
+
+class TestEntryTimestamp:
+    """The position records when it opened, so a hold clock survives a restart (kaupo#46)."""
+
+    def _fill(self, side: Side, price: float, size: float, ts: datetime) -> Fill:
+        return Fill(order_id=OrderId("o1"), pair=PAIR, side=side, ts=ts, price=price, size=size, fee=0.0)
+
+    def test_flat_position_has_no_entry(self) -> None:
+        assert Ledger("EUR", 1000.0, TS).position(PAIR).entry_ts is None
+
+    def test_opening_fill_stamps_the_entry(self) -> None:
+        ledger = Ledger("EUR", 1000.0, TS)
+        opened = TS + timedelta(hours=3)
+        ledger.apply_fill(self._fill(Side.BUY, 100.0, 1.0, opened))
+        assert ledger.position(PAIR).entry_ts == opened
+
+    def test_adding_to_a_position_keeps_the_first_entry(self) -> None:
+        ledger = Ledger("EUR", 1000.0, TS)
+        opened = TS + timedelta(hours=1)
+        ledger.apply_fill(self._fill(Side.BUY, 100.0, 1.0, opened))
+        ledger.apply_fill(self._fill(Side.BUY, 110.0, 1.0, TS + timedelta(hours=5)))
+        assert ledger.position(PAIR).entry_ts == opened
+
+    def test_closing_clears_the_entry_and_reopening_restamps_it(self) -> None:
+        ledger = Ledger("EUR", 1000.0, TS)
+        ledger.apply_fill(self._fill(Side.BUY, 100.0, 1.0, TS + timedelta(hours=1)))
+        ledger.apply_fill(self._fill(Side.SELL, 100.0, 1.0, TS + timedelta(hours=2)))
+        assert ledger.position(PAIR).entry_ts is None
+
+        reopened = TS + timedelta(hours=9)
+        ledger.apply_fill(self._fill(Side.BUY, 100.0, 1.0, reopened))
+        assert ledger.position(PAIR).entry_ts == reopened
+
+    def test_a_carried_position_keeps_its_entry(self) -> None:
+        opened = TS + timedelta(hours=4)
+        carried = {PAIR: Position(pair=PAIR, size=1.0, avg_entry=100.0, entry_ts=opened)}
+        ledger = Ledger("EUR", Decimal("500"), TS, positions=carried)
+        assert ledger.position(PAIR).entry_ts == opened
+        assert ledger.open_positions[PAIR].entry_ts == opened
+
+    def test_replaying_a_chain_rebuilds_the_entry(self) -> None:
+        # the restart path: prepare_resume replays recorded fills, so the
+        # successor learns when the position it inherits was opened
+        opened = TS + timedelta(hours=6)
+        fills = [
+            self._fill(Side.BUY, 100.0, 1.0, TS + timedelta(hours=1)),
+            self._fill(Side.SELL, 100.0, 1.0, TS + timedelta(hours=2)),
+            self._fill(Side.BUY, 90.0, 2.0, opened),
+        ]
+        ledger = replay_fills("EUR", 1000.0, TS, fills)
+        assert ledger.position(PAIR).size == 2.0
+        assert ledger.position(PAIR).entry_ts == opened
 
 
 def test_open_positions_property() -> None:

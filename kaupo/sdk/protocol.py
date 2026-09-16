@@ -337,10 +337,20 @@ class LoadedStrategy:
     cls: type[StrategyBase] | type[PortfolioStrategyBase]
     source_hash: str  # sha256 of the source file
     path: str
+    # sha256 of the parsed source with docstrings stripped: the identity that
+    # decides whether a run chain resumes. A comment or docstring edit leaves
+    # it unchanged, so documentation no longer orphans a chain (kaupo#46).
+    # Empty means "not computed": callers fall back to source_hash.
+    behaviour_hash: str = ""
 
     @property
     def version(self) -> str:
         return self.source_hash[:12]
+
+    @property
+    def behaviour_version(self) -> str:
+        """The resume identity: the behaviour hash, or the file hash when absent."""
+        return (self.behaviour_hash or self.source_hash)[:12]
 
     @property
     def is_portfolio(self) -> bool:

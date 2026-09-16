@@ -52,7 +52,7 @@ class Ledger:
         self._cash = _dec(starting_cash)
         self._perp = perp
         self._positions: dict[Pair, Position] = {
-            pair: Position(pair=pos.pair, size=pos.size, avg_entry=pos.avg_entry)
+            pair: Position(pair=pos.pair, size=pos.size, avg_entry=pos.avg_entry, entry_ts=pos.entry_ts)
             for pair, pos in (positions or {}).items()
             if pos.size != 0
         }
@@ -87,7 +87,7 @@ class Ledger:
     def open_positions(self) -> dict[Pair, Position]:
         """All open positions (copies), keyed by pair — the state a resume carries."""
         return {
-            pair: Position(pair=pos.pair, size=pos.size, avg_entry=pos.avg_entry)
+            pair: Position(pair=pos.pair, size=pos.size, avg_entry=pos.avg_entry, entry_ts=pos.entry_ts)
             for pair, pos in self._positions.items()
             if pos.size != 0
         }
@@ -95,7 +95,7 @@ class Ledger:
     def position(self, pair: Pair) -> Position:
         # a copy: the SDK contract promises strategies a read-only view
         pos = self._positions.get(pair, Position(pair=pair))
-        return Position(pair=pos.pair, size=pos.size, avg_entry=pos.avg_entry)
+        return Position(pair=pos.pair, size=pos.size, avg_entry=pos.avg_entry, entry_ts=pos.entry_ts)
 
     def position_for(self, base_asset: str) -> Position:
         for pair, pos in self._positions.items():
@@ -117,6 +117,10 @@ class Ledger:
             if cost > self._cash:
                 raise InsufficientFunds(f"need {cost} {self._quote}, have {self._cash}")
             self._cash -= cost
+            if pos.size == 0:
+                # opening from flat: stamp the entry so a hold clock survives
+                # a restart (a resume replays these fills, kaupo#46)
+                pos.entry_ts = fill.ts
             new_size = _dec(pos.size) + _dec(fill.size)
             # cost basis includes the entry fee so realized PnL covers both fees
             pos.avg_entry = (
@@ -137,6 +141,7 @@ class Ledger:
             pos.size = float(_dec(pos.size) - _dec(fill.size))
             if pos.size == 0:
                 pos.avg_entry = 0.0
+                pos.entry_ts = None
             self._positions[fill.pair] = pos
             self.realized_pnl += realized
             self._record(fill.ts, self._quote, proceeds, "trade", fill.order_id)
@@ -170,9 +175,12 @@ class Ledger:
                 remaining -= closing
                 if pos.size == 0:
                     pos.avg_entry = 0.0
+                    pos.entry_ts = None
             if remaining > 0:  # open or add to the short
                 open_fee = fee * (remaining / total)
                 old = abs(_dec(pos.size))
+                if pos.size == 0:
+                    pos.entry_ts = fill.ts
                 new_size = old + remaining
                 # a short's cost basis is the effective sell price (fee out)
                 pos.avg_entry = float(
@@ -195,8 +203,11 @@ class Ledger:
                 remaining -= covering
                 if pos.size == 0:
                     pos.avg_entry = 0.0
+                    pos.entry_ts = None
             if remaining > 0:  # open or add to the long
                 open_fee = fee * (remaining / total)
+                if pos.size == 0:
+                    pos.entry_ts = fill.ts
                 new_size = _dec(pos.size) + remaining
                 pos.avg_entry = float(
                     (_dec(pos.size) * _dec(pos.avg_entry) + remaining * _dec(fill.price) + open_fee)
