@@ -130,6 +130,40 @@ class TestIsResumable:
     def test_strategy_change_is_not_resumable(self) -> None:
         assert not resumable(run_row(), config_hash("other", "BTC/EUR", "1h", {"fast": 10}))
 
+    def test_matching_behaviour_hash_resumes_through_a_version_change(self) -> None:
+        # the kaupo#46 case: a docstring edit changes strategy_version but not
+        # behaviour, and the chain must survive it
+        row = run_row(config=dict(CONFIG, behaviour_hash="beh1"))
+        assert is_resumable(
+            row,
+            new_config_hash=HASH,
+            new_strategy_version="v2",
+            new_behaviour_hash="beh1",
+        )
+
+    def test_changed_behaviour_hash_is_not_resumable(self) -> None:
+        row = run_row(config=dict(CONFIG, behaviour_hash="beh1"))
+        assert not is_resumable(
+            row,
+            new_config_hash=HASH,
+            new_strategy_version="v1",
+            new_behaviour_hash="beh2",
+        )
+
+    def test_a_predecessor_without_the_key_falls_back_to_the_version(self) -> None:
+        # rows recorded before the behaviour hash existed keep the old rule
+        assert is_resumable(
+            run_row(), new_config_hash=HASH, new_strategy_version="v1", new_behaviour_hash="beh1"
+        )
+        assert not is_resumable(
+            run_row(), new_config_hash=HASH, new_strategy_version="v2", new_behaviour_hash="beh1"
+        )
+
+    def test_a_caller_without_a_behaviour_hash_keeps_the_old_rule(self) -> None:
+        row = run_row(config=dict(CONFIG, behaviour_hash="beh1"))
+        assert resumable(row, version="v1")
+        assert not resumable(row, version="v2")
+
     def test_universe_change_is_not_resumable(self) -> None:
         config = {
             "pair": "BTC/EUR,SOL/EUR",

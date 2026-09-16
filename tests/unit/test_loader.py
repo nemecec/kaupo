@@ -1,4 +1,5 @@
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -89,6 +90,55 @@ def test_unknown_param_rejected(tmp_path: Path) -> None:
     strat = load_strategies(tmp_path)["my-strat"]
     with pytest.raises(ValueError, match="Unknown params"):
         strat.create({"threshhold": 0.5})  # typo
+
+
+class TestBehaviourHash:
+    """The resume identity ignores comments and docstrings (kaupo#46)."""
+
+    def _hashes(self, tmp_path: Path, source: str, name: str = "a.py") -> tuple[str, str]:
+        (tmp_path / name).write_text(source)
+        strat = load_strategies(tmp_path)["my-strat"]
+        return strat.source_hash, strat.behaviour_hash
+
+    def test_a_comment_edit_keeps_the_behaviour_hash(self, tmp_path: Path) -> None:
+        before_file, before_behaviour = self._hashes(tmp_path, VALID)
+        after_file, after_behaviour = self._hashes(tmp_path, VALID + "\n# a trailing comment\n")
+
+        assert after_file != before_file  # the file changed
+        assert after_behaviour == before_behaviour  # the behaviour did not
+
+    def test_a_docstring_edit_keeps_the_behaviour_hash(self, tmp_path: Path) -> None:
+        before_file, before_behaviour = self._hashes(tmp_path, VALID)
+        documented = VALID.replace(
+            "class MyStrategy(StrategyBase):",
+            'class MyStrategy(StrategyBase):\n    """Now with a docstring."""',
+        )
+        after_file, after_behaviour = self._hashes(tmp_path, documented)
+
+        assert after_file != before_file
+        assert after_behaviour == before_behaviour
+
+    def test_a_logic_edit_changes_both_hashes(self, tmp_path: Path) -> None:
+        before_file, before_behaviour = self._hashes(tmp_path, VALID)
+        changed = VALID.replace("return []", "return [] if ctx else []")
+        after_file, after_behaviour = self._hashes(tmp_path, changed)
+
+        assert after_file != before_file
+        assert after_behaviour != before_behaviour
+
+    def test_a_docstring_only_module_keeps_a_parsable_body(self, tmp_path: Path) -> None:
+        # stripping the only statement of a body must leave valid python
+        source = '"""Module docstring."""\n' + VALID
+        _, behaviour = self._hashes(tmp_path, source)
+        assert len(behaviour) == 64
+
+    def test_behaviour_version_falls_back_to_the_file_hash(self, tmp_path: Path) -> None:
+        (tmp_path / "a.py").write_text(VALID)
+        strat = load_strategies(tmp_path)["my-strat"]
+        assert strat.behaviour_version == strat.behaviour_hash[:12]
+
+        legacy = replace(strat, behaviour_hash="")
+        assert legacy.behaviour_version == legacy.source_hash[:12]
 
 
 def test_alias_params_accepted(tmp_path: Path) -> None:

@@ -189,6 +189,7 @@ async def run_live(
         params=request.params,
         quote_asset=request.pair.quote,
         assignment_id=request.assignment_id,
+        behaviour_hash=request.strategy.behaviour_hash,
         mode=RunMode.LIVE,
     )
     if resume is not None:
@@ -339,6 +340,9 @@ def _run_config(request: LiveRequest, settings: Settings) -> dict[str, Any]:
             "marketable_limit": LIVE_MIRROR_MARKETABLE_LIMIT,
         },
         "risk": asdict(request.risk),
+        # the resume identity: comments and docstrings do not change it, so a
+        # documentation edit no longer orphans this chain (kaupo#46)
+        "behaviour_hash": request.strategy.behaviour_hash,
         "lookback": request.lookback,
         "warmup": request.warmup if request.warmup is not None else request.lookback,
         # the cap in force for this run, so the audit trail explains a

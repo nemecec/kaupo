@@ -202,6 +202,9 @@ async def run_shadow(
         "pair": str(request.pair),
         "timeframe": request.timeframe.value,
         "params": request.params,
+        # the resume identity: comments and docstrings do not change it, so a
+        # documentation edit no longer orphans this chain (kaupo#46)
+        "behaviour_hash": request.strategy.behaviour_hash,
         "starting_cash": request.starting_cash,
         "fees": {
             "taker_bps": request.taker_fee_bps,
@@ -228,6 +231,7 @@ async def run_shadow(
         params=request.params,
         quote_asset=request.pair.quote,
         assignment_id=request.assignment_id,
+        behaviour_hash=request.strategy.behaviour_hash,
     )
     if resume is not None:
         config["resumed_from"] = resume.predecessor_run_id
@@ -539,6 +543,8 @@ async def run_portfolio_shadow(
         "pairs": universe,
         "timeframe": request.timeframe.value,
         "params": request.params,
+        # see the single-pair runner: the resume identity ignores docstrings
+        "behaviour_hash": request.strategy.behaviour_hash,
         "starting_cash": request.starting_cash,
         "fees": {
             "taker_bps": request.taker_fee_bps,
@@ -565,6 +571,7 @@ async def run_portfolio_shadow(
         params=request.params,
         quote_asset=request.pairs[0].quote,
         assignment_id=request.assignment_id,
+        behaviour_hash=request.strategy.behaviour_hash,
     )
     if resume is not None:
         config["resumed_from"] = resume.predecessor_run_id

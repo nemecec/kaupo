@@ -327,11 +327,18 @@ class Fill:
 
 @dataclass
 class Position:
-    """Spot position in one pair: base size held and average entry price."""
+    """Spot position in one pair: base size held and average entry price.
+
+    ``entry_ts`` is the timestamp of the fill that opened the position from
+    flat. It survives a run restart, because a resume replays the chain's
+    fills through the ledger, so a strategy can rebuild a hold clock from it
+    instead of from instance memory (kaupo#46). None while flat.
+    """
 
     pair: Pair
     size: float = 0.0
     avg_entry: float = 0.0
+    entry_ts: datetime | None = None
 
     def market_value(self, price: float) -> float:
         return self.size * price
