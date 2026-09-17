@@ -33,6 +33,7 @@ services:
       KAUPO_DATABASE_URL: postgresql+asyncpg://kaupo:kaupo@db:5432/kaupo
       KAUPO_ADMIN_TOKEN: ${KAUPO_ADMIN_TOKEN:-}
       KAUPO_READONLY_TOKEN: ${KAUPO_READONLY_TOKEN:-}
+      KAUPO_RESEARCH_TOKEN: ${KAUPO_RESEARCH_TOKEN:-}
       KAUPO_STRATEGIES_DIR: /strategies
     volumes:
       - ${KAUPO_STRATEGIES_DIR:-./examples/strategies}:/strategies:ro

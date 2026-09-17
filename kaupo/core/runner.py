@@ -23,6 +23,7 @@ from kaupo.core.funding import DbFundingProvider, EmptyFundingProvider, FundingP
 from kaupo.core.orderflow import DbOrderFlowProvider
 from kaupo.core.portfolio_engine import PortfolioEngine, PortfolioEngineConfig, joined_steps
 from kaupo.core.positioning import DbFuturesMetricsProvider, DbOpenInterestProvider
+from kaupo.core.provenance import engine_version
 from kaupo.core.recorder import CompositeRecorder, DbRecorder, InMemoryRecorder, RunInfo
 from kaupo.core.resume import prepare_resume
 from kaupo.data.binance import BinanceClient
@@ -205,6 +206,7 @@ async def run_shadow(
         # the resume identity: comments and docstrings do not change it, so a
         # documentation edit no longer orphans this chain (kaupo#46)
         "behaviour_hash": request.strategy.behaviour_hash,
+        "engine_version": engine_version(),
         "starting_cash": request.starting_cash,
         "fees": {
             "taker_bps": request.taker_fee_bps,
@@ -545,6 +547,7 @@ async def run_portfolio_shadow(
         "params": request.params,
         # see the single-pair runner: the resume identity ignores docstrings
         "behaviour_hash": request.strategy.behaviour_hash,
+        "engine_version": engine_version(),
         "starting_cash": request.starting_cash,
         "fees": {
             "taker_bps": request.taker_fee_bps,

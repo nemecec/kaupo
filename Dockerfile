@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.3 /uv /usr/local/bin/uv
 
@@ -14,7 +14,7 @@ COPY README.md ./
 RUN uv sync --frozen --no-dev
 
 # ---- Runtime stage ----
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 
 RUN useradd --create-home --uid 1000 kaupo
 

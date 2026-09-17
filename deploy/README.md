@@ -89,11 +89,19 @@ Create an IAM user with an access key, scoped to this bucket only:
 
 ### 5. GitHub secrets and variables
 
-Generate two API tokens. Save them in your password manager. You need the read-only token to open the dashboard:
+Generate three API tokens, one for each role. Save them in your password manager. You need the read-only token to open the dashboard:
 
 ```bash
 openssl rand -hex 32
 ```
+
+The three roles:
+
+- Admin: full access, including live assignments, controls, and settings. Only a human uses it.
+- Read-only: `GET` requests only. The dashboard and the daily notification use it.
+- Research: `GET` requests, backtest submission, and create, update, and disable of shadow assignments. The research agents in `kaupo-strategies` use it. The API refuses it on live or backtest-mode assignments, on `/api/v1/control/*`, and on `PUT /api/v1/settings`. Today it can change every shadow assignment, whatever mandate owns it. The agent prompts, not the API, keep each mandate inside its own rows.
+
+Each token must have a different value. If two tokens share a value, the deploy workflow stops before it writes the host, and the API does not start. The research token is optional. If it is empty, research access is off.
 
 Then set the secrets and variables. Run these in the `kaupo` repository:
 
@@ -102,6 +110,7 @@ gh secret set HETZNER_SSH_PRIVATE_KEY < ~/.ssh/kaupo-hetzner-deploy
 gh secret set POSTGRES_PASSWORD -b "$(openssl rand -hex 32)"
 gh secret set KAUPO_ADMIN_TOKEN -b "<admin-token>"
 gh secret set KAUPO_READONLY_TOKEN -b "<readonly-token>"
+gh secret set KAUPO_RESEARCH_TOKEN -b "<research-token>"
 gh secret set AWS_ACCESS_KEY_ID -b "<access-key-id>"
 gh secret set AWS_SECRET_ACCESS_KEY -b "<secret-access-key>"
 gh variable set HETZNER_HOST -b "<server-ip>"
@@ -111,6 +120,17 @@ gh secret set KAUPO_NTFY_TOPIC -b "kaupo-$(openssl rand -hex 6)"
 ```
 
 The database password never leaves this chain. You never type it yourself.
+
+The research agents run in the `kaupo-strategies` repository, so that repository needs its own copy of the research token. Do not give it the admin token or `KAUPO_DISPATCH_PAT` as an agent secret. Run these in the `kaupo-strategies` repository, with the same research token value:
+
+```bash
+gh secret set KAUPO_RESEARCH_TOKEN -b "<research-token>"
+gh secret delete KAUPO_ADMIN_TOKEN
+```
+
+Keep `KAUPO_DISPATCH_PAT` there: the CI deploy dispatch uses it, and no agent step receives it. If you want the agents to file platform issues, add `KAUPO_ISSUE_PAT`: a fine-grained PAT on `nemecec/kaupo` with Issues read and write, and no other permission. A separate job, which runs no agent code, files the drafts with it.
+
+To keep a token value out of your shell history, omit `-b`. The command then asks for the value.
 
 ### 6. First deploy
 
@@ -152,7 +172,7 @@ COMPOSE="docker compose --env-file /etc/kaupo/kaupo.env -f /opt/kaupo/deploy/com
 ```
 
 - Deploy: automatic after a green CI run on `main`. Manual: `gh workflow run deploy.yml`.
-- Run assignments: the `run_assignments` table is the desired set of shadow runs. The `supervisor` service starts, stops, and restarts runs to match the enabled rows. Manage the rows through the API with the admin token: `GET` and `POST /api/v1/assignments`, `PUT` and `DELETE /api/v1/assignments/{id}` (DELETE disables the row). The migration seeds the two runs the old stack ran: `primary` (strategy, pair, and timeframe from the settings table) and `sol-4h` (`sma-cross` on SOL/EUR 4h). `PUT /api/v1/settings` still works and updates the `primary` row. A run stopped with the kill switch stays down until a `resume` control command or an assignment update.
+- Run assignments: the `run_assignments` table is the desired set of shadow runs. The `supervisor` service starts, stops, and restarts runs to match the enabled rows. Manage the rows through the API with the admin token: `GET` and `POST /api/v1/assignments`, `PUT` and `DELETE /api/v1/assignments/{id}` (DELETE disables the row). The research token can do the same for shadow rows only. It gets `403` on any live or backtest-mode row. The migration seeds the two runs the old stack ran: `primary` (strategy, pair, and timeframe from the settings table) and `sol-4h` (`sma-cross` on SOL/EUR 4h). `PUT /api/v1/settings` still works and updates the `primary` row. A run stopped with the kill switch stays down until a `resume` control command or an assignment update.
 - Update strategies: push to the `kaupo-strategies` main branch. The next deploy pulls them and restarts the supervisor container only when strategy code changed. Memory and docs commits trigger nothing. To apply changes now, run `/opt/kaupo/deploy/host-deploy.sh` on the host.
 - Logs: `$COMPOSE logs -f supervisor` on the host. Replace `supervisor` with `api` or `db`.
 - Backup log: `/var/log/kaupo-backup.log` on the host.

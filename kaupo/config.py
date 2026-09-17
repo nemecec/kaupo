@@ -7,6 +7,7 @@ sensible local-development defaults. No secrets are stored in code.
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,9 +17,11 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://kaupo:kaupo@localhost:5432/kaupo"
 
-    # API auth. When both are empty, auth is disabled (local dev only!).
+    # API auth. When all three are empty, auth is disabled (local dev only!).
+    # Research: reads, backtest submission, and shadow-assignment changes.
     admin_token: str = ""
     readonly_token: str = ""
+    research_token: str = ""
 
     # CORS origins allowed to call the API from a browser
     cors_origins: list[str] = [
@@ -73,9 +76,18 @@ class Settings(BaseSettings):
     default_maker_fee_bps: float = 40.0  # Kraken starter tier, 0.40% maker
     default_slippage_bps: float = 5.0
 
+    @model_validator(mode="after")
+    def _distinct_tokens(self) -> "Settings":
+        # One token value must map to one role: a shared value would make the
+        # role depend on comparison order, and a leak of one would be both.
+        configured = [t for t in (self.admin_token, self.readonly_token, self.research_token) if t]
+        if len(configured) != len(set(configured)):
+            raise ValueError("KAUPO_ADMIN_TOKEN, KAUPO_READONLY_TOKEN and KAUPO_RESEARCH_TOKEN must differ")
+        return self
+
     @property
     def auth_disabled(self) -> bool:
-        return not self.admin_token and not self.readonly_token
+        return not self.admin_token and not self.readonly_token and not self.research_token
 
 
 @lru_cache

@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from kaupo.api.deps import Principal, get_principal, require_admin
+from kaupo.api.deps import Principal, get_principal, require_research
+from kaupo.api.research_limits import check_research_capacity
 from kaupo.api.schemas import AssignmentIn, AssignmentOut, AssignmentUpdate
 from kaupo.config import Settings, get_settings
 from kaupo.data import assignments as assignments_repo
@@ -130,6 +131,20 @@ def _validate_live(mode: str, portfolio: bool) -> None:
         )
 
 
+def _authorize_mode(principal: Principal, mode: str) -> None:
+    """Research tokens change shadow assignments only; admin changes any mode.
+
+    Checked against the requested mode on create and the stored mode on
+    update and delete (an update cannot change the mode), so a research
+    token can neither start, edit, nor disable a live run.
+    """
+    if not principal.admin and mode != RunMode.SHADOW.value:
+        raise HTTPException(
+            status_code=403,
+            detail="research token manages shadow assignments only; admin token required",
+        )
+
+
 @router.get("")
 async def list_assignments(
     _: Annotated[Principal, Depends(get_principal)],
@@ -143,10 +158,13 @@ async def list_assignments(
 @router.post("", status_code=201)
 async def create_assignment(
     body: AssignmentIn,
-    _: Annotated[Principal, Depends(require_admin)],
+    principal: Annotated[Principal, Depends(require_research)],
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> AssignmentOut:
+    _authorize_mode(principal, body.mode)
+    if not principal.admin and body.enabled:
+        await check_research_capacity(session, backtest=False)
     _validate_strategy(body.strategy_id, settings)
     _validate_strategy_kind(body.strategy_id, portfolio=body.pairs is not None, settings=settings)
     _validate_params(body.strategy_id, body.params, settings)
@@ -176,13 +194,16 @@ async def create_assignment(
 async def update_assignment(
     assignment_id: str,
     body: AssignmentUpdate,
-    _: Annotated[Principal, Depends(require_admin)],
+    principal: Annotated[Principal, Depends(require_research)],
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> AssignmentOut:
     current = await assignments_repo.get_assignment(session, assignment_id)
     if current is None:
         raise HTTPException(status_code=404, detail=f"assignment {assignment_id!r} not found")
+    _authorize_mode(principal, current.mode)
+    if not principal.admin and body.enabled and not current.enabled:
+        await check_research_capacity(session, backtest=False)
     changes: dict[str, Any] = {}
     if body.strategy_id is not None:
         _validate_strategy(body.strategy_id, settings)
@@ -225,10 +246,14 @@ async def update_assignment(
 @router.delete("/{assignment_id}")
 async def delete_assignment(
     assignment_id: str,
-    _: Annotated[Principal, Depends(require_admin)],
+    principal: Annotated[Principal, Depends(require_research)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> AssignmentOut:
     """Soft delete: disables the row; the supervisor stops the run gracefully."""
+    current = await assignments_repo.get_assignment(session, assignment_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail=f"assignment {assignment_id!r} not found")
+    _authorize_mode(principal, current.mode)
     assignment = await assignments_repo.delete_assignment(session, assignment_id)
     if assignment is None:
         raise HTTPException(status_code=404, detail=f"assignment {assignment_id!r} not found")

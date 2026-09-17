@@ -35,6 +35,7 @@ from kaupo.core.funding import DbFundingProvider, EmptyFundingProvider, FundingP
 from kaupo.core.live_reconcile import ReconciliationRefused, reconcile_live
 from kaupo.core.orderflow import DbOrderFlowProvider
 from kaupo.core.positioning import DbFuturesMetricsProvider, DbOpenInterestProvider
+from kaupo.core.provenance import engine_version
 from kaupo.core.recorder import DbRecorder, RunInfo, RunRecorder
 from kaupo.core.resume import ResumeState, prepare_resume
 from kaupo.core.runner import DbControlProbe, _chain_persist, _funding_refresh_loop
@@ -343,6 +344,7 @@ def _run_config(request: LiveRequest, settings: Settings) -> dict[str, Any]:
         # the resume identity: comments and docstrings do not change it, so a
         # documentation edit no longer orphans this chain (kaupo#46)
         "behaviour_hash": request.strategy.behaviour_hash,
+        "engine_version": engine_version(),
         "lookback": request.lookback,
         "warmup": request.warmup if request.warmup is not None else request.lookback,
         # the cap in force for this run, so the audit trail explains a

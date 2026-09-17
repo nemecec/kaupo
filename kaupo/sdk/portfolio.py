@@ -48,12 +48,17 @@ def plan_rebalance(
     ctx: PortfolioContext,
     *,
     min_trade_value: float = 10.0,
+    weight_buffer: float = 0.0,
 ) -> RebalancePlan:
     """Compute the intents that move the current allocation to ``targets``.
 
     Weights are fractions of the current equity. Buys are allocated in
     sorted pair order from the free cash; when cash runs out, later buys
     shrink below ``min_trade_value`` and drop out.
+
+    ``weight_buffer`` is an absolute fraction of equity around each positive
+    target. Outside the band, trade only to its nearest edge. Zero targets
+    still exit fully. The default zero retains the original behavior.
     """
     for pair, weight in targets.items():
         if not 0.0 <= weight <= 1.0:
@@ -63,6 +68,8 @@ def plan_rebalance(
         raise ValueError(f"target weights sum to {total:.6f}, above 1.0")
     if min_trade_value < 0:
         raise ValueError(f"min_trade_value must be >= 0, got {min_trade_value}")
+    if not 0.0 <= weight_buffer < 1.0:
+        raise ValueError("weight_buffer must be finite and in [0, 1)")
 
     equity = ctx.equity()
     if equity <= 0:
@@ -79,6 +86,12 @@ def plan_rebalance(
         current_value = position.size * price
         target_value = targets.get(pair, 0.0) * equity
         delta = target_value - current_value
+        if target_value > 0 and weight_buffer > 0:
+            buffer_value = weight_buffer * equity
+            if abs(delta) <= buffer_value:
+                continue
+            # Trade to the nearest boundary, reducing proportional fee churn.
+            delta = delta - buffer_value if delta > 0 else delta + buffer_value
         if target_value == 0.0 and position.size > 0:
             sells.append(OrderIntent(pair=pair, side=Side.SELL, size=position.size, reason="rebalance exit"))
         elif delta < 0 and -delta >= min_trade_value:

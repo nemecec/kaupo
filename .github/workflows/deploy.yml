@@ -103,6 +103,8 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           KAUPO_ADMIN_TOKEN: ${{ secrets.KAUPO_ADMIN_TOKEN }}
           KAUPO_READONLY_TOKEN: ${{ secrets.KAUPO_READONLY_TOKEN }}
+          # Optional: empty until the secret exists, which leaves research access off.
+          KAUPO_RESEARCH_TOKEN: ${{ secrets.KAUPO_RESEARCH_TOKEN }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
@@ -118,10 +120,21 @@ jobs:
           KAUPO_KRAKEN_API_KEY: ${{ secrets.KAUPO_KRAKEN_API_KEY }}
           KAUPO_KRAKEN_API_SECRET: ${{ secrets.KAUPO_KRAKEN_API_SECRET }}
         run: |
+          # A shared value would make the token role ambiguous, and the API
+          # refuses to start with one. Fail here, before the host changes.
+          for name in KAUPO_READONLY_TOKEN KAUPO_RESEARCH_TOKEN; do
+            if [[ -n "${!name}" && "${!name}" == "$KAUPO_ADMIN_TOKEN" ]]; then
+              echo "::error::$name must differ from KAUPO_ADMIN_TOKEN"; exit 1
+            fi
+          done
+          if [[ -n "$KAUPO_RESEARCH_TOKEN" && "$KAUPO_RESEARCH_TOKEN" == "$KAUPO_READONLY_TOKEN" ]]; then
+            echo "::error::KAUPO_RESEARCH_TOKEN must differ from KAUPO_READONLY_TOKEN"; exit 1
+          fi
           {
             echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
             echo "KAUPO_ADMIN_TOKEN=$KAUPO_ADMIN_TOKEN"
             echo "KAUPO_READONLY_TOKEN=$KAUPO_READONLY_TOKEN"
+            echo "KAUPO_RESEARCH_TOKEN=$KAUPO_RESEARCH_TOKEN"
             echo "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
             echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
             echo "AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION"
