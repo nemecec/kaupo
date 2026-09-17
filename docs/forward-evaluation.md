@@ -122,4 +122,4 @@ The evaluator reports descriptive Sharpe, not a confidence percentage. Its regis
 
 Database administrators can change records directly. API immutability is not a cryptographic audit or an external broker attestation.
 
-GitHub branch protection remains necessary. Research agents can commit memory, so their repository token is broader than their Kaupo token. Protect production code with required human review.
+Agents can write to strategies main on the free GitHub plan. Production mounts an immutable snapshot selected by `deploy/strategies-ref` in the platform repository. Strategy CI cannot dispatch production deployments. Update the pin only after reviewing the candidate. Backtests use the pinned strategy catalog; new strategy code needs a reviewed pin update before cloud testing.

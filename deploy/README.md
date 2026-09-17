@@ -128,7 +128,7 @@ gh secret set KAUPO_RESEARCH_TOKEN -b "<research-token>"
 gh secret delete KAUPO_ADMIN_TOKEN
 ```
 
-Keep `KAUPO_DISPATCH_PAT` there: the CI deploy dispatch uses it, and no agent step receives it. If you want the agents to file platform issues, add `KAUPO_ISSUE_PAT`: a fine-grained PAT on `nemecec/kaupo` with Issues read and write, and no other permission. A separate job, which runs no agent code, files the drafts with it.
+Remove `KAUPO_DISPATCH_PAT` from the strategies repository. Strategy CI no longer deploys production. If you want the agents to file platform issues, add `KAUPO_ISSUE_PAT`: a fine-grained PAT on `nemecec/kaupo` with Issues read and write, and no other permission. A separate job, which runs no agent code, files the drafts with it.
 
 To keep a token value out of your shell history, omit `-b`. The command then asks for the value.
 
@@ -206,3 +206,12 @@ COMPOSE="docker compose --env-file /etc/kaupo/kaupo.env -f /opt/kaupo/deploy/com
 ## Moving to ECS later
 
 Every service is already a container, and the images already live in a registry. The migration is: push the images to ECR, restore the latest dump into RDS, and write ECS task definitions for `api`, `supervisor`, `backtest-worker`, `migrate`, and the UI. The Caddy and host-specific parts do not transfer.
+
+
+### Strategy release pin
+
+Agents can write to strategies main without a paid GitHub plan. These commits do not change the trading process.
+
+`deploy/strategies-ref` selects the full strategy commit SHA. The host extracts an immutable snapshot and mounts it into trading containers. Each platform deployment uses this pin, even when strategies main advances.
+
+Review strategy changes before updating the pin in the platform repository. Backtests use this pinned catalog too. A rollback changes future execution; it cannot reverse completed trades.
