@@ -16,21 +16,24 @@ fi
 cd "$REPO_DIR"
 git pull --ff-only
 
-# Private strategies. Works once the host deploy key is added to the repository.
-# The tree hash of strategies/ changes exactly when strategy code changes.
-# Memory and docs commits must not restart the trading runs.
-strategies_tree() { git -C "$STRATEGIES_DIR" rev-parse HEAD:strategies 2>/dev/null || echo none; }
-before=$(strategies_tree)
-if git ls-remote git@github.com:nemecec/kaupo-strategies.git > /dev/null 2>&1; then
-  if [[ -d "$STRATEGIES_DIR/.git" ]]; then
-    git -C "$STRATEGIES_DIR" pull --ff-only
-  else
-    git clone git@github.com:nemecec/kaupo-strategies.git "$STRATEGIES_DIR"
-  fi
-else
-  echo "strategies repository not reachable; keeping the current strategies"
+# Only the explicit platform pin reaches trading containers. Agent commits on
+# strategies/main cannot change production through an unrelated engine deploy.
+STRATEGY_REF=$(tr -d '\r\n' < deploy/strategies-ref)
+if [[ ! "$STRATEGY_REF" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "deploy/strategies-ref must contain a full commit SHA" >&2
+  exit 1
 fi
-after=$(strategies_tree)
+if [[ ! -d "$STRATEGIES_DIR/.git" ]]; then
+  git clone --no-checkout git@github.com:nemecec/kaupo-strategies.git "$STRATEGIES_DIR"
+fi
+git -C "$STRATEGIES_DIR" fetch origin "$STRATEGY_REF"
+release_dir="/opt/kaupo-strategy-releases/$STRATEGY_REF"
+if [[ ! -d "$release_dir/strategies" ]]; then
+  mkdir -p /opt/kaupo-strategy-releases
+  stage_dir=$(mktemp -d /opt/kaupo-strategy-releases/.stage.XXXXXX)
+  git -C "$STRATEGIES_DIR" archive "$STRATEGY_REF" strategies | tar -x -C "$stage_dir"
+  mv "$stage_dir" "$release_dir"
+fi
 
 TAG_FILE=/etc/kaupo/deployed-tag
 # The workflow rewrites the env file on every deploy, so the tag of the last
@@ -45,10 +48,7 @@ set_env() { # key value — replace the line or append it
   fi
 }
 set_env KAUPO_TAG "$TAG"
-if [[ -d "$STRATEGIES_DIR/.git" ]]; then
-  # strategies live in the strategies/ subdirectory of the repository
-  set_env KAUPO_STRATEGIES_HOST_DIR "$STRATEGIES_DIR/strategies"
-fi
+set_env KAUPO_STRATEGIES_HOST_DIR "$release_dir/strategies"
 
 compose() {
   docker compose --env-file "$ENV_FILE" -f deploy/compose.prod.yml --profile trading "$@"
@@ -67,10 +67,6 @@ fi
 docker container prune -f --filter "label=com.docker.compose.project=kaupo"
 compose up -d --remove-orphans
 echo "$TAG" > "$TAG_FILE"
-if [[ "$before" != "none" && "$before" != "$after" ]]; then
-  echo "strategy code changed ($before -> $after); restarting supervisor"
-  compose restart supervisor
-fi
 systemctl enable kaupo.service
 # On the containerd image store a plain `prune -f` misses the old tagged
 # deploy digests and the disk fills over weeks (the 2026-09-11 outage);

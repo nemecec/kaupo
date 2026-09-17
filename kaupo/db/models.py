@@ -12,6 +12,38 @@ class Base(DeclarativeBase):
     pass
 
 
+class ForwardTrialRow(Base):
+    """Prospective, immutable evaluation contract. No historical gate passes."""
+
+    __tablename__ = "forward_trials"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    assignment_id: Mapped[str] = mapped_column(String(100), index=True)
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    root_run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+    hypothesis: Mapped[str] = mapped_column(Text)
+    signature: Mapped[str] = mapped_column(String(64))
+    frozen_config: Mapped[dict[str, Any]] = mapped_column(JSON)
+    policy: Mapped[dict[str, Any]] = mapped_column(JSON)
+    baseline_equity: Mapped[float]
+
+
+class ResearchLedgerRow(Base):
+    """Append-only EUR costs and operator attestations of cost coverage."""
+
+    __tablename__ = "research_ledger"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    reference: Mapped[str] = mapped_column(String(200), unique=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    kind: Mapped[str] = mapped_column(String(12))
+    amount_eur: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str] = mapped_column(Text)
+
+
 class CandleRow(Base):
     __tablename__ = "candles"
 

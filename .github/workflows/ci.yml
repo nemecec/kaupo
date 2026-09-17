@@ -86,7 +86,7 @@ jobs:
       - name: Validate production compose file
         working-directory: deploy
         run: |
-          POSTGRES_PASSWORD=x KAUPO_ADMIN_TOKEN=x KAUPO_READONLY_TOKEN=x \
+          POSTGRES_PASSWORD=x KAUPO_ADMIN_TOKEN=x KAUPO_READONLY_TOKEN=y KAUPO_RESEARCH_TOKEN=z \
             docker compose -f compose.prod.yml config --quiet
 
       - name: Validate Caddyfile

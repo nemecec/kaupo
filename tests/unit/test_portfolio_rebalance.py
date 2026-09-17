@@ -68,6 +68,35 @@ def test_all_cash_buys_to_target_weights() -> None:
     assert all(b.reason == "rebalance entry" for b in plan.buys)
 
 
+def test_weight_buffer_skips_small_drift_but_preserves_exits() -> None:
+    ctx = FakeCtx(
+        candles={BTC: candle(BTC, 100)},
+        positions={BTC: Position(pair=BTC, size=49, avg_entry=100)},
+        cash=5100,
+        equity=10000,
+    )
+    assert plan_rebalance({BTC: 0.5}, ctx, weight_buffer=0.02).buys == []
+    assert plan_rebalance({}, ctx, weight_buffer=0.02).sells[0].size == 49
+
+
+@pytest.mark.parametrize("size,side,expected", [(40, "buys", 8), (60, "sells", 8)])
+def test_buffer_trades_to_nearest_edge(size, side, expected) -> None:
+    ctx = FakeCtx(
+        candles={BTC: candle(BTC, 100)},
+        positions={BTC: Position(pair=BTC, size=size, avg_entry=100)},
+        cash=10000 - size * 100,
+        equity=10000,
+    )
+    orders = getattr(plan_rebalance({BTC: 0.5}, ctx, weight_buffer=0.02), side)
+    assert orders[0].size == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("buffer", [-0.01, 1, float("nan"), float("inf")])
+def test_invalid_buffers_rejected(buffer) -> None:
+    with pytest.raises(ValueError, match="weight_buffer"):
+        plan_rebalance({}, FakeCtx(), weight_buffer=buffer)
+
+
 def test_dust_churn_below_min_trade_value_is_skipped() -> None:
     # position value 100, target 105: the 5 EUR diff is dust
     ctx = FakeCtx(

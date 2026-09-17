@@ -13,7 +13,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from kaupo.api.deps import Principal, get_principal, require_admin
+from kaupo.api.deps import Principal, get_principal, require_research
+from kaupo.api.research_limits import check_research_capacity
 from kaupo.api.schemas import BacktestAccepted, BacktestIn, RunOut
 from kaupo.backtest.plan import (
     LintViolationsError,
@@ -34,10 +35,12 @@ router = APIRouter(prefix="/api/v1/backtests", tags=["backtests"])
 @router.post("", status_code=202)
 async def submit_backtest(
     body: BacktestIn,
-    _: Annotated[Principal, Depends(require_admin)],
+    principal: Annotated[Principal, Depends(require_research)],
     settings: Annotated[Settings, Depends(get_settings)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> BacktestAccepted:
+    if not principal.admin:
+        await check_research_capacity(session, backtest=True)
     try:
         strategies = lint_and_load_strategies(settings.strategies_dir)
     except FileNotFoundError as exc:

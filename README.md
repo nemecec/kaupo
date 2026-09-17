@@ -143,6 +143,10 @@ To stop the stack:
 docker compose --profile trading down
 ```
 
+## Prospective research evaluation
+
+Research tokens can run backtests and manage shadow assignments. Fixed forward trials record configuration, ledger continuity, and actual research costs. A passing trial requests human review. It never enables live trading. See [the operator guide](docs/forward-evaluation.md).
+
 ## Deployment (production)
 
 The production stack runs on one Hetzner CX23 server behind Caddy at https://kaupo.trade. Images come from GHCR. Deploys run from GitHub Actions over SSH after a green CI run on `main`. Nightly `pg_dump` backups go to AWS S3.

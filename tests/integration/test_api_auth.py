@@ -21,6 +21,7 @@ pytestmark = pytest.mark.integration
 async def authed_client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
     os.environ["KAUPO_ADMIN_TOKEN"] = "admin-secret"  # noqa: S105 (test token)
     os.environ["KAUPO_READONLY_TOKEN"] = "readonly-secret"  # noqa: S105 (test token)
+    os.environ["KAUPO_RESEARCH_TOKEN"] = "research-secret"  # noqa: S105 (test token)
     get_settings.cache_clear()
     await dispose_engine()
     from kaupo.api.app import app
@@ -30,8 +31,35 @@ async def authed_client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
 
     os.environ.pop("KAUPO_ADMIN_TOKEN", None)
     os.environ.pop("KAUPO_READONLY_TOKEN", None)
+    os.environ.pop("KAUPO_RESEARCH_TOKEN", None)
     get_settings.cache_clear()
     await dispose_engine()
+
+
+ADMIN = {"Authorization": "Bearer admin-secret"}
+READONLY = {"Authorization": "Bearer readonly-secret"}
+RESEARCH = {"Authorization": "Bearer research-secret"}
+
+
+async def _seed_assignment(session: AsyncSession, assignment_id: str, mode: str) -> None:
+    from kaupo.data import assignments as assignments_repo
+
+    await assignments_repo.create_assignment(
+        session,
+        id=assignment_id,
+        strategy_id="regime-switch",
+        pair="SOL/EUR",
+        timeframe="4h",
+        mode=mode,
+        params={},
+        enabled=True,
+    )
+    await session.commit()
+
+
+async def _assignment(client: AsyncClient, assignment_id: str) -> dict[str, object]:
+    rows = (await client.get("/api/v1/assignments", headers=ADMIN)).json()
+    return next(row for row in rows if row["id"] == assignment_id)
 
 
 async def test_no_token_401(authed_client: AsyncClient) -> None:
@@ -180,6 +208,124 @@ async def test_settings_readonly_get_admin_put(authed_client: AsyncClient) -> No
     r = await authed_client.put("/api/v1/settings", json={"shadow_timeframe": "4h"}, headers=admin)
     assert r.status_code == 200
     assert r.json()["shadow_timeframe"] == "4h"
+
+
+async def test_research_can_read_and_submit_backtests(authed_client: AsyncClient) -> None:
+    r = await authed_client.get("/api/v1/runs", headers=RESEARCH)
+    assert r.status_code == 200
+    r = await authed_client.get("/api/v1/assignments", headers=RESEARCH)
+    assert r.status_code == 200
+
+    r = await authed_client.post(
+        "/api/v1/backtests", json={"strategy": "regime-switch", "pair": "BTC/EUR"}, headers=RESEARCH
+    )
+    assert r.status_code == 202
+    r = await authed_client.get(f"/api/v1/backtests/{r.json()['run_id']}", headers=RESEARCH)
+    assert r.status_code == 200
+
+
+async def test_research_manages_shadow_assignments(authed_client: AsyncClient, session: AsyncSession) -> None:
+    body = {"id": "research-shadow", "strategy_id": "regime-switch", "pair": "BTC/EUR", "timeframe": "1h"}
+    r = await authed_client.post("/api/v1/assignments", json=body, headers=RESEARCH)
+    assert r.status_code == 201
+    assert r.json()["mode"] == "shadow"
+
+    r = await authed_client.put(
+        "/api/v1/assignments/research-shadow", json={"timeframe": "4h"}, headers=RESEARCH
+    )
+    assert r.status_code == 200
+    assert r.json()["timeframe"] == "4h"
+
+    r = await authed_client.delete("/api/v1/assignments/research-shadow", headers=RESEARCH)
+    assert r.status_code == 200
+    assert r.json()["enabled"] is False
+
+    # re-enabling a disabled shadow row is an update, and allowed
+    r = await authed_client.put(
+        "/api/v1/assignments/research-shadow", json={"enabled": True}, headers=RESEARCH
+    )
+    assert r.status_code == 200
+
+    # scope today: any shadow row, including one an admin created
+    await _seed_assignment(session, "admin-shadow", "shadow")
+    r = await authed_client.put("/api/v1/assignments/admin-shadow", json={"enabled": False}, headers=RESEARCH)
+    assert r.status_code == 200
+
+
+@pytest.mark.parametrize("mode", ["live", "backtest"])
+async def test_research_cannot_create_non_shadow_assignment(authed_client: AsyncClient, mode: str) -> None:
+    body = {
+        "id": "sneaky",
+        "strategy_id": "regime-switch",
+        "pair": "SOL/EUR",
+        "timeframe": "4h",
+        "mode": mode,
+    }
+    r = await authed_client.post("/api/v1/assignments", json=body, headers=RESEARCH)
+    assert r.status_code == 403
+    rows = (await authed_client.get("/api/v1/assignments", headers=ADMIN)).json()
+    assert rows == []
+
+
+async def test_research_cannot_touch_live_assignment(
+    authed_client: AsyncClient, session: AsyncSession
+) -> None:
+    await _seed_assignment(session, "live-sol-4h", "live")
+    before = await _assignment(authed_client, "live-sol-4h")
+
+    for change in ({"enabled": False}, {"params": {"x": 1}}, {"pair": "BTC/EUR"}, {"starting_cash": 1.0}):
+        r = await authed_client.put("/api/v1/assignments/live-sol-4h", json=change, headers=RESEARCH)
+        assert r.status_code == 403, change
+    r = await authed_client.delete("/api/v1/assignments/live-sol-4h", headers=RESEARCH)
+    assert r.status_code == 403
+
+    # the id of a live row cannot be reclaimed as a shadow row either
+    body = {"id": "live-sol-4h", "strategy_id": "regime-switch", "pair": "SOL/EUR", "timeframe": "4h"}
+    r = await authed_client.post("/api/v1/assignments", json=body, headers=RESEARCH)
+    assert r.status_code == 409
+
+    assert await _assignment(authed_client, "live-sol-4h") == before
+
+
+async def test_research_cannot_use_admin_controls_or_settings(authed_client: AsyncClient) -> None:
+    for command in ("kill", "pause", "resume", "switch"):
+        r = await authed_client.post(f"/api/v1/control/{command}", json={}, headers=RESEARCH)
+        assert r.status_code == 403, command
+    r = await authed_client.get("/api/v1/settings", headers=RESEARCH)
+    assert r.status_code == 200
+    r = await authed_client.put("/api/v1/settings", json={"shadow_timeframe": "4h"}, headers=RESEARCH)
+    assert r.status_code == 403
+
+
+async def test_readonly_cannot_write_assignments(authed_client: AsyncClient, session: AsyncSession) -> None:
+    await _seed_assignment(session, "some-shadow", "shadow")
+    body = {"strategy_id": "regime-switch", "pair": "BTC/EUR", "timeframe": "1h"}
+    r = await authed_client.post("/api/v1/assignments", json=body, headers=READONLY)
+    assert r.status_code == 403
+    r = await authed_client.put("/api/v1/assignments/some-shadow", json={"enabled": False}, headers=READONLY)
+    assert r.status_code == 403
+    r = await authed_client.delete("/api/v1/assignments/some-shadow", headers=READONLY)
+    assert r.status_code == 403
+    assert (await _assignment(authed_client, "some-shadow"))["enabled"] is True
+
+
+async def test_admin_still_manages_live_assignments(
+    authed_client: AsyncClient, session: AsyncSession
+) -> None:
+    await _seed_assignment(session, "live-sol-4h", "live")
+    r = await authed_client.put("/api/v1/assignments/live-sol-4h", json={"enabled": False}, headers=ADMIN)
+    assert r.status_code == 200
+    r = await authed_client.delete("/api/v1/assignments/live-sol-4h", headers=ADMIN)
+    assert r.status_code == 200
+    body = {
+        "id": "live-2",
+        "strategy_id": "regime-switch",
+        "pair": "SOL/EUR",
+        "timeframe": "4h",
+        "mode": "live",
+    }
+    r = await authed_client.post("/api/v1/assignments", json=body, headers=ADMIN)
+    assert r.status_code == 201
 
 
 async def test_admin_full_access(authed_client: AsyncClient) -> None:
