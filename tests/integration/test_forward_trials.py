@@ -257,3 +257,36 @@ async def test_research_capacity_is_bounded(session):
     with pytest.raises(HTTPException) as exc:
         await check_research_capacity(session, backtest=False)
     assert exc.value.status_code == 429
+
+
+async def test_new_trial_assignment_does_not_supersede_existing_candidate(session):
+    from kaupo.core.recorder import DbRecorder, RunInfo, supersede_stale_runs
+    from kaupo.db.session import get_sessionmaker
+    from kaupo.domain import RunMode
+
+    old = await seed(session)
+    # A fresh candidate with the same strategy, pair and timeframe must not
+    # change the existing assignment's run during either resume or recording.
+    await supersede_stale_runs(
+        session,
+        mode=RunMode.SHADOW,
+        strategy_id="trend",
+        pair="BTC/EUR",
+        timeframe="1d",
+        assignment_id="new-candidate",
+    )
+    await session.commit()
+    await session.refresh(old)
+    assert old.status == "running"
+    recorder = DbRecorder(get_sessionmaker())
+    await recorder.start(
+        RunInfo(
+            mode=RunMode.SHADOW,
+            strategy_id="trend",
+            strategy_version="v1",
+            strategy_source_hash="v1",
+            config={**old.config, "assignment_id": "new-candidate"},
+        )
+    )
+    await session.refresh(old)
+    assert old.status == "running"

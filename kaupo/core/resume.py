@@ -281,7 +281,12 @@ async def prepare_resume(
     """
     async with sm_scope(sessionmaker) as session:
         await supersede_stale_runs(
-            session, mode=mode, strategy_id=strategy_id, pair=pair, timeframe=timeframe
+            session,
+            mode=mode,
+            strategy_id=strategy_id,
+            pair=pair,
+            timeframe=timeframe,
+            assignment_id=assignment_id,
         )
         stmt = (
             select(RunRow)

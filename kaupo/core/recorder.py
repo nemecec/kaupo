@@ -49,6 +49,7 @@ async def supersede_stale_runs(
     pair: str,
     timeframe: str,
     exclude_run_id: str | None = None,
+    assignment_id: str | None = None,
 ) -> None:
     """Halt stale "running" rows of the same strategy, pair, and timeframe.
 
@@ -73,6 +74,8 @@ async def supersede_stale_runs(
             metrics={"halt_reason": SUPERSEDED_HALT_REASON},
         )
     )
+    if assignment_id is not None:
+        stmt = stmt.where(RunRow.config["assignment_id"].as_string() == assignment_id)
     if exclude_run_id is not None:
         stmt = stmt.where(RunRow.id != exclude_run_id)
     await session.execute(stmt)
@@ -150,6 +153,7 @@ class DbRecorder:
                     pair=str(info.config.get("pair", "")),
                     timeframe=str(info.config.get("timeframe", "")),
                     exclude_run_id=self.run_id,
+                    assignment_id=info.config.get("assignment_id"),
                 )
             await session.commit()
 
