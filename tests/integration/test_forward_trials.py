@@ -291,7 +291,7 @@ async def test_reference_for_another_configuration_cannot_size_the_trial(client,
         ({"strategy_version": "v2"}, {}, "different strategy source version"),
         ({"behaviour_hash": "other-behaviour"}, {}, "different strategy behaviour"),
         # the run executes code the reference never measured
-        ({}, {"engine_version": "another-build"}, "current engine version"),
+        ({}, {"engine_version": "another-build"}, "different engine version"),
         ({"engine_version": "older-build"}, {}, "different engine version"),
         # the run pays more than the reference did, so it will trade less often
         (
