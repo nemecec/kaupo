@@ -9,7 +9,7 @@ from kaupo.api.routes import research
 from kaupo.config import get_settings
 from kaupo.core.provenance import engine_version
 from kaupo.data.assignments import create_assignment
-from kaupo.db.models import EventRow, OrderRow, RunRow
+from kaupo.db.models import EquitySnapshotRow, EventRow, FillRow, OrderRow, RunRow
 
 pytestmark = pytest.mark.integration
 NOW = datetime(2026, 9, 17, 12, tzinfo=UTC)
@@ -32,7 +32,113 @@ async def client(session, monkeypatch):
     get_settings.cache_clear()
 
 
-async def seed(session, mode="shadow", **overrides):
+def reference_config(days=365, **overrides):
+    start = NOW - timedelta(days=days + 2)
+    return {
+        "pair": "BTC/EUR",
+        "timeframe": "1d",
+        "exchange": "kraken",
+        "instrument": "spot",
+        "params": {},
+        "start": start.isoformat(),
+        "end": (start + timedelta(days=days)).isoformat(),
+        "starting_cash": 10000,
+        "fees": {"taker_bps": 80, "maker_bps": 40, "slippage_bps": 5, "marketable_limit": "skip"},
+        # as a backtest stores it: the venue's rates already folded in
+        "risk": {"max_position_quote": 1000, "taker_fee_bps": 80, "slippage_bps": 5},
+        "lookback": 300,
+        "liquidate_end": True,
+        **overrides,
+    }
+
+
+async def seed_reference(
+    session,
+    run_id="reference",
+    days=365,
+    positions=40,
+    size=1.0,
+    status="completed",
+    metrics=None,
+    gap_days=0,
+    strategy_id="trend",
+    **config_overrides,
+):
+    """A completed spot backtest that can size a forward trial.
+
+    ``days`` of daily equity, ``positions`` flat-to-flat round trips of
+    ``size`` at 1000 EUR. The defaults (365 days, 40 positions) imply the
+    365-day floor; fewer positions imply a longer window.
+    """
+    config = reference_config(days=days, **config_overrides)
+    start = datetime.fromisoformat(config["start"])
+    session.add(
+        RunRow(
+            id=run_id,
+            mode="backtest",
+            strategy_id=strategy_id,
+            strategy_version="v1",
+            status=status,
+            started_at=start,
+            ended_at=start + timedelta(days=days),
+            config=config,
+            metrics=metrics,
+        )
+    )
+    await session.flush()  # no mapper relationship orders the run before its rows
+    hole = range(days // 4, days // 4 + gap_days)
+    for i in range(days):
+        if i in hole:
+            continue
+        session.add(
+            EquitySnapshotRow(
+                id=f"{run_id}-e{i}",
+                run_id=run_id,
+                ts=start + timedelta(days=i),
+                equity=10000 + i,
+                cash=10000,
+                unrealized_pnl=0,
+            )
+        )
+    stride = max(2, (days - 2) // max(positions, 1))
+    trades = [
+        (f"{run_id}-{side}{j}", side, start + timedelta(days=j * stride + offset))
+        for j in range(positions)
+        for offset, side in ((0, "buy"), (1, "sell"))
+    ]
+    for trade_id, side, ts in trades:
+        session.add(
+            OrderRow(
+                id=trade_id,
+                run_id=run_id,
+                ts=ts,
+                pair="BTC/EUR",
+                side=side,
+                type="market",
+                size=size,
+                status="filled",
+            )
+        )
+    await session.flush()  # fills reference their order row
+    for trade_id, side, ts in trades:
+        session.add(
+            FillRow(
+                id=trade_id,
+                order_id=trade_id,
+                run_id=run_id,
+                ts=ts,
+                pair="BTC/EUR",
+                side=side,
+                price=1000,
+                size=size,
+                fee=0.8,
+            )
+        )
+    await session.commit()
+
+
+async def seed(session, mode="shadow", strategy_version="v1", **overrides):
+    await seed_reference(session)
     await create_assignment(
         session,
         id="slot",
@@ -48,7 +154,7 @@ async def seed(session, mode="shadow", **overrides):
         id="root",
         mode=mode,
         strategy_id="trend",
-        strategy_version="v1",
+        strategy_version=strategy_version,
         status="running",
         started_at=NOW - timedelta(minutes=1),
         config={
@@ -59,8 +165,9 @@ async def seed(session, mode="shadow", **overrides):
             "starting_cash": 10000,
             "behaviour_hash": "behaviour",
             "engine_version": engine_version(),
-            "fees": {"maker_bps": 40, "taker_bps": 80, "marketable_limit": "skip"},
-            "risk": {"max_position_quote": 1000},
+            "fees": {"maker_bps": 40, "taker_bps": 80, "slippage_bps": 5, "marketable_limit": "skip"},
+            # as a shadow run stores it: the venue's rates not yet folded in
+            "risk": {"max_position_quote": 1000, "taker_fee_bps": 80, "slippage_bps": 5},
             **overrides,
         },
     )
@@ -73,6 +180,7 @@ def registration(**extra):
     return {
         "assignment_id": "slot",
         "hypothesis": "Slow momentum exceeds fees on unseen observations",
+        "reference_run_id": "reference",
         **extra,
     }
 
@@ -83,7 +191,7 @@ async def test_trial_is_prospective_immutable_and_research_readable(client, sess
     assert response.status_code == 201, response.text
     trial = response.json()
     assert trial["registered_at"] == NOW.isoformat()
-    assert trial["ends_at"] == (NOW + timedelta(days=90)).isoformat()
+    assert trial["ends_at"] == (NOW + timedelta(days=365)).isoformat()
     assert trial["status"] == "collecting"
     assert trial["registered_trials_total"] == 1
     path = f"/api/v1/research/trials/{trial['id']}"
@@ -128,6 +236,157 @@ async def test_live_run_and_readonly_registration_denied(client, session):
     assert response.status_code == 403
 
 
+async def test_registration_fixes_a_planned_version_2_window(client, session):
+    await seed(session)
+    response = await client.post("/api/v1/research/trials", headers=RESEARCH, json=registration())
+    assert response.status_code == 201, response.text
+    policy = response.json()["policy"]
+    assert policy["version"] == 2
+    assert policy["evaluation_days"] == 365  # the floor; the rate implies 274 days
+    plan = policy["plan"]
+    assert plan["reference_run_id"] == "reference"
+    assert plan["reference_completed_positions"] == 40
+    assert round(plan["positions_per_year"]) == 40
+    assert plan["required_horizon_days"] == 274
+    assert plan["margin"] == 1.5
+    assert plan["blockers"] == []
+
+
+async def test_horizon_follows_the_reference_trade_rate(client, session):
+    """A strategy that trades a quarter as often gets a window three times as long."""
+    await seed(session)
+    await seed_reference(session, run_id="slow", positions=10)
+    response = await client.post(
+        "/api/v1/research/trials", headers=RESEARCH, json=registration(reference_run_id="slow")
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["policy"]["evaluation_days"] == 1095
+    assert body["ends_at"] == (NOW + timedelta(days=1095)).isoformat()
+
+
+async def test_registration_requires_a_planning_reference(client, session):
+    await seed(session)
+    body = registration()
+    del body["reference_run_id"]
+    assert (await client.post("/api/v1/research/trials", headers=RESEARCH, json=body)).status_code == 422
+    missing = registration(reference_run_id="nosuchrun")
+    assert (await client.post("/api/v1/research/trials", headers=RESEARCH, json=missing)).status_code == 404
+
+
+async def test_reference_for_another_configuration_cannot_size_the_trial(client, session):
+    await seed(session)
+    await seed_reference(session, run_id="other", strategy_id="momentum")
+    response = await client.post(
+        "/api/v1/research/trials", headers=RESEARCH, json=registration(reference_run_id="other")
+    )
+    assert response.status_code == 422
+    assert "different strategy id" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "reference,shadow,expected",
+    [
+        # same strategy id and parameters, different code behind the name
+        ({"strategy_version": "v2"}, {}, "different strategy source version"),
+        ({"behaviour_hash": "other-behaviour"}, {}, "different strategy behaviour"),
+        # the run executes code the reference never measured
+        ({}, {"engine_version": "another-build"}, "current engine version"),
+        ({"engine_version": "older-build"}, {}, "different engine version"),
+        # the run pays more than the reference did, so it will trade less often
+        (
+            {},
+            {"fees": {"maker_bps": 80, "taker_bps": 160, "slippage_bps": 20, "marketable_limit": "skip"}},
+            "priced taker_bps below this run",
+        ),
+        # the run can hold four times the position, so it clears the gate sooner
+        (
+            {},
+            {"risk": {"max_position_quote": 4000, "taker_fee_bps": 80, "slippage_bps": 5}},
+            "different effective risk limits",
+        ),
+    ],
+)
+async def test_a_reference_that_does_not_describe_the_run_is_rejected(
+    client, session, reference, shadow, expected
+):
+    await seed(session, **shadow)
+    if reference:
+        run = await session.get(RunRow, "reference")
+        for key, value in reference.items():
+            if hasattr(run, key):
+                setattr(run, key, value)
+            else:
+                run.config = {**run.config, key: value}
+        await session.commit()
+    response = await client.post("/api/v1/research/trials", headers=RESEARCH, json=registration())
+    assert response.status_code == 422, response.text
+    assert expected in response.json()["detail"]
+    assert (await client.get("/api/v1/research/trials", headers=RESEARCH)).json() == []
+
+
+async def test_a_reference_without_a_requested_window_cannot_size_the_trial(client, session):
+    await seed(session)
+    run = await session.get(RunRow, "reference")
+    run.config = {k: v for k, v in run.config.items() if k != "end"}
+    await session.commit()
+    response = await client.post("/api/v1/research/trials", headers=RESEARCH, json=registration())
+    assert response.status_code == 422, response.text
+    assert "does not record the date window it requested" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "kwargs,expected",
+    [
+        ({"status": "failed"}, "did not complete"),
+        ({"metrics": {"halt_reason": "daily loss"}}, "halted"),
+        ({"instrument": "perp"}, "spot backtest"),
+        ({"sweep": {"group": "g", "point": 3}}, "sweep slice"),
+        ({"fees": {"taker_bps": 10, "maker_bps": 5, "marketable_limit": "skip"}}, "below the current"),
+        ({"fees": {"taker_bps": 80, "maker_bps": 40, "marketable_limit": "maker"}}, "live-mirror"),
+        ({"starting_cash": 50000}, "10000 EUR baseline"),
+        ({"days": 120}, "estimate a trade rate"),
+        ({"gap_days": 120}, "gaps in its equity record"),
+        ({"positions": 4}, "at least 5 are needed"),
+    ],
+)
+async def test_unusable_reference_is_rejected_with_its_reason(client, session, kwargs, expected):
+    await seed(session)
+    await seed_reference(session, run_id="bad", **kwargs)
+    response = await client.post(
+        "/api/v1/research/trials", headers=RESEARCH, json=registration(reference_run_id="bad")
+    )
+    assert response.status_code == 422, response.text
+    assert expected in response.json()["detail"]
+
+
+async def test_a_strategy_too_slow_for_the_cap_is_rejected_not_shortened(client, session):
+    """Five positions a year cannot reach twenty inside the cap. Say so.
+
+    The rejection reports unreachable evidence. It must not suggest larger
+    positions, which would add risk to satisfy the gate.
+    """
+    await seed(session)
+    await seed_reference(session, run_id="glacial", positions=5)
+    response = await client.post(
+        "/api/v1/research/trials", headers=RESEARCH, json=registration(reference_run_id="glacial")
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "enough forward evidence in a testable horizon" in detail
+    assert "larger position" not in detail
+    assert (await client.get("/api/v1/research/trials", headers=RESEARCH)).json() == []
+
+
+async def test_reference_trades_never_become_forward_evidence(client, session):
+    await seed(session)
+    trial = (await client.post("/api/v1/research/trials", headers=RESEARCH, json=registration())).json()
+    report = (await client.get(f"/api/v1/research/trials/{trial['id']}", headers=READONLY)).json()
+    assert report["completed_positions"] == 0  # the reference's 40 round trips do not count
+    assert report["status"] == "collecting"
+    assert report["automatic_live_promotion"] is False
+
+
 def cost(**extra):
     ts = (NOW - timedelta(hours=1)).isoformat()
     return {
@@ -148,7 +407,9 @@ async def test_costs_are_admin_only_idempotent_and_budget_is_not_assumed_spend(c
     assert (await client.post(path, headers=ADMIN, json=cost())).status_code == 409
     budget = (await client.get("/api/v1/research/budget", headers=RESEARCH)).json()
     assert budget["recorded_spend_eur"] == 25
-    assert budget["remaining_eur"] == 75
+    assert budget["remaining_eur"] is None
+    assert budget["actual_spend_eur"] is None
+    assert budget["recorded_allowance_eur"] == 75
     assert budget["coverage_complete"] is False
     assert budget["provider_spend_enforced"] is False
     coverage = cost(

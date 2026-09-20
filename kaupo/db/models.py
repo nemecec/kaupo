@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, LargeBinary, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -336,3 +336,19 @@ class EventRow(Base):
     data: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     __table_args__ = (Index("ix_events_ts", "ts"),)
+
+
+class ResearchExperimentRow(Base):
+    """Immutable declarations and immutable reported results, including failures."""
+
+    __tablename__ = "research_experiments"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    reference: Mapped[str] = mapped_column(String(200), unique=True)
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    manifest: Mapped[dict[str, Any]] = mapped_column(JSON)
+    economics: Mapped[dict[str, Any]] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(24), default="registered")
+    dataset_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dataset: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

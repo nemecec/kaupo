@@ -39,6 +39,7 @@ services:
       # empty means no research access, and a deploy without it still starts.
       # Must differ from the other two tokens, or the API refuses to start.
       KAUPO_RESEARCH_TOKEN: ${KAUPO_RESEARCH_TOKEN:-}
+      KAUPO_RESEARCH_IMAGE: ${REGISTRY:-ghcr.io/nemecec}/kaupo:${KAUPO_TAG:-latest}
       KAUPO_STRATEGIES_DIR: /strategies
     volumes:
       - ${KAUPO_STRATEGIES_HOST_DIR:-/opt/kaupo/examples/strategies}:/strategies:ro
@@ -55,7 +56,7 @@ services:
   # Desired-state supervisor: reconciles shadow runs to the run_assignments
   # table (managed through /api/v1/assignments). The migration seeds the rows.
   supervisor:
-    image: ${REGISTRY:-ghcr.io/nemecec}/kaupo:${KAUPO_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io/nemecec}/kaupo:${KAUPO_TRADING_TAG:-b44429c4733aa6eecaeb9ef48cfcc4a33228585b}
     command: kaupo run supervisor
     profiles: ["trading"]
     environment:

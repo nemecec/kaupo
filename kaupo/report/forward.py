@@ -4,6 +4,18 @@ The evaluation window and policy are fixed at registration. Backtests and
 pre-registration fills cannot count. Each later run must resume the prior
 ledger and retain the frozen trading configuration. Missing evidence fails
 closed. Costs are observed EUR research expenses, not the spending ceiling.
+
+A reference backtest can only size the window ahead of time: it says how
+often this configuration completes a substantial position, so a trial is
+long enough for the forward gate to be reachable. That is planning input,
+never evidence — no historical trade counts towards any gate.
+
+The rate transfers only if the reference measured what the shadow run
+executes: the same strategy behaviour, the same market, the same engine
+build, and costs and risk limits the shadow cannot beat. plan_match_defects
+holds that line. Even then the horizon is an estimate from one window, and
+a reference on another venue's history stays an estimate the operator reads
+rather than a guarantee the planner enforces.
 """
 
 import hashlib
@@ -20,10 +32,38 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from kaupo.config import default_maker_bps, default_taker_bps
 from kaupo.core.engine import STOPPED_EXTERNALLY
+from kaupo.core.provenance import engine_version
 from kaupo.core.recorder import SUPERSEDED_HALT_REASON, WATCHDOG_HALT_REASON
 from kaupo.db.models import EquitySnapshotRow, EventRow, FillRow, ForwardTrialRow, ResearchLedgerRow, RunRow
-from kaupo.domain import Timeframe
+from kaupo.domain import RunMode, RunStatus, Timeframe
+
+# Version 1 trials were registered with a fixed 90-day window, which is too
+# short for a slow strategy to complete 20 positions. Version 2 sets the
+# window from a reference backtest at registration and never shortens it.
+POLICY_VERSION = 2
+# The planner's estimate carries sampling error of roughly 1/sqrt(positions).
+# This margin covers about one standard error at the minimum sample below.
+PLAN_MARGIN = 1.5
+PLAN_MIN_HORIZON_DAYS = 365
+# Beyond this the candidate is not testable in a useful time. Say so instead
+# of shortening the window, which would only weaken the evidence.
+PLAN_MAX_HORIZON_DAYS = 1825
+PLAN_MIN_REFERENCE_WINDOW_DAYS = 180.0
+PLAN_MIN_REFERENCE_POSITIONS = 5
+PLAN_MIN_WINDOW_COVERAGE = 0.9
+SECONDS_PER_DAY = 86_400.0
+DAYS_PER_YEAR = 365.25
+# Shadow and live runs both execute on Kraken candles (``run_shadow`` polls a
+# ``KrakenClient`` and warms up from the Kraken store). A backtest names the
+# venue whose history it replayed in ``config["exchange"]``.
+EXECUTION_EXCHANGE = "kraken"
+# Cost fields a reference and a run must both record before they compare.
+FEE_BPS_KEYS = ("taker_bps", "maker_bps", "slippage_bps")
+# Risk fields that only mirror the venue's rates. They are compared as fees,
+# under the direction rule, not for equality. See _cost_defects.
+RISK_MIRRORED_KEYS = ("taker_fee_bps", "slippage_bps")
 
 
 class ForwardPolicy(BaseModel):
@@ -39,6 +79,9 @@ class ForwardPolicy(BaseModel):
     outer_loss_eur: float = 5_000.0
     monthly_research_budget_eur: float = 100.0
     min_coverage: float = 0.95
+    # version 2 only: why evaluation_days was chosen. Absent on version 1
+    # rows, which keep their stored 90-day window unchanged.
+    plan: dict[str, Any] | None = None
 
 
 def aware(ts: datetime) -> datetime:
@@ -83,6 +126,335 @@ def completed_positions(fills: list[FillRow], min_notional: float = 0) -> tuple[
         else:
             return count, False
     return count, True
+
+
+def _positive_bps(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+        return None
+    return float(value)
+
+
+def _bps(value: Any) -> float | None:
+    """A recorded cost rate. ``None`` means the run recorded nothing usable.
+
+    Zero is a real rate here, unlike in ``_positive_bps``: a backtest can
+    legitimately charge no slippage, and that still compares.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _configured_days(config: dict[str, Any]) -> float | None:
+    """The window the backtest was asked for, read back from its own request."""
+    try:
+        start = datetime.fromisoformat(str(config["start"]))
+        end = datetime.fromisoformat(str(config["end"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (aware(end) - aware(start)).total_seconds() / SECONDS_PER_DAY
+
+
+def effective_risk(config: dict[str, Any]) -> dict[str, Any] | None:
+    """The risk limits a stored run actually enforced, in one shape.
+
+    The two run kinds record risk differently. A backtest stores the
+    synchronised configuration, with the venue's fee and slippage already
+    folded in (``kaupo/backtest/run.py``). A shadow run stores the
+    configuration as requested and folds the same two fields in only when
+    it builds its risk manager (``kaupo/core/runner.py``). Reading both
+    fields back from ``fees`` puts the two representations side by side.
+    ``None`` means the run recorded no risk limits to compare.
+    """
+    risk = config.get("risk")
+    if not isinstance(risk, dict) or not risk:
+        return None
+    fees = config.get("fees") or {}
+    synced = dict(risk)
+    for risk_key, fee_key in (("taker_fee_bps", "taker_bps"), ("slippage_bps", "slippage_bps")):
+        if risk_key in synced and fee_key in fees:
+            synced[risk_key] = fees[fee_key]
+    return synced
+
+
+def reference_defects(run: RunRow, policy: ForwardPolicy) -> list[str]:
+    """Why this run cannot size a forward trial. An empty list means it can.
+
+    The reference must be one completed spot backtest over its whole
+    requested window, priced at no less than today's fees and filled the
+    way a shadow run fills. A sweep or stability slice is excluded: the
+    best point of a grid is a selection, so its trade rate is not the rate
+    this configuration produces on unseen data.
+    """
+    config = run.config or {}
+    fees = config.get("fees") or {}
+    taker, maker = _positive_bps(fees.get("taker_bps")), _positive_bps(fees.get("maker_bps"))
+    defects: list[str] = []
+    if run.mode != RunMode.BACKTEST.value:
+        defects.append("reference must be a backtest run")
+    if run.status != RunStatus.COMPLETED.value:
+        defects.append("reference backtest did not complete")
+    if (run.metrics or {}).get("halt_reason"):
+        defects.append("reference backtest halted before the end of its window")
+    if config.get("instrument", "spot") != "spot":
+        defects.append("reference must be a spot backtest")
+    for marker in ("sweep", "stability", "rolling_origin"):
+        if config.get(marker):
+            defects.append(f"reference must be a standalone backtest, not one {marker} slice")
+    if taker is None or maker is None:
+        defects.append("reference must charge positive maker and taker fees")
+    elif taker < default_taker_bps() or maker < default_maker_bps():
+        defects.append(
+            f"reference fees are below the current schedule ({default_taker_bps():g} bps taker, "
+            f"{default_maker_bps():g} bps maker)"
+        )
+    if fees.get("marketable_limit") != "skip":
+        defects.append('reference must use the live-mirror fill model ("marketable_limit": "skip")')
+    if config.get("starting_cash") != policy.capital_eur:
+        defects.append(f"reference must start from the {policy.capital_eur:g} EUR baseline")
+    pairs = config.get("pairs") or [config.get("pair", "")]
+    if any(not str(pair).endswith("/EUR") for pair in pairs):
+        defects.append("reference must trade EUR pairs")
+    return defects
+
+
+def trial_plan(
+    run: RunRow,
+    fills: list[FillRow],
+    equity_window: tuple[datetime, datetime, int] | None,
+    policy: ForwardPolicy,
+) -> dict[str, Any]:
+    """How long a forward trial on this configuration has to run.
+
+    The rate comes from the window the reference backtest actually
+    recorded, not the window it requested, and the horizon it implies is
+    multiplied by a margin. Both choices lengthen the trial rather than
+    shorten it. ``blockers`` is empty only when the reference can carry a
+    registration; the horizon is never trimmed to make it empty.
+    """
+    config = run.config or {}
+    blockers = reference_defects(run, policy)
+    try:
+        step = timedelta(seconds=Timeframe.parse(str(config.get("timeframe", ""))).seconds)
+    except ValueError:
+        step = None
+        blockers.append("reference run records no usable timeframe")
+    # A backtest without a readable start and end cannot be checked for
+    # truncation: a run that stopped a month in would look complete. Say so
+    # instead of skipping the check.
+    requested = _configured_days(config)
+    if requested is None:
+        blockers.append("reference backtest does not record the date window it requested")
+    elif requested <= 0:
+        blockers.append("reference backtest requested an empty date window")
+    window_start = window_end = None
+    window_days: float | None = None
+    if equity_window is None or step is None:
+        blockers.append("reference backtest recorded no equity history")
+    else:
+        first, last, snapshots = equity_window
+        window_start, window_end = aware(first), aware(last) + step
+        window_days = (window_end - window_start).total_seconds() / SECONDS_PER_DAY
+        observed = snapshots * step.total_seconds() / SECONDS_PER_DAY
+        if observed < window_days * PLAN_MIN_WINDOW_COVERAGE:
+            blockers.append("reference backtest has gaps in its equity record")
+        if requested is not None and requested > 0 and window_days < requested * PLAN_MIN_WINDOW_COVERAGE:
+            blockers.append("reference backtest covers less of the market than it requested")
+        if window_days < PLAN_MIN_REFERENCE_WINDOW_DAYS:
+            blockers.append(
+                f"reference backtest covers {window_days:.0f} days; "
+                f"at least {PLAN_MIN_REFERENCE_WINDOW_DAYS:.0f} are needed to estimate a trade rate"
+            )
+    ordered = sorted(fills, key=lambda f: (aware(f.ts), f.side, f.id))
+    completed, valid = completed_positions(ordered, policy.min_position_notional_eur)
+    if not valid:
+        blockers.append("reference fill ledger is not a valid flat-to-flat sequence")
+        completed = 0
+    if completed < PLAN_MIN_REFERENCE_POSITIONS:
+        blockers.append(
+            f"reference completed {completed} position(s) of at least "
+            f"{policy.min_position_notional_eur:g} EUR; at least {PLAN_MIN_REFERENCE_POSITIONS} are needed"
+        )
+    positions_per_year: float | None = None
+    days_per_gate: float | None = None
+    required_days: int | None = None
+    horizon_days: int | None = None
+    if window_days is not None and window_days > 0 and completed > 0:
+        positions_per_year = completed * DAYS_PER_YEAR / window_days
+        days_per_gate = policy.min_completed_positions * window_days / completed
+        required_days = math.ceil(days_per_gate * PLAN_MARGIN)
+        horizon_days = max(required_days, PLAN_MIN_HORIZON_DAYS)
+        if horizon_days > PLAN_MAX_HORIZON_DAYS:
+            # Not an invitation to trade bigger. A larger position clears the
+            # notional bar sooner but raises the risk the trial is meant to
+            # measure, so the honest answer is that the evidence is out of reach.
+            blockers.append(
+                f"this configuration needs about {required_days} days to complete "
+                f"{policy.min_completed_positions} positions, beyond the {PLAN_MAX_HORIZON_DAYS}-day cap; "
+                "it cannot produce enough forward evidence in a testable horizon"
+            )
+            horizon_days = None
+    reference_exchange = str(config.get("exchange") or EXECUTION_EXCHANGE)
+    warnings: list[str] = []
+    if reference_exchange != EXECUTION_EXCHANGE:
+        warnings.append(
+            f"the reference replayed {reference_exchange} history and a shadow run trades "
+            f"{EXECUTION_EXCHANGE}; the two venues can differ in trade frequency"
+        )
+    limitations = [
+        "The trade rate comes from one historical window. Future frequency can differ.",
+        "The horizon is an estimate, not a guarantee that the gate becomes reachable.",
+    ]
+    if not config.get("engine_version"):
+        limitations.append(
+            "The reference does not record the engine version it ran under. "
+            "Fill-model equivalence rests on its recorded fees, risk limits and fill model."
+        )
+    return {
+        "reference_run_id": run.id,
+        "strategy_id": run.strategy_id,
+        "pair": config.get("pair"),
+        "pairs": config.get("pairs"),
+        "timeframe": config.get("timeframe"),
+        "params": config.get("params"),
+        # What the run has to reproduce before this rate describes it. See
+        # plan_match_defects: identity, execution code, costs and limits.
+        "reference_strategy_version": run.strategy_version,
+        "reference_behaviour_hash": config.get("behaviour_hash"),
+        "reference_engine_version": config.get("engine_version"),
+        "reference_fees": config.get("fees"),
+        "reference_risk": effective_risk(config),
+        "reference_starting_cash": config.get("starting_cash"),
+        "reference_exchange": reference_exchange,
+        "execution_exchange": EXECUTION_EXCHANGE,
+        "engine_version": config.get("engine_version") or engine_version(),
+        "requested_days": requested,
+        "window_start": window_start.isoformat() if window_start else None,
+        "window_end": window_end.isoformat() if window_end else None,
+        "window_days": window_days,
+        "reference_completed_positions": completed,
+        "min_position_notional_eur": policy.min_position_notional_eur,
+        "positions_per_year": positions_per_year,
+        "days_for_min_positions": days_per_gate,
+        "margin": PLAN_MARGIN,
+        "required_horizon_days": required_days,
+        "min_horizon_days": PLAN_MIN_HORIZON_DAYS,
+        "max_horizon_days": PLAN_MAX_HORIZON_DAYS,
+        "horizon_days": horizon_days,
+        "rate_basis": "estimate",
+        "usable": not blockers,
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "limitations": limitations,
+        "note": (
+            "Historical fills size the window only. They are not forward evidence "
+            "and no gate is relaxed to fit them."
+        ),
+    }
+
+
+def _identity_defects(plan: dict[str, Any], run: RunRow) -> list[str]:
+    """Whether the plan measured the same strategy code this run executes.
+
+    The behaviour hash decides when both sides recorded one, because a
+    docstring edit leaves it unchanged. A backtest records no behaviour
+    hash today, so the source version carries the comparison instead. When
+    neither field is on both sides there is nothing to compare, and an
+    unverifiable identity is a mismatch.
+    """
+    config = run.config or {}
+    reference, running = plan.get("reference_behaviour_hash"), config.get("behaviour_hash")
+    if reference and running:
+        return [] if reference == running else ["reference measured different strategy behaviour"]
+    reference, running = plan.get("reference_strategy_version"), run.strategy_version
+    if not reference or not running:
+        return ["reference or run records no strategy identity to compare"]
+    return [] if reference == running else ["reference measured a different strategy source version"]
+
+
+def _engine_defects(plan: dict[str, Any], config: dict[str, Any]) -> list[str]:
+    """Whether the plan and the run share the execution code that fills orders.
+
+    ``engine_version`` fingerprints the engine, venue, risk and ledger
+    modules. The plan retains the reference engine version, so an API-only
+    release does not change the identity of the trading runtime.
+    """
+    planned, running = plan.get("engine_version"), config.get("engine_version")
+    if not planned or not running:
+        return ["plan or run records no engine version to compare"]
+    reference = plan.get("reference_engine_version")
+    if reference and reference != running:
+        return ["reference ran under a different engine version"]
+    if planned != running:
+        return ["the plan was computed under a different engine version"]
+    return []
+
+
+def _cost_defects(plan: dict[str, Any], config: dict[str, Any]) -> list[str]:
+    """Whether the reference priced and constrained trading as this run does.
+
+    Both decide how often a position reaches the notional the gate counts.
+    Different pricing can change risk exits and entry frequency in either
+    direction, so all execution costs must match. The other risk limits
+    must match outright: each of them moves the rate in its own direction,
+    so being "close" carries no safe reading.
+    """
+    defects: list[str] = []
+    if plan.get("reference_starting_cash") != config.get("starting_cash"):
+        defects.append("reference started from a different cash balance")
+    reference_fees, fees = plan.get("reference_fees") or {}, config.get("fees") or {}
+    fill_model = fees.get("marketable_limit")
+    if not fill_model or reference_fees.get("marketable_limit") != fill_model:
+        defects.append("reference used a different fill model")
+    for key in FEE_BPS_KEYS:
+        reference, running = _bps(reference_fees.get(key)), _bps(fees.get(key))
+        if reference is None or running is None:
+            defects.append(f"reference or run records no {key} to compare")
+        elif reference < running:
+            defects.append(f"reference priced {key} below this run")
+        elif reference > running:
+            defects.append(f"reference priced {key} above this run")
+    reference_risk, risk = plan.get("reference_risk"), effective_risk(config)
+    if not reference_risk or not risk:
+        defects.append("reference or run records no risk limits to compare")
+    elif _comparable_limits(reference_risk) != _comparable_limits(risk):
+        defects.append("reference ran under different effective risk limits")
+    return defects
+
+
+def _comparable_limits(risk: dict[str, Any]) -> dict[str, Any]:
+    """Risk limits without the venue rates already checked as fees."""
+    return {k: v for k, v in risk.items() if k not in RISK_MIRRORED_KEYS}
+
+
+def plan_match_defects(plan: dict[str, Any], run: RunRow) -> list[str]:
+    """Why this plan cannot size a trial for this run. Empty means it can.
+
+    A trade rate describes one configuration: one strategy behaviour, one
+    market, one execution build, one set of costs and limits. A run that
+    differs in any of these completes qualifying positions at its own rate,
+    so the plan's horizon would not be the horizon this run needs.
+    """
+    config = run.config or {}
+    defects: list[str] = []
+    if plan.get("strategy_id") != run.strategy_id:
+        defects.append("reference measured a different strategy id")
+    if plan.get("params") != config.get("params"):
+        defects.append("reference measured different strategy parameters")
+    if plan.get("timeframe") != config.get("timeframe"):
+        defects.append("reference measured a different timeframe")
+    if plan.get("pair") != config.get("pair") or (plan.get("pairs") or None) != (config.get("pairs") or None):
+        defects.append("reference measured a different pair universe")
+    defects.extend(_identity_defects(plan, run))
+    defects.extend(_engine_defects(plan, config))
+    defects.extend(_cost_defects(plan, config))
+    return sorted(set(defects))
+
+
+def plan_matches_run(plan: dict[str, Any], run: RunRow) -> bool:
+    """True when this plan can size a forward trial for this run."""
+    return not plan_match_defects(plan, run)
 
 
 def costs_covered(rows: list[ResearchLedgerRow], start: datetime, end: datetime) -> bool:

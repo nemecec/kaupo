@@ -251,6 +251,48 @@ def test_tiny_trades_do_not_satisfy_position_count_gate():
     assert result["status"] == "insufficient_evidence"
 
 
+def test_stored_version_1_policy_keeps_its_own_window_and_thresholds():
+    """Trials registered before planning existed are read back unchanged."""
+    stored = {
+        "version": 1,
+        "evaluation_days": 90,
+        "min_completed_positions": 20,
+        "min_position_notional_eur": 500.0,
+        "min_sharpe": 1.0,
+        "max_drawdown_pct": 15.0,
+        "capital_eur": 10000.0,
+        "outer_loss_eur": 5000.0,
+        "monthly_research_budget_eur": 100.0,
+        "min_coverage": 0.95,
+    }
+    policy = ForwardPolicy.model_validate(stored)
+    assert policy.evaluation_days == 90
+    assert policy.plan is None
+    data = evidence()
+    data[0].policy = stored
+    result = report(data)
+    assert result["status"] == "review_required"
+    assert result["policy"] == stored  # reported verbatim, no new keys
+
+
+def test_a_planned_window_does_not_credit_the_reference_backtest():
+    """A version 2 policy carries the plan; the gate still counts only forward trades."""
+    data = evidence()
+    trial = data[0]
+    trial.ends_at = START + timedelta(days=365)
+    trial.policy = {
+        **ForwardPolicy().model_dump(),
+        "version": 2,
+        "evaluation_days": 365,
+        "plan": {"reference_run_id": "ref", "reference_completed_positions": 40, "horizon_days": 365},
+    }
+    data[3].clear()  # no forward fills at all
+    result = report(data, START + timedelta(days=365))
+    assert result["completed_positions"] == 0
+    assert "too few completed forward positions" in result["reasons"]
+    assert result["status"] == "insufficient_evidence"
+
+
 def test_watchdog_restart_preserves_continuous_evidence():
     from kaupo.core.recorder import WATCHDOG_HALT_REASON
 

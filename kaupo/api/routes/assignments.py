@@ -1,5 +1,7 @@
 """Run assignments: CRUD for the desired-state portfolio of trading runs."""
 
+from collections import defaultdict
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,25 +22,88 @@ from kaupo.sdk.loader import load_strategies
 router = APIRouter(prefix="/api/v1/assignments", tags=["assignments"])
 
 
-async def _live_runs(session: AsyncSession) -> dict[tuple[str, str, str, str], str]:
-    """Running runs keyed by (mode, strategy, config pair, config timeframe) → run id."""
+def _run_assignment_id(row: RunRow) -> str | None:
+    """The assignment a run was started for, or None for a legacy run."""
+    value = (row.config or {}).get("assignment_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _started_at(row: RunRow) -> datetime:
+    """Start timestamp as UTC. Rows written before timezone awareness read naive."""
+    ts = row.started_at
+    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
+
+
+def _market(mode: str, strategy_id: str, pair: str, timeframe: str) -> tuple[str, str, str, str]:
+    return (mode, strategy_id, pair, timeframe)
+
+
+def _run_market(row: RunRow) -> tuple[str, str, str, str]:
+    config = row.config or {}
+    return _market(
+        row.mode,
+        row.strategy_id or "",
+        str(config.get("pair", "")),
+        str(config.get("timeframe", "")),
+    )
+
+
+async def _live_run_ids(session: AsyncSession, assignments: list[Assignment]) -> dict[str, str]:
+    """Assignment id → the run currently executing it.
+
+    The run config carries the assignment id, so an exact match wins: a run
+    started for one assignment is never shown under a different assignment
+    that trades the same market. When two running rows claim the same
+    assignment (a restart that overlapped its predecessor), the newest one
+    is reported, so the answer does not depend on row order.
+
+    Runs recorded before the config carried an assignment id match on the
+    market instead. That match is a guess, so it is used only when it is
+    unambiguous: exactly one such run and exactly one assignment for that
+    market.
+
+    A disabled row reports no live run at all. Its desired state is
+    stopped, and a run the supervisor is still winding down belongs to the
+    runs API, not to the desired-state table. A tagged run is still never
+    offered to another assignment: it has an owner either way.
+    """
     rows = (
         (await session.execute(select(RunRow).where(RunRow.status == RunStatus.RUNNING.value)))
         .scalars()
         .all()
     )
-    return {
-        (
-            row.mode,
-            row.strategy_id or "",
-            str((row.config or {}).get("pair", "")),
-            str((row.config or {}).get("timeframe", "")),
-        ): row.id
-        for row in rows
+    claimed: dict[str, list[RunRow]] = defaultdict(list)
+    legacy: dict[tuple[str, str, str, str], list[RunRow]] = defaultdict(list)
+    for row in rows:
+        assignment_id = _run_assignment_id(row)
+        if assignment_id is None:
+            legacy[_run_market(row)].append(row)
+        else:
+            claimed[assignment_id].append(row)
+    live = {
+        assignment.id: max(claimed[assignment.id], key=lambda r: (_started_at(r), r.id)).id
+        for assignment in assignments
+        if assignment.enabled and claimed.get(assignment.id)
     }
+    candidates: dict[tuple[str, str, str, str], list[Assignment]] = defaultdict(list)
+    for assignment in assignments:
+        if assignment.enabled and assignment.id not in live:
+            key = _market(assignment.mode, assignment.strategy_id, assignment.pair, assignment.timeframe)
+            candidates[key].append(assignment)
+    for key, group in candidates.items():
+        runs = legacy.get(key, [])
+        if len(group) == 1 and len(runs) == 1:
+            live[group[0].id] = runs[0].id
+    return live
 
 
-def _assignment_out(assignment: Assignment, live: dict[tuple[str, str, str, str], str]) -> AssignmentOut:
+async def _live_run_id(session: AsyncSession, assignment: Assignment) -> str | None:
+    """The run executing one assignment; needs the full table to spot ambiguity."""
+    assignments = await assignments_repo.list_assignments(session)
+    return (await _live_run_ids(session, assignments)).get(assignment.id)
+
+
+def _assignment_out(assignment: Assignment, run_id: str | None) -> AssignmentOut:
     return AssignmentOut(
         id=assignment.id,
         strategy_id=assignment.strategy_id,
@@ -51,7 +116,7 @@ def _assignment_out(assignment: Assignment, live: dict[tuple[str, str, str, str]
         starting_cash=assignment.starting_cash,
         created_at=assignment.created_at,
         updated_at=assignment.updated_at,
-        run_id=live.get((assignment.mode, assignment.strategy_id, assignment.pair, assignment.timeframe)),
+        run_id=run_id,
     )
 
 
@@ -151,8 +216,8 @@ async def list_assignments(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> list[AssignmentOut]:
     rows = await assignments_repo.list_assignments(session)
-    live = await _live_runs(session)
-    return [_assignment_out(a, live) for a in rows]
+    live = await _live_run_ids(session, rows)
+    return [_assignment_out(a, live.get(a.id)) for a in rows]
 
 
 @router.post("", status_code=201)
@@ -187,7 +252,7 @@ async def create_assignment(
         starting_cash=body.starting_cash,
         pairs=pairs,
     )
-    return _assignment_out(assignment, await _live_runs(session))
+    return _assignment_out(assignment, await _live_run_id(session, assignment))
 
 
 @router.put("/{assignment_id}")
@@ -240,7 +305,7 @@ async def update_assignment(
         )
     assignment = await assignments_repo.update_assignment(session, assignment_id, **changes)
     assert assignment is not None  # existence checked above
-    return _assignment_out(assignment, await _live_runs(session))
+    return _assignment_out(assignment, await _live_run_id(session, assignment))
 
 
 @router.delete("/{assignment_id}")
@@ -257,4 +322,4 @@ async def delete_assignment(
     assignment = await assignments_repo.delete_assignment(session, assignment_id)
     if assignment is None:
         raise HTTPException(status_code=404, detail=f"assignment {assignment_id!r} not found")
-    return _assignment_out(assignment, await _live_runs(session))
+    return _assignment_out(assignment, await _live_run_id(session, assignment))

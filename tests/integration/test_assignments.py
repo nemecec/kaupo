@@ -56,16 +56,21 @@ def _add_run(
     pair: str = "BTC/EUR",
     strategy_id: str = "regime-switch",
     timeframe: str = "1h",
+    assignment_id: str | None = None,
+    age_seconds: float = 0.0,
 ) -> None:
+    config: dict = {"pair": pair, "timeframe": timeframe}
+    if assignment_id is not None:
+        config["assignment_id"] = assignment_id
     session.add(
         RunRow(
             id=run_id,
             mode=mode,
             strategy_id=strategy_id,
             strategy_version="v",
-            started_at=utc_now(),
+            started_at=utc_now() - timedelta(seconds=age_seconds),
             status=status,
-            config={"pair": pair, "timeframe": timeframe},
+            config=config,
         )
     )
 
@@ -276,6 +281,135 @@ async def test_api_list_links_same_pair_runs_by_timeframe(client: AsyncClient, s
     rows = {row["id"]: row for row in r.json()}
     assert rows["a-1h"]["run_id"] == "run-1h"
     assert rows["a-4h"]["run_id"] == "run-4h"
+
+
+async def _create(client: AsyncClient, assignment_id: str, **overrides: object) -> None:
+    payload = {
+        "id": assignment_id,
+        "strategy_id": "regime-switch",
+        "pair": "BTC/EUR",
+        "timeframe": "1h",
+        **overrides,
+    }
+    r = await client.post("/api/v1/assignments", json=payload)
+    assert r.status_code == 201, r.text
+
+
+async def _run_ids(client: AsyncClient) -> dict[str, str | None]:
+    r = await client.get("/api/v1/assignments")
+    assert r.status_code == 200
+    return {row["id"]: row["run_id"] for row in r.json()}
+
+
+async def test_api_list_never_attributes_another_assignments_run(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """Two candidates on one market: only the one the run belongs to shows it."""
+    await _create(client, "a1")
+    await _create(client, "a2")
+    _add_run(session, "run-a2", "shadow", "running", assignment_id="a2")
+    await session.commit()
+
+    assert await _run_ids(client) == {"a1": None, "a2": "run-a2"}
+
+
+async def test_api_list_prefers_the_exact_assignment_over_a_market_match(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """A tagged run wins over an untagged run of the same market."""
+    await _create(client, "a1")
+    _add_run(session, "run-tagged", "shadow", "running", assignment_id="a1")
+    _add_run(session, "run-legacy", "shadow", "running")
+    await session.commit()
+
+    assert (await _run_ids(client))["a1"] == "run-tagged"
+
+
+@pytest.mark.parametrize("order", [("old", "new"), ("new", "old")])
+async def test_api_list_reports_the_newest_of_duplicate_running_rows(
+    client: AsyncClient, session: AsyncSession, order: tuple[str, str]
+) -> None:
+    """A restart that overlaps its predecessor must not flip the reported run."""
+    await _create(client, "a1")
+    ages = {"old": 600.0, "new": 0.0}
+    for name in order:
+        _add_run(session, f"run-{name}", "shadow", "running", assignment_id="a1", age_seconds=ages[name])
+    await session.commit()
+
+    assert (await _run_ids(client))["a1"] == "run-new"
+
+
+async def test_api_list_leaves_ambiguous_legacy_runs_unattributed(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """Untagged runs are a guess; a guess with two answers is reported as none."""
+    await _create(client, "a1")
+    _add_run(session, "run-1", "shadow", "running")
+    _add_run(session, "run-2", "shadow", "running")
+    await session.commit()
+
+    assert (await _run_ids(client))["a1"] is None
+
+
+async def test_api_list_leaves_legacy_runs_unattributed_when_two_assignments_match(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    await _create(client, "a1")
+    await _create(client, "a2")
+    _add_run(session, "run-1", "shadow", "running")
+    await session.commit()
+
+    assert await _run_ids(client) == {"a1": None, "a2": None}
+
+
+@pytest.mark.parametrize("tagged", [None, "a1"])
+async def test_api_disabled_assignment_reports_no_run(
+    client: AsyncClient, session: AsyncSession, tagged: str | None
+) -> None:
+    """A disabled row wants no run, so it claims none, tagged or not."""
+    await _create(client, "a1")
+    _add_run(session, "run-1", "shadow", "running", assignment_id=tagged)
+    await session.commit()
+    assert (await _run_ids(client))["a1"] == "run-1"
+
+    deleted = await client.delete("/api/v1/assignments/a1")
+    assert deleted.status_code == 200
+    assert deleted.json()["run_id"] is None
+    assert (await _run_ids(client))["a1"] is None
+
+
+async def test_api_disabled_assignment_does_not_release_its_run_to_a_neighbour(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """The stopping run still belongs to a1; a2 must not adopt it."""
+    await _create(client, "a1")
+    await _create(client, "a2")
+    _add_run(session, "run-1", "shadow", "running", assignment_id="a1")
+    await session.commit()
+
+    assert (await client.delete("/api/v1/assignments/a1")).status_code == 200
+    assert await _run_ids(client) == {"a1": None, "a2": None}
+
+
+async def test_api_write_responses_report_the_assignments_own_run(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """Create, update and delete answer with the same mapping as the listing."""
+    await _create(client, "a1")
+    _add_run(session, "run-a1", "shadow", "running", assignment_id="a1")
+    _add_run(session, "run-other", "shadow", "running", assignment_id="a2")
+    await session.commit()
+
+    updated = await client.put("/api/v1/assignments/a1", json={"starting_cash": 5000})
+    assert updated.status_code == 200
+    assert updated.json()["run_id"] == "run-a1"
+
+    created = await client.post(
+        "/api/v1/assignments",
+        json={"id": "a2", "strategy_id": "regime-switch", "pair": "BTC/EUR", "timeframe": "1h"},
+    )
+    assert created.status_code == 201
+    assert created.json()["run_id"] == "run-other"
 
 
 async def test_api_create_conflict(client: AsyncClient) -> None:

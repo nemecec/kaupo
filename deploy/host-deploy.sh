@@ -47,6 +47,12 @@ set_env() { # key value — replace the line or append it
     echo "$1=$2" >> "$ENV_FILE"
   fi
 }
+TRADING_REF=$(tr -d '\r\n' < deploy/trading-ref)
+if [[ ! "$TRADING_REF" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "deploy/trading-ref must contain a full commit SHA" >&2
+  exit 1
+fi
+set_env KAUPO_TRADING_TAG "$TRADING_REF"
 set_env KAUPO_TAG "$TAG"
 set_env KAUPO_STRATEGIES_HOST_DIR "$release_dir/strategies"
 

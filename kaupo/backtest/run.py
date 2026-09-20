@@ -15,6 +15,7 @@ from kaupo.core.engine import Engine, EngineConfig, RunResult
 from kaupo.core.funding import StaticFundingProvider
 from kaupo.core.orderflow import DbOrderFlowProvider
 from kaupo.core.positioning import StaticFuturesMetricsProvider, StaticOpenInterestProvider
+from kaupo.core.provenance import engine_version
 from kaupo.core.recorder import CompositeRecorder, DbRecorder, InMemoryRecorder, RunInfo
 from kaupo.data.candles import get_candles
 from kaupo.data.funding import FUNDING_EXCHANGE, get_funding_rates
@@ -176,6 +177,8 @@ async def run_backtest(
             strategy_version=request.strategy.version,
             strategy_source_hash=request.strategy.source_hash,
             config={
+                "engine_version": engine_version(),
+                "behaviour_hash": request.strategy.behaviour_hash,
                 "pair": str(request.pair),
                 "timeframe": request.timeframe.value,
                 "exchange": request.exchange,

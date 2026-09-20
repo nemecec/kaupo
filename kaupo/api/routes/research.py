@@ -11,8 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from kaupo.api.deps import Principal, get_principal, require_admin, require_research
-from kaupo.core.provenance import engine_version
 from kaupo.db.models import (
+    EquitySnapshotRow,
     FillRow,
     ForwardTrialRow,
     OrderRow,
@@ -22,7 +22,18 @@ from kaupo.db.models import (
 )
 from kaupo.db.session import get_session
 from kaupo.domain import new_id, utc_now
-from kaupo.report.forward import ForwardPolicy, aware, frozen_config, signature, trial_report
+from kaupo.report.forward import (
+    PLAN_MAX_HORIZON_DAYS,
+    PLAN_MIN_HORIZON_DAYS,
+    POLICY_VERSION,
+    ForwardPolicy,
+    aware,
+    frozen_config,
+    plan_match_defects,
+    signature,
+    trial_plan,
+    trial_report,
+)
 
 router = APIRouter(prefix="/api/v1/research", tags=["research"])
 
@@ -32,6 +43,48 @@ class TrialIn(BaseModel):
 
     assignment_id: str = Field(min_length=1, max_length=100)
     hypothesis: str = Field(min_length=20, max_length=4000)
+    # The completed backtest that sizes the window. The server reads the
+    # horizon off it, so a trial cannot be registered too short for its own
+    # gate; the caller cannot name a horizon at all.
+    reference_run_id: str = Field(min_length=1, max_length=32)
+
+
+async def _plan_for(session: AsyncSession, reference_run_id: str, policy: ForwardPolicy) -> dict[str, Any]:
+    run = await session.get(RunRow, reference_run_id)
+    if run is None:
+        raise HTTPException(404, "reference run not found")
+    first, last, snapshots = (
+        await session.execute(
+            select(
+                func.min(EquitySnapshotRow.ts),
+                func.max(EquitySnapshotRow.ts),
+                func.count(EquitySnapshotRow.id),
+            ).where(EquitySnapshotRow.run_id == run.id)
+        )
+    ).one()
+    window = (first, last, snapshots) if first is not None and last is not None else None
+    fills = list((await session.scalars(select(FillRow).where(FillRow.run_id == run.id))).all())
+    return trial_plan(run, fills, window, policy)
+
+
+@router.get("/trial-plan")
+async def plan_trial(
+    reference_run_id: str,
+    _: Annotated[Principal, Depends(get_principal)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Advisory: how long a trial on the reference backtest's configuration must run.
+
+    This endpoint changes nothing. It reports the trade rate the reference
+    recorded, the window that rate implies for the position gate, and what
+    stands in the way of using it. Registration applies the same rules.
+    """
+    policy = ForwardPolicy()
+    return {
+        "policy_version": POLICY_VERSION,
+        "min_completed_positions": policy.min_completed_positions,
+        "plan": await _plan_for(session, reference_run_id, policy),
+    }
 
 
 class CostIn(BaseModel):
@@ -112,8 +165,8 @@ async def register_trial(
         )
     ):
         raise HTTPException(422, "register a fresh shadow assignment before its first fill")
-    if cfg.get("engine_version") != engine_version():
-        raise HTTPException(422, "run must record the current engine version; restart before registration")
+    if not cfg.get("engine_version"):
+        raise HTTPException(422, "run must record its trading engine version")
     if not cfg.get("fees") or not cfg.get("risk") or not cfg.get("behaviour_hash"):
         raise HTTPException(422, "run is missing execution provenance")
     if cfg.get("fees", {}).get("marketable_limit") != "skip":
@@ -133,18 +186,35 @@ async def register_trial(
         or (assignment.starting_cash is not None and cfg.get("starting_cash") != assignment.starting_cash)
     ):
         raise HTTPException(409, "assignment changes have not reached the running strategy")
+    plan = await _plan_for(session, body.reference_run_id, policy)
+    # First why the reference cannot size any trial, then why it cannot size
+    # this one. The first answer stands on its own, so it reads better.
+    if plan["blockers"]:
+        raise HTTPException(422, "planning reference cannot size this trial: " + "; ".join(plan["blockers"]))
+    mismatches = plan_match_defects(plan, run)
+    if mismatches:
+        raise HTTPException(
+            422,
+            "the planning reference does not describe this run: " + "; ".join(mismatches),
+        )
+    horizon = plan["horizon_days"]
+    # The window a version 2 trial can hold, enforced at the boundary too.
+    if not isinstance(horizon, int) or not PLAN_MIN_HORIZON_DAYS <= horizon <= PLAN_MAX_HORIZON_DAYS:
+        raise HTTPException(422, "planning reference implies no usable evaluation window")
+    # The window is fixed here, from the plan, and never moves afterwards.
+    registered = ForwardPolicy(version=POLICY_VERSION, evaluation_days=horizon, plan=plan)
     frozen = frozen_config(run)
     trial = ForwardTrialRow(
         id=new_id(),
         assignment_id=body.assignment_id,
         registered_at=now,
-        ends_at=now + timedelta(days=policy.evaluation_days),
+        ends_at=now + timedelta(days=registered.evaluation_days),
         root_run_id=run.id,
         hypothesis=body.hypothesis,
         signature=signature(frozen),
         frozen_config=frozen,
-        policy=policy.model_dump(),
-        baseline_equity=policy.capital_eur,
+        policy=registered.model_dump(),
+        baseline_equity=registered.capital_eur,
     )
     session.add(trial)
     await session.flush()
@@ -230,15 +300,22 @@ async def research_budget(
     from kaupo.report.forward import costs_covered
 
     ceiling = ForwardPolicy().monthly_research_budget_eur
+    covered = costs_covered(rows, aware(start), aware(now))
     return {
         "month": start.strftime("%Y-%m"),
         "budget_eur": ceiling,
         "recorded_spend_eur": total,
-        "remaining_eur": max(0.0, ceiling - total),
+        "remaining_eur": max(0.0, ceiling - total) if covered else None,
+        "actual_spend_eur": total if covered else None,
+        "recorded_allowance_eur": max(0.0, ceiling - total),
+        "accounting_status": "complete" if covered else "missing_usage_records",
         "over_budget": total > ceiling,
-        "coverage_complete": costs_covered(rows, aware(start), aware(now)),
+        "coverage_complete": covered,
         "provider_spend_enforced": False,
-        "note": "Ledger tracks actual research costs. Enforce provider limits separately. Hosting excluded.",
+        "note": (
+            "Uncovered periods have unknown costs, not zero costs. "
+            "Prepaid balance is not usage. Hosting excluded."
+        ),
     }
 
 
