@@ -23,6 +23,7 @@ from kaupo.core.funding import StaticFundingProvider
 from kaupo.core.orderflow import DbOrderFlowProvider
 from kaupo.core.portfolio_engine import PortfolioEngine, PortfolioEngineConfig, joined_steps
 from kaupo.core.positioning import StaticFuturesMetricsProvider, StaticOpenInterestProvider
+from kaupo.core.provenance import engine_version
 from kaupo.core.recorder import CompositeRecorder, DbRecorder, InMemoryRecorder, RunInfo
 from kaupo.data.candles import get_candles
 from kaupo.data.funding import FUNDING_EXCHANGE, get_funding_rates
@@ -192,6 +193,8 @@ async def run_portfolio_backtest(
             strategy_version=request.strategy.version,
             strategy_source_hash=request.strategy.source_hash,
             config={
+                "engine_version": engine_version(),
+                "behaviour_hash": request.strategy.behaviour_hash,
                 # the joined sorted list keeps the config["pair"] shape a
                 # plain string, as in single-pair runs
                 "pair": ",".join(universe),
@@ -208,7 +211,7 @@ async def run_portfolio_backtest(
                     "slippage_bps": request.slippage_bps,
                     "marketable_limit": request.marketable_limit,
                 },
-                "risk": asdict(request.risk),
+                "risk": asdict(risk_config),
                 "lookback": request.lookback,
                 "liquidate_end": request.liquidate_end,
                 **({"stability": request.stability} if request.stability is not None else {}),

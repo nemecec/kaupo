@@ -12,6 +12,7 @@ from kaupo.api.routes import (
     backtests,
     data,
     equity,
+    experiments,
     research,
     runs,
     settings,
@@ -53,5 +54,6 @@ app.include_router(strategies.router)
 app.include_router(settings.router)
 app.include_router(assignments.router)
 app.include_router(research.router)
+app.include_router(experiments.router)
 
 app.websocket("/ws/live")(live_ws)

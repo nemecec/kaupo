@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # Strategy plugins
     strategies_dir: Path = Path("examples/strategies")
 
+    # Image used by credential-free cloud research containers.
+    research_image: str = ""
+
     # Exchange
     exchange: str = "kraken"
 
