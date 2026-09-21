@@ -37,6 +37,10 @@ from kaupo.report.forward import (
 
 router = APIRouter(prefix="/api/v1/research", tags=["research"])
 
+# Operator-approved spending exception; UTC calendar month matches the ledger.
+# This does not change any frozen forward-trial policy.
+MONTHLY_BUDGET_OVERRIDES_EUR = {"2026-09": 200.0}
+
 
 class TrialIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -299,7 +303,9 @@ async def research_budget(
     total = sum(float(r.amount_eur) for r in rows if r.kind == "cost")
     from kaupo.report.forward import costs_covered
 
-    ceiling = ForwardPolicy().monthly_research_budget_eur
+    ceiling = MONTHLY_BUDGET_OVERRIDES_EUR.get(
+        start.strftime("%Y-%m"), ForwardPolicy().monthly_research_budget_eur
+    )
     covered = costs_covered(rows, aware(start), aware(now))
     return {
         "month": start.strftime("%Y-%m"),

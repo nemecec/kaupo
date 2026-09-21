@@ -409,7 +409,8 @@ async def test_costs_are_admin_only_idempotent_and_budget_is_not_assumed_spend(c
     assert budget["recorded_spend_eur"] == 25
     assert budget["remaining_eur"] is None
     assert budget["actual_spend_eur"] is None
-    assert budget["recorded_allowance_eur"] == 75
+    assert budget["budget_eur"] == 200
+    assert budget["recorded_allowance_eur"] == 175
     assert budget["coverage_complete"] is False
     assert budget["provider_spend_enforced"] is False
     coverage = cost(
@@ -425,7 +426,7 @@ async def test_costs_are_admin_only_idempotent_and_budget_is_not_assumed_spend(c
     budget = (await client.get("/api/v1/research/budget", headers=RESEARCH)).json()
     assert budget["coverage_complete"] is True
     assert (
-        await client.post(path, headers=ADMIN, json=cost(reference="invoice-2", amount_eur=90))
+        await client.post(path, headers=ADMIN, json=cost(reference="invoice-2", amount_eur=190))
     ).status_code == 201
     budget = (await client.get("/api/v1/research/budget", headers=RESEARCH)).json()
     assert budget["over_budget"] is True
@@ -551,3 +552,25 @@ async def test_new_trial_assignment_does_not_supersede_existing_candidate(sessio
     )
     await session.refresh(old)
     assert old.status == "running"
+
+
+@pytest.mark.parametrize(
+    ("as_of", "expected"),
+    [
+        (datetime(2026, 8, 31, 23, 59, 59, tzinfo=UTC), 100),
+        (datetime(2026, 9, 1, tzinfo=UTC), 200),
+        (datetime(2026, 9, 30, 23, 59, 59, tzinfo=UTC), 200),
+        (datetime(2026, 10, 1, tzinfo=UTC), 100),
+        (datetime(2027, 9, 1, tzinfo=UTC), 100),
+    ],
+)
+async def test_budget_exception_expires_at_october_boundary(client, monkeypatch, as_of, expected):
+    monkeypatch.setattr(research, "utc_now", lambda: as_of)
+    response = await client.get("/api/v1/research/budget", headers=RESEARCH)
+    assert response.status_code == 200
+    budget = response.json()
+    assert budget["budget_eur"] == expected
+    assert budget["recorded_allowance_eur"] == expected
+    assert budget["actual_spend_eur"] is None
+    assert budget["remaining_eur"] is None
+    assert research.ForwardPolicy().monthly_research_budget_eur == 100
