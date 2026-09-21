@@ -64,7 +64,10 @@ compose() {
 # compose recreate every container for no content change. Pull only on a
 # real tag change; `up -d` is a no-op when nothing changed.
 if [[ "$TAG" != "$current_tag" ]]; then
-  compose pull
+  # Pull application releases only. Refreshing mutable db/caddy tags here
+  # can replace PostgreSQL and restart trading through a lost DB connection.
+  # Bootstrap still pulls missing infrastructure images during compose up.
+  compose pull migrate api backtest-worker book-collector ui
 else
   echo "image tag unchanged ($TAG); skipping pull"
 fi
