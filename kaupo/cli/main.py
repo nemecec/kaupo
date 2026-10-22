@@ -1027,9 +1027,12 @@ def report_rolling_origin(
             cells = ("", f"[yellow]{entry['shadow']['note']}[/yellow]", entry["verdict"])
         else:
             backtest, shadow = entry["backtest"], entry["shadow"]
+            comparison = entry.get("comparison", {})
+            backtest_sharpe = comparison.get("backtest_sharpe", backtest["sharpe"])
+            shadow_sharpe = comparison.get("shadow_sharpe", shadow["sharpe"])
             cells = (
-                f"sharpe {backtest['sharpe']} ({backtest['num_round_trips']} trips)",
-                f"sharpe {shadow['sharpe']} ({shadow['num_fills']} fills)",
+                f"sharpe {backtest_sharpe} ({backtest.get('num_fills', '—')} fills)",
+                f"sharpe {shadow_sharpe} ({shadow['num_fills']} fills)",
                 entry["verdict"],
             )
         table.add_row(entry["id"], entry["strategy_id"], entry["pair"], entry["timeframe"], *cells)

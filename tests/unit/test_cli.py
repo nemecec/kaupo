@@ -1328,8 +1328,9 @@ def test_report_rolling_origin(monkeypatch: pytest.MonkeyPatch) -> None:
                 "strategy_id": "holder",
                 "pair": "BTC/EUR",
                 "timeframe": "1h",
-                "backtest": {"run_id": "r1", "sharpe": 1.0, "num_round_trips": 1},
+                "backtest": {"run_id": "r1", "sharpe": 1.0, "num_round_trips": 1, "num_fills": 2},
                 "shadow": {"sharpe": 0.9, "num_fills": 2},
+                "comparison": {"backtest_sharpe": 0.8, "shadow_sharpe": 0.8},
                 "verdict": "tracks",
             },
             {
@@ -1359,7 +1360,8 @@ def test_report_rolling_origin(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls["days"] == 7
     assert calls["digest"] == body  # the digest goes out after the build
     assert "Rolling-origin report 2026-W35" in out
-    assert "sharpe 1.0 (1 trips)" in out
-    assert "sharpe 0.9 (2 fills)" in out
+    assert "sharpe 0.8 (2 fills)" in out
+    assert "sharpe 1.0" not in out
+    assert "sharpe 0.9" not in out
     assert "tracks" in out
     assert "error: unknown strategy 'ghost'" in out
