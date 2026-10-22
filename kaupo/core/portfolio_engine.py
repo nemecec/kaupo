@@ -457,10 +457,11 @@ class PortfolioEngine:
                 fill = self.venues[pair].liquidate(pair, pos.size, candle)
                 realized = self.ledger.apply_fill(fill)
                 self.risk.notify_trade_result(float(realized))
-                await self.recorder.record_fill(fill)
+                # Either recorder call can flush: persist the parent order first.
                 order = self.venues[pair].get_order(fill.order_id)
                 if order is not None:
                     await self.recorder.record_order(order)
+                await self.recorder.record_fill(fill)
                 self._fills += 1
             await self.recorder.record_ledger(self.ledger.drain_entries())
             latest = max((c.ts for c in self._last_candle.values()), default=None)

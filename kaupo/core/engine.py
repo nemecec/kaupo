@@ -474,10 +474,11 @@ class Engine:
                 fill = self.venue.liquidate(self.config.pair, pos.size, last_candle)
                 realized = self.ledger.apply_fill(fill)
                 self.risk.notify_trade_result(float(realized))
-                await self.recorder.record_fill(fill)
+                # Either recorder call can flush: persist the parent order first.
                 order = self.venue.get_order(fill.order_id)
                 if order is not None:
                     await self.recorder.record_order(order)
+                await self.recorder.record_fill(fill)
                 await self.recorder.record_ledger(self.ledger.drain_entries())
                 self._fills += 1
                 if last_candle.ts != self._last_snapshot_ts:
