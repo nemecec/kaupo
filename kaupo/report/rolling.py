@@ -9,12 +9,12 @@ deploy/rolling-report.sh) and persists one row per ISO week into the
 reports table, keyed "rolling-origin-<ISO week>" — reruns in the same week
 replace the row.
 
-Comparison window: both sides see the same regime. The backtest runs over
-[max(window_start, chain_started_at), now] — the full ``days`` window only
-when the assignment has no chain yet — and the entry's "start" (also the
-runs-row marker's "start") records the slice used. Without this, a healthy
-young chain looks like it lags: the full-window backtest shows trades that
-fired before the chain existed (issue #25).
+Comparison window: verdicts cover [max(window_start, chain_started_at), now).
+The replay starts at the chain origin, including pre-window decisions and
+positions, then its persisted equity and fills are sliced to the comparison
+window. It never liquidates positions at the end. A replay cannot restore
+historical strategy versions, restart-local state, or old fee models; these
+remain limitations of the comparison, not evidence of strategy decay.
 
 Venue model: the re-backtest runs the same marketable-limit mode as the
 shadow run it is compared against (LIVE_MIRROR_MARKETABLE_LIMIT, kaupo#36),
@@ -41,40 +41,29 @@ Nd window"); no runs row is created, and a sub-candle slice never dies
 with a misleading "no candles" error on a healthy young chain.
 
 Verdict rules (thresholds are the module constants below):
-- "tracks" — the shadow chain has no fills and the backtest has no round
-  trips, or the shadow sharpe is within SHARPE_TOLERANCE of the backtest
-  sharpe;
-- "lags" — the shadow sharpe is more than SHARPE_TOLERANCE below the
-  backtest sharpe;
-- "leads" — the shadow sharpe is more than SHARPE_TOLERANCE above the
-  backtest sharpe;
-- "diverges" — both sides have activity but the shadow fill count and the
-  backtest round-trip count differ by more than COUNT_DIVERGENCE_RATIO
-  (checked before the sharpe rules; one round trip is two fills, so an
-  exact shadow of the backtest sits at a ratio of 2 and is not flagged).
+- Compare fill counts with fill counts, including a zero/nonzero mismatch.
+  Counts differing by more than COUNT_DIVERGENCE_RATIO mean "diverges".
+- Compare Sharpes computed on the same observed timestamps, without filling
+  missing observations. A gap below/above SHARPE_TOLERANCE means "lags" or
+  "leads"; otherwise "tracks". No-activity curves still undergo this check.
+- Insufficient common observations, coverage, or invalid equity produce
+  "unknown" with a note. Each report retains the original window metrics and
+  a separate "comparison" block with the aligned Sharpes and coverage.
 
-Two non-comparison outcomes: "unknown" when there is nothing meaningful to
-compare (no chain yet, no equity in the window yet, or coverage below the
-guard floor — the entry carries a note instead of pretending), and "error"
-when the backtest side failed (no candles, a strategy that does not load,
-a lint failure). A failed assignment never fails the report: the rest of
-the entries still build.
+The shadow curve stitches the assignment's resume chain, keeping absolute
+equity across resume links. The replay runs from the recorded chain origin;
+if its observations do not reach that origin, the verdict is unknown because
+pre-window signals may be missing. Errors remain isolated to one assignment.
 
-The shadow side feeds the chain's stitched equity (per-run segments in chain
-order, root first — the same stitch stitch_equity applies: no offset across a
-resume link, a rebase only onto a fresh ledger — keyed on the assignment's
-chain so two assignments sharing a strategy stay separate) and the chain's
-in-window fills through the same compute_metrics the backtest uses, with the
-assignment's starting cash. Sharpe is rebase-invariant, so the comparison is
-meaningful even when the chain predates the window.
 """
 
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.backtest.metrics import compute_metrics
@@ -179,16 +168,16 @@ def stitch(
 
 
 def verdict_for(
-    *, backtest_sharpe: float, backtest_trips: int, shadow_sharpe: float, shadow_fills: int
+    *, backtest_sharpe: float, backtest_fills: int, shadow_sharpe: float, shadow_fills: int
 ) -> str:
     """The verdict of one assignment; the rules are in the module docstring."""
-    if shadow_fills > 0 and backtest_trips > 0:
-        bigger = max(shadow_fills, backtest_trips)
-        smaller = min(shadow_fills, backtest_trips)
+    if (shadow_fills == 0) != (backtest_fills == 0):
+        return VERDICT_DIVERGES
+    if shadow_fills > 0 and backtest_fills > 0:
+        bigger = max(shadow_fills, backtest_fills)
+        smaller = min(shadow_fills, backtest_fills)
         if bigger > smaller * COUNT_DIVERGENCE_RATIO:
             return VERDICT_DIVERGES
-    if shadow_fills == 0 and backtest_trips == 0:
-        return VERDICT_TRACKS
     # sharpes arrive rounded to 3 decimals; rounding the gap keeps the
     # tolerance edges exact (float noise like 1.3 - 1.0 = 0.300...004)
     gap = round(shadow_sharpe - backtest_sharpe, 6)
@@ -197,6 +186,86 @@ def verdict_for(
     if gap > SHARPE_TOLERANCE:
         return VERDICT_LEADS
     return VERDICT_TRACKS
+
+
+def aligned_comparison(
+    shadow: list[tuple[datetime, float]],
+    backtest: list[tuple[datetime, float]],
+    *,
+    timeframe: Timeframe,
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    """Compare observed equity on one shared grid; never invent missing bars."""
+    shadow_by_ts, backtest_by_ts = dict(shadow), dict(backtest)
+    common = sorted(shadow_by_ts.keys() & backtest_by_ts.keys())
+    union_count = len(shadow_by_ts.keys() | backtest_by_ts.keys())
+    coverage = len(common) / union_count if union_count else 0.0
+    result: dict[str, Any] = {
+        "method": "common-timestamps",
+        "shadow_points": len(shadow_by_ts),
+        "backtest_points": len(backtest_by_ts),
+        "common_points": len(common),
+        "coverage_fraction": coverage,
+    }
+    if len(common) < 3:
+        return {**result, "note": "fewer than three common equity observations"}
+    result.update(start=common[0].isoformat(), end=common[-1].isoformat())
+    span = (common[-1] - common[0]).total_seconds()
+    if coverage < MIN_EQUITY_SPAN_FRACTION or span < (end - start).total_seconds() * MIN_EQUITY_SPAN_FRACTION:
+        return {**result, "note": "insufficient common equity coverage"}
+    for label, curve in (("shadow", shadow_by_ts), ("backtest", backtest_by_ts)):
+        values = [(ts, curve[ts]) for ts in common]
+        if any(not math.isfinite(value) or value <= 0 for _, value in values):
+            return {**result, "note": "non-positive or non-finite equity on the common grid"}
+        metrics = compute_metrics(values, [], timeframe, starting_cash=values[0][1])
+        if not math.isfinite(metrics["sharpe"]):
+            return {**result, "note": "non-finite Sharpe on the common grid"}
+        result[f"{label}_sharpe"] = metrics["sharpe"]
+    return result
+
+
+async def _compare_replay(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    chain: list[RunRow],
+    run_id: str,
+    replay_start: datetime,
+    start: datetime,
+    end: datetime,
+    timeframe: Timeframe,
+    metrics: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Window the replay and align its curve with the shadow's observed curve."""
+    async with sm_scope(sessionmaker) as session:
+        rows = (
+            await session.scalars(
+                select(EquitySnapshotRow)
+                .where(EquitySnapshotRow.run_id == run_id)
+                .order_by(EquitySnapshotRow.ts)
+            )
+        ).all()
+        replay = [(_aware(row.ts), row.equity) for row in rows]
+        shadow = slice_window(await _chain_equity(session, chain), start, end)
+        fills = await _chain_window_fills(session, [run_id], start, end)
+    windowed = slice_window(replay, start, end)
+    comparison = aligned_comparison(shadow, windowed, timeframe=timeframe, start=start, end=end)
+    # Crypto bars are continuous. Starting later means the replay could have
+    # missed the pre-window signal that created a carried position (#54).
+    if not replay or replay[0][0] != replay_start:
+        comparison["note"] = "replay history does not reach the chain origin"
+    window_metrics = compute_metrics(
+        windowed,
+        fills,
+        timeframe,
+        starting_cash=windowed[0][1] if windowed else 1.0,
+        universe=metrics.get("universe"),
+    )
+    # Keep run-level status, but never present lifetime risk rejections as a
+    # window count. They are available on the referenced replay run.
+    window_metrics.pop("risk_rejections", None)
+    window_metrics["status"] = metrics.get("status", "completed")
+    return window_metrics, comparison
 
 
 def envelope(
@@ -225,8 +294,11 @@ def digest_lines(body: dict[str, Any]) -> list[str]:
             lines.append(f"{what}: {shadow['note']}")
             continue
         backtest = entry["backtest"]
+        comparison = entry.get("comparison", {})
+        backtest_sharpe = comparison.get("backtest_sharpe", backtest["sharpe"])
+        shadow_sharpe = comparison.get("shadow_sharpe", shadow["sharpe"])
         lines.append(
-            f"{what}: backtest sharpe {backtest['sharpe']} / shadow {shadow['sharpe']}"
+            f"{what}: backtest sharpe {backtest_sharpe} / shadow {shadow_sharpe}"
             f" ({shadow['num_fills']} fills) — {entry['verdict']}"
         )
     return lines
@@ -347,7 +419,6 @@ async def _shadow_metrics(
     chain: list[RunRow],
     chain_start: datetime | None,
     timeframe: Timeframe,
-    cash: float,
     start: datetime,
     end: datetime,
     now: datetime,
@@ -364,7 +435,7 @@ async def _shadow_metrics(
         assert chain_start is not None  # a non-empty chain always has a start
         age_days = max((now - chain_start).total_seconds() / 86400, 0.0)
         return {"note": f"chain has {age_days:.1f} days so far"}
-    metrics = compute_metrics(equity=windowed, fills=fills, timeframe=timeframe, starting_cash=cash)
+    metrics = compute_metrics(equity=windowed, fills=fills, timeframe=timeframe, starting_cash=windowed[0][1])
     overlap_seconds = (now - start).total_seconds()
     overlap_days = overlap_seconds / 86400
     span_days = (windowed[-1][0] - windowed[0][0]).total_seconds() / 86400
@@ -395,8 +466,18 @@ async def _assignment_entry(
     cash = assignment.starting_cash or DEFAULT_STARTING_CASH
     async with sm_scope(sessionmaker) as session:
         chain = await _chain_rows(session, assignment.id)
+        first_decision = (
+            await session.scalar(
+                select(func.min(EquitySnapshotRow.ts)).where(EquitySnapshotRow.run_id == chain[0].id)
+            )
+            if chain
+            else None
+        )
     chain_start = _chain_start(chain)
     compare_start = compare_window(start, chain_start)
+    # Run creation is wall-clock time; decisions are stamped with candle
+    # OPEN times. A 10:15 startup can first trade the 10:00 candle (#54).
+    replay_start = _aware(first_decision) if first_decision is not None else chain_start or compare_start
     taker_bps = default_taker_bps()
     maker_bps = default_maker_bps()
     entry: dict[str, Any] = {
@@ -405,7 +486,9 @@ async def _assignment_entry(
         "pair": assignment.pair,
         "pairs": assignment.pairs,
         "timeframe": assignment.timeframe,
-        "start": compare_start.isoformat(),  # the comparison slice both sides run over
+        "start": compare_start.isoformat(),
+        "replay_start": replay_start.isoformat(),
+        "liquidate_end": False,
         # the venue model both sides run under. Every entry before the kaupo#36
         # deploy is maker-mode and every entry after is skip-mode; marking it
         # here keeps that boundary visible in the series the kill decisions read
@@ -427,13 +510,14 @@ async def _assignment_entry(
         chain=chain,
         chain_start=chain_start,
         timeframe=timeframe,
-        cash=cash,
         start=compare_start,
         end=end,
         now=now,
         days=days,
     )
     entry["shadow"] = shadow
+    if chain and "note" not in shadow and (first_decision is None or chain[0].config.get("resumed_from")):
+        shadow["note"] = "chain origin observations are unavailable"
     if chain and "note" in shadow:
         # coverage below the verdict floor (or under one full bar): the
         # backtest would compare a different regime or find no closed
@@ -456,10 +540,11 @@ async def _assignment_entry(
                 params=assignment.params,
                 pairs=[Pair.parse(p) for p in assignment.pairs],
                 timeframe=timeframe,
-                start=compare_start,
+                start=replay_start,
                 end=end,
                 starting_cash=cash,
                 rolling_origin=marker,
+                liquidate_end=False,
                 # the same venue model the shadow run uses, or the triage
                 # compares two different venues and its verdicts are noise
                 marketable_limit=LIVE_MIRROR_MARKETABLE_LIMIT,
@@ -475,10 +560,11 @@ async def _assignment_entry(
                 params=assignment.params,
                 pair=Pair.parse(assignment.pair),
                 timeframe=timeframe,
-                start=compare_start,
+                start=replay_start,
                 end=end,
                 starting_cash=cash,
                 rolling_origin=marker,
+                liquidate_end=False,
                 marketable_limit=LIVE_MIRROR_MARKETABLE_LIMIT,  # as in run_shadow
                 taker_fee_bps=taker_bps,  # as in the entry's "fees" stamp
                 maker_fee_bps=maker_bps,
@@ -488,17 +574,35 @@ async def _assignment_entry(
         log.warning("rolling-origin backtest failed for assignment %s", assignment.id, exc_info=True)
         return {**entry, "error": str(exc), "verdict": VERDICT_ERROR}
     entry["backtest"] = {"run_id": str(run_id), **metrics}
-
-    if "note" in shadow:
-        # no chain yet: the full-window backtest is the only data point
-        entry["verdict"] = VERDICT_UNKNOWN
-    elif "error" in metrics:  # the run persisted but had too little data for metrics
+    if "error" in metrics:
         return {**entry, "error": str(metrics["error"]), "verdict": VERDICT_ERROR}
+    if "note" in shadow:
+        entry["verdict"] = VERDICT_UNKNOWN
+        return entry
+    try:
+        window_metrics, comparison = await _compare_replay(
+            sessionmaker,
+            chain=chain,
+            run_id=str(run_id),
+            replay_start=replay_start,
+            start=compare_start,
+            end=end,
+            timeframe=timeframe,
+            metrics=metrics,
+        )
+    except Exception as exc:
+        log.warning("rolling-origin comparison failed for %s", assignment.id, exc_info=True)
+        return {**entry, "error": str(exc), "verdict": VERDICT_ERROR}
+    entry["backtest"] = {"run_id": str(run_id), **window_metrics}
+    entry["comparison"] = comparison
+    if "note" in comparison:
+        shadow["note"] = comparison["note"]
+        entry["verdict"] = VERDICT_UNKNOWN
     else:
         entry["verdict"] = verdict_for(
-            backtest_sharpe=float(metrics["sharpe"]),
-            backtest_trips=int(metrics["num_round_trips"]),
-            shadow_sharpe=float(shadow["sharpe"]),
+            backtest_sharpe=float(comparison["backtest_sharpe"]),
+            backtest_fills=int(window_metrics["num_fills"]),
+            shadow_sharpe=float(comparison["shadow_sharpe"]),
             shadow_fills=int(shadow["num_fills"]),
         )
     return entry

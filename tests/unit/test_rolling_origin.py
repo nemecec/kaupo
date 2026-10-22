@@ -122,55 +122,54 @@ def _fill(run_id: str, ts: datetime, side: str, price: float) -> tuple[OrderRow,
 class TestVerdict:
     def test_no_activity_anywhere_tracks(self) -> None:
         verdict = rolling.verdict_for(
-            backtest_sharpe=0.0, backtest_trips=0, shadow_sharpe=0.0, shadow_fills=0
+            backtest_sharpe=0.0, backtest_fills=0, shadow_sharpe=0.0, shadow_fills=0
         )
         assert verdict == VERDICT_TRACKS
 
     def test_equal_sharpes_track(self) -> None:
         verdict = rolling.verdict_for(
-            backtest_sharpe=1.5, backtest_trips=3, shadow_sharpe=1.5, shadow_fills=6
+            backtest_sharpe=1.5, backtest_fills=3, shadow_sharpe=1.5, shadow_fills=6
         )
         assert verdict == VERDICT_TRACKS
 
     def test_tolerance_edges_track(self) -> None:
         for gap in (-rolling.SHARPE_TOLERANCE, rolling.SHARPE_TOLERANCE):
             verdict = rolling.verdict_for(
-                backtest_sharpe=1.0, backtest_trips=3, shadow_sharpe=1.0 + gap, shadow_fills=6
+                backtest_sharpe=1.0, backtest_fills=3, shadow_sharpe=1.0 + gap, shadow_fills=6
             )
             assert verdict == VERDICT_TRACKS
 
     def test_beyond_tolerance_lags_and_leads(self) -> None:
-        lag = rolling.verdict_for(backtest_sharpe=1.0, backtest_trips=3, shadow_sharpe=0.69, shadow_fills=6)
-        lead = rolling.verdict_for(backtest_sharpe=1.0, backtest_trips=3, shadow_sharpe=1.31, shadow_fills=6)
+        lag = rolling.verdict_for(backtest_sharpe=1.0, backtest_fills=3, shadow_sharpe=0.69, shadow_fills=6)
+        lead = rolling.verdict_for(backtest_sharpe=1.0, backtest_fills=3, shadow_sharpe=1.31, shadow_fills=6)
         assert lag == VERDICT_LAGS
         assert lead == VERDICT_LEADS
 
     def test_exact_2x_count_ratio_is_not_divergence(self) -> None:
-        # one round trip is two fills: an exact shadow of the backtest sits at 2.0
+        # The threshold now compares like-for-like fill counts.
         verdict = rolling.verdict_for(
-            backtest_sharpe=1.0, backtest_trips=3, shadow_sharpe=1.0, shadow_fills=6
+            backtest_sharpe=1.0, backtest_fills=3, shadow_sharpe=1.0, shadow_fills=6
         )
         assert verdict == VERDICT_TRACKS
 
     def test_count_divergence_beats_sharpe_match(self) -> None:
         verdict = rolling.verdict_for(
-            backtest_sharpe=1.0, backtest_trips=2, shadow_sharpe=1.0, shadow_fills=5
+            backtest_sharpe=1.0, backtest_fills=2, shadow_sharpe=1.0, shadow_fills=5
         )
         assert verdict == VERDICT_DIVERGES
 
     def test_count_divergence_either_direction(self) -> None:
         verdict = rolling.verdict_for(
-            backtest_sharpe=1.0, backtest_trips=4, shadow_sharpe=1.0, shadow_fills=1
+            backtest_sharpe=1.0, backtest_fills=4, shadow_sharpe=1.0, shadow_fills=1
         )
         assert verdict == VERDICT_DIVERGES
 
-    def test_one_side_flat_falls_back_to_sharpe(self) -> None:
-        # shadow did nothing while the backtest traded: not a count
-        # divergence (needs both sides active), the sharpe gap decides
+    def test_one_side_flat_is_count_divergence(self) -> None:
+        # Activity on only one side is a mismatch even when Sharpe is zero.
         verdict = rolling.verdict_for(
-            backtest_sharpe=1.0, backtest_trips=3, shadow_sharpe=0.0, shadow_fills=0
+            backtest_sharpe=1.0, backtest_fills=3, shadow_sharpe=0.0, shadow_fills=0
         )
-        assert verdict == VERDICT_LAGS
+        assert verdict == VERDICT_DIVERGES
 
 
 class TestWindowSlicing:
@@ -303,6 +302,20 @@ class TestDigestLines:
         (line,) = rolling.digest_lines(self._body(entry))
         assert line == "a1 holder BTC/EUR 1h: backtest sharpe 1.234 / shadow 0.95 (6 fills) — lags"
 
+    def test_aligned_sharpes_are_shown_when_available(self) -> None:
+        entry = {
+            "id": "a1",
+            "strategy_id": "holder",
+            "pair": "BTC/EUR",
+            "timeframe": "1h",
+            "backtest": {"sharpe": 1.234},
+            "shadow": {"sharpe": 0.5, "num_fills": 6},
+            "comparison": {"backtest_sharpe": 0.95, "shadow_sharpe": 0.95},
+            "verdict": "tracks",
+        }
+        (line,) = rolling.digest_lines(self._body(entry))
+        assert "backtest sharpe 0.95 / shadow 0.95" in line
+
     def test_note_and_error_entries(self) -> None:
         note = {
             "id": "a2",
@@ -342,7 +355,22 @@ def _fake_run_backtest(seen: list[Any], metrics: dict[str, Any] | Exception = FA
         seen.append(request)
         if isinstance(metrics, Exception):
             raise metrics
-        return RunId(f"bt-{len(seen)}"), None, dict(metrics)
+        run_id = f"bt-{request.strategy.id}-{len(seen)}"
+        async with sm_scope(sm) as session:
+            run = _run_row(run_id, "replay", request.start)
+            run.mode = "backtest"
+            points = [
+                (request.start, 10_000.0),
+                (request.start + timedelta(hours=1), 10_000.0),
+                (request.start + timedelta(days=2), 10_001.0),
+                (request.start + timedelta(days=4), 10_005.0),
+            ]
+            buy_order, buy = _fill(run_id, points[1][0], "buy", 100.0)
+            sell_order, sell = _fill(run_id, points[2][0], "sell", 101.0)
+            await _seed(
+                session, run, *[_snapshot(run_id, *p) for p in points], buy_order, buy, sell_order, sell
+            )
+        return RunId(run_id), None, dict(metrics)
 
     return fake
 
@@ -386,6 +414,7 @@ async def test_build_report_success_notes_and_exclusions(
         "run-2", "a1", start + timedelta(days=1), resumed_from="run-1", chain_started_at=start.isoformat()
     )
     snaps = [
+        _snapshot("run-1", start, 10_000.0),
         _snapshot("run-1", start + timedelta(hours=1), 10_000.0),
         _snapshot("run-2", start + timedelta(days=2), 10_000.0),
         _snapshot("run-2", start + timedelta(days=4), 9_900.0),
@@ -425,6 +454,8 @@ async def test_build_report_success_notes_and_exclusions(
     assert portfolio_seen[0].taker_fee_bps == default_taker_bps()
     assert portfolio_seen[0].maker_fee_bps == default_maker_bps()
     assert seen[0].start == start
+    assert seen[0].liquidate_end is False
+    assert portfolio_seen[0].liquidate_end is False
 
     a1 = by_id["a1"]
     assert a1["start"] == start.isoformat()  # chain age == window: the full window is compared
@@ -435,10 +466,11 @@ async def test_build_report_success_notes_and_exclusions(
     # every sharpe in the series, and a silent shift reads as decay
     assert a1["fees"] == {"taker_bps": default_taker_bps(), "maker_bps": default_maker_bps()}
     assert a1["fees"] == {"taker_bps": 80.0, "maker_bps": 40.0}
-    assert a1["backtest"]["run_id"] == "bt-1"
-    assert a1["backtest"]["sharpe"] == 1.0
+    assert a1["backtest"]["run_id"] == "bt-holder-1"
+    assert a1["backtest"]["sharpe"] > 0
     expected_shadow = compute_metrics(
         equity=[
+            (start, 10_000.0),
             (start + timedelta(hours=1), 10_000.0),
             (start + timedelta(days=2), 10_000.0),
             (start + timedelta(days=4), 9_900.0),
@@ -677,3 +709,109 @@ async def test_send_digest_never_raises(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(rolling, "send_alert", boom)
     await rolling.send_digest(body)  # an ntfy failure must not fail the report
+
+
+class TestAlignedComparison:
+    def test_missing_flat_bars_do_not_change_verdict(self) -> None:
+        start = NOW - timedelta(hours=192)
+        replay = [
+            (start + timedelta(hours=i), 10_000.0 - 13.67 * sum(i >= step for step in (20, 35, 50, 65, 80)))
+            for i in range(192)
+        ]
+        shadow = [point for i, point in enumerate(replay) if i not in range(150, 158)]
+        raw_replay = compute_metrics(replay, [], TF, 10_000.0)
+        raw_shadow = compute_metrics(shadow, [], TF, 10_000.0)
+        assert abs(raw_replay["sharpe"] - raw_shadow["sharpe"]) > rolling.SHARPE_TOLERANCE
+        aligned = rolling.aligned_comparison(shadow, replay, timeframe=TF, start=start, end=NOW)
+        assert "note" not in aligned
+        assert aligned["common_points"] == 184
+        assert aligned["coverage_fraction"] == pytest.approx(184 / 192)
+        assert aligned["shadow_sharpe"] == aligned["backtest_sharpe"]
+        assert (
+            rolling.verdict_for(
+                backtest_sharpe=aligned["backtest_sharpe"],
+                backtest_fills=6,
+                shadow_sharpe=aligned["shadow_sharpe"],
+                shadow_fills=6,
+            )
+            == VERDICT_TRACKS
+        )
+
+    def test_genuine_difference_survives_alignment(self) -> None:
+        start = NOW - timedelta(days=8)
+        replay = [(start + timedelta(hours=i), 10_000.0 + i + i % 2) for i in range(192)]
+        shadow = [(ts, 20_000.0 - value) for ts, value in replay]
+        aligned = rolling.aligned_comparison(shadow, replay, timeframe=TF, start=start, end=NOW)
+        assert (
+            rolling.verdict_for(
+                backtest_sharpe=aligned["backtest_sharpe"],
+                backtest_fills=2,
+                shadow_sharpe=aligned["shadow_sharpe"],
+                shadow_fills=2,
+            )
+            == VERDICT_LAGS
+        )
+
+    @pytest.mark.parametrize("case", ["empty", "two", "sparse", "short-span", "invalid"])
+    def test_unreliable_common_grid_is_unknown(self, case: str) -> None:
+        start = NOW - timedelta(days=8)
+        replay = [(start + timedelta(hours=i), 10_000.0) for i in range(192)]
+        shadow = replay.copy()
+        if case == "empty":
+            shadow = []
+        elif case == "two":
+            shadow = [replay[0], replay[-1]]
+        elif case == "sparse":
+            shadow = replay[::4]
+        elif case == "short-span":
+            shadow = replay = replay[:24]
+        else:
+            shadow[50] = (shadow[50][0], float("nan"))
+        aligned = rolling.aligned_comparison(shadow, replay, timeframe=TF, start=start, end=NOW)
+        assert "note" in aligned
+
+
+@pytest.mark.parametrize("shadow_fills,backtest_fills", [(0, 1), (1, 0), (0, 6), (6, 0)])
+def test_unmatched_activity_is_not_tracks(shadow_fills: int, backtest_fills: int) -> None:
+    assert (
+        rolling.verdict_for(
+            backtest_sharpe=0.0,
+            backtest_fills=backtest_fills,
+            shadow_sharpe=0.0,
+            shadow_fills=shadow_fills,
+        )
+        == VERDICT_DIVERGES
+    )
+
+
+def test_open_position_fill_counts_are_compared_symmetrically() -> None:
+    # Seven fills include an unclosed entry. Comparing them with three
+    # completed round trips incorrectly tripped the old >2x rule (#41).
+    assert (
+        rolling.verdict_for(backtest_sharpe=1.0, backtest_fills=7, shadow_sharpe=1.0, shadow_fills=7)
+        == VERDICT_TRACKS
+    )
+
+
+async def test_missing_chain_ancestor_is_unknown(
+    sessionmaker: async_sessionmaker[AsyncSession], strategies_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    start = NOW - timedelta(days=8)
+    async with sm_scope(sessionmaker) as session:
+        await create_assignment(session, id="broken", strategy_id="holder", pair="BTC/EUR", timeframe="1h")
+        run = _run_row("tip", "broken", start, resumed_from="missing", chain_started_at=start.isoformat())
+        await _seed(
+            session,
+            run,
+            _snapshot("tip", start, 10_000.0),
+            _snapshot("tip", NOW - timedelta(hours=1), 10_000.0),
+        )
+    seen: list[Any] = []
+    monkeypatch.setattr(rolling, "run_backtest", _fake_run_backtest(seen))
+    body = await rolling.build_rolling_origin_report(
+        sessionmaker, days=8, now=NOW, persist=False, strategies_dir=strategies_dir
+    )
+    (entry,) = body["assignments"]
+    assert entry["verdict"] == VERDICT_UNKNOWN
+    assert entry["shadow"]["note"] == "chain origin observations are unavailable"
+    assert seen == []
