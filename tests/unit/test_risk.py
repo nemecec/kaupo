@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -238,3 +239,51 @@ def test_cooldown_does_not_block_exits() -> None:
     # ...but exits pass (risk-reducing orders are never gated)
     a = rm.assess([sell(1.0)], state(position=1.0))[0]
     assert a.decision is Decision.APPROVED
+
+
+@pytest.mark.parametrize("days", [1, 3])
+def test_first_observation_of_day_includes_realized_gap_loss(days):
+    rm = RiskManager(RiskConfig(max_daily_loss_quote=200))
+    assert rm.on_candle(state(cash=10_000))
+    assert not rm.on_candle(state(cash=9_800, ts=TS + timedelta(days=days)))
+    assert "9800.00 vs day start 10000.00" in rm.halt_reason
+
+
+@pytest.mark.parametrize("days", [1, 3])
+def test_first_observation_of_day_includes_below_cost_gap_loss(days):
+    rm = RiskManager(RiskConfig(max_daily_loss_quote=200))
+    held = RiskState(TS, 9_000, {PAIR: Position(PAIR, 10, 100)}, {PAIR: 100}, 10_000)
+    assert rm.on_candle(held)
+    reopened = replace(held, ts=TS + timedelta(days=days), prices={PAIR: 70}, equity=9_700)
+    assert not rm.on_candle(reopened)
+    assert "9700.00 vs day start 10000.00" in rm.halt_reason
+
+
+def test_rollover_uses_last_close_and_accumulates_opening_loss():
+    rm = RiskManager(RiskConfig(max_daily_loss_quote=200))
+    assert rm.on_candle(state(cash=10_000))
+    assert rm.on_candle(state(cash=9_850, ts=TS + timedelta(hours=23)))
+    # Yesterday's 150 loss resets; today's 100 opening loss does not.
+    assert rm.on_candle(state(cash=9_750, ts=TS + timedelta(days=1)))
+    assert not rm.on_candle(state(cash=9_650, ts=TS + timedelta(days=1, hours=1)))
+    assert "9650.00 vs day start 9850.00" in rm.halt_reason
+
+
+def test_rollover_gains_offset_same_day_losses():
+    rm = RiskManager(RiskConfig(max_daily_loss_quote=200))
+    assert rm.on_candle(state(cash=10_000))
+    assert rm.on_candle(state(cash=10_300, ts=TS + timedelta(days=1)))
+    assert rm.on_candle(state(cash=10_000, ts=TS + timedelta(days=1, hours=1)))
+    assert not rm.on_candle(state(cash=9_800, ts=TS + timedelta(days=1, hours=2)))
+
+
+def test_first_observation_establishes_baseline_without_prior_history():
+    rm = RiskManager(RiskConfig(max_daily_loss_quote=200))
+    assert rm.on_candle(state(cash=-500))
+    assert not rm.on_candle(state(cash=-700, ts=TS + timedelta(days=3)))
+
+
+def test_zero_last_floor_is_a_valid_rollover_baseline():
+    rm = RiskManager(RiskConfig(max_daily_loss_quote=200))
+    assert rm.on_candle(state(cash=0))
+    assert not rm.on_candle(state(cash=-200, ts=TS + timedelta(days=1)))
