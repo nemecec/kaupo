@@ -17,7 +17,7 @@ from kaupo.core.orderflow import DbOrderFlowProvider
 from kaupo.core.positioning import StaticFuturesMetricsProvider, StaticOpenInterestProvider
 from kaupo.core.provenance import engine_version
 from kaupo.core.recorder import CompositeRecorder, DbRecorder, InMemoryRecorder, RunInfo
-from kaupo.data.candles import get_candles
+from kaupo.data.candles import get_candles, get_latest_candles
 from kaupo.data.funding import FUNDING_EXCHANGE, get_funding_rates
 from kaupo.data.futures_metrics import METRICS_EXCHANGE, get_futures_metrics_daily
 from kaupo.data.open_interest import OI_EXCHANGE, get_open_interest
@@ -101,9 +101,21 @@ async def run_backtest(
     # live/shadow run would — this is what makes backtest ≡ shadow
     prefill_start = request.start - timedelta(seconds=request.timeframe.seconds * request.lookback)
     async with sm_scope(sessionmaker) as session:
-        candles = await get_candles(
-            session, request.pair, request.timeframe, prefill_start, request.end, exchange=request.exchange
+        history = await get_latest_candles(
+            session,
+            request.pair,
+            request.timeframe,
+            request.lookback,
+            exchange=request.exchange,
+            before=request.start,
         )
+        candles = history + await get_candles(
+            session, request.pair, request.timeframe, request.start, request.end, exchange=request.exchange
+        )
+        # Candle counts, not elapsed periods, define indicator history.
+        # Preserve the auxiliary-series window and extend it across gaps.
+        if history:
+            prefill_start = min(prefill_start, history[0].ts)
         # funding (Binance perp of the base asset) prefilled over the same
         # window; served point-in-time from memory for determinism
         funding_rates = await get_funding_rates(
