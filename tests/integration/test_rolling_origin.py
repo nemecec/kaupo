@@ -236,7 +236,7 @@ async def test_report_without_chain_notes_the_new_assignment(session: AsyncSessi
     body = await build_rolling_origin_report(get_sessionmaker(), days=DAYS, now=NOW, strategies_dir=tmp_path)
 
     (entry,) = body["assignments"]
-    assert entry["shadow"] == {"note": "no shadow runs yet"}
+    assert entry["shadow"] == {"reason_code": "no_shadow_runs", "note": "no shadow runs yet"}
     assert entry["verdict"] == "unknown"
     assert entry["backtest"]["status"] == "completed"  # the backtest side still ran
     assert entry["start"] == start.isoformat()  # no chain: the full window stays
@@ -418,3 +418,4 @@ async def test_replay_preserves_pre_window_entries_and_open_end_positions(
     (entry,) = body["assignments"]
     assert entry["verdict"] == "unknown"
     assert entry["comparison"]["note"] == "replay history does not reach the chain origin"
+    assert entry["verdict_reason"] == "incomplete_replay_history"

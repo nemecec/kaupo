@@ -114,7 +114,11 @@ A parameter sweep maps a parameter surface with one submission instead of one jo
 
 ### Rolling-origin triage
 
-The rolling-origin report answers one question per enabled shadow assignment: does the shadow reality still track the backtest expectation? Each day, it re-backtests the exact assignment configuration over the last 30 days and compares it with the equity and fills of its shadow chain. When the shadow chain is younger than the window, only the days of the chain count. A chain younger than 7 days gets no verdict yet. Each assignment gets a verdict: tracks, lags, leads, or diverges. The report runs daily at 05:13 UTC, stores one row per ISO week in the reports table, and posts a digest to the ntfy topic.
+The rolling-origin report compares each enabled shadow assignment with a replay of the same strategy configuration. The replay starts at the original recorded decision. The comparison covers the latest 30 days, or the chain lifetime when shorter. It uses matched equity observations and fill counts.
+
+A valid comparison produces `tracks`, `lags`, `leads`, or `diverges`. Missing ancestry or insufficient observations produce `unknown` with a reason code. The report runs daily at 05:13 UTC, stores one row per ISO week, and posts a digest to the ntfy topic.
+
+See [assessment reasons and history retention](docs/rolling-origin.md) for the API fields and recovery procedure.
 
 ### Top-of-book collection
 

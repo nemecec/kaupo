@@ -209,18 +209,34 @@ def aligned_comparison(
         "coverage_fraction": coverage,
     }
     if len(common) < 3:
-        return {**result, "note": "fewer than three common equity observations"}
+        return {
+            **result,
+            "reason_code": "insufficient_common_observations",
+            "note": "fewer than three common equity observations",
+        }
     result.update(start=common[0].isoformat(), end=common[-1].isoformat())
     span = (common[-1] - common[0]).total_seconds()
     if coverage < MIN_EQUITY_SPAN_FRACTION or span < (end - start).total_seconds() * MIN_EQUITY_SPAN_FRACTION:
-        return {**result, "note": "insufficient common equity coverage"}
+        return {
+            **result,
+            "reason_code": "insufficient_common_coverage",
+            "note": "insufficient common equity coverage",
+        }
     for label, curve in (("shadow", shadow_by_ts), ("backtest", backtest_by_ts)):
         values = [(ts, curve[ts]) for ts in common]
         if any(not math.isfinite(value) or value <= 0 for _, value in values):
-            return {**result, "note": "non-positive or non-finite equity on the common grid"}
+            return {
+                **result,
+                "reason_code": "invalid_common_equity",
+                "note": "non-positive or non-finite equity on the common grid",
+            }
         metrics = compute_metrics(values, [], timeframe, starting_cash=values[0][1])
         if not math.isfinite(metrics["sharpe"]):
-            return {**result, "note": "non-finite Sharpe on the common grid"}
+            return {
+                **result,
+                "reason_code": "invalid_common_sharpe",
+                "note": "non-finite Sharpe on the common grid",
+            }
         result[f"{label}_sharpe"] = metrics["sharpe"]
     return result
 
@@ -254,6 +270,7 @@ async def _compare_replay(
     # missed the pre-window signal that created a carried position (#54).
     if not replay or replay[0][0] != replay_start:
         comparison["note"] = "replay history does not reach the chain origin"
+        comparison["reason_code"] = "incomplete_replay_history"
     window_metrics = compute_metrics(
         windowed,
         fills,
@@ -291,7 +308,8 @@ def digest_lines(body: dict[str, Any]) -> list[str]:
             continue
         shadow = entry["shadow"]
         if "note" in shadow:
-            lines.append(f"{what}: {shadow['note']}")
+            reason = entry.get("verdict_reason", "unspecified")
+            lines.append(f"{what}: unknown [{reason}]: {shadow['note']}")
             continue
         backtest = entry["backtest"]
         comparison = entry.get("comparison", {})
@@ -348,6 +366,26 @@ async def _chain_rows(session: AsyncSession, assignment_id: str) -> list[RunRow]
         row = parent
     chain.reverse()
     return chain
+
+
+def _lineage(chain: list[RunRow], first_decision: datetime | None) -> dict[str, Any]:
+    """Describe retained ancestry without claiming why any row is absent."""
+    if not chain:
+        return {"status": "no_shadow_runs"}
+    parent_id = (chain[0].config or {}).get("resumed_from")
+    status = "complete"
+    if parent_id is not None:
+        status = "chain_cycle" if parent_id in {run.id for run in chain} else "missing_chain_ancestor"
+    elif first_decision is None:
+        status = "missing_origin_equity"
+    return {
+        "status": status,
+        "tip_run_id": chain[-1].id,
+        "oldest_retained_run_id": chain[0].id,
+        "unresolved_parent_run_id": parent_id,
+        "retained_run_count": len(chain),
+        "first_observed_decision": _aware(first_decision).isoformat() if first_decision is not None else None,
+    }
 
 
 def _chain_start(chain: list[RunRow]) -> datetime | None:
@@ -426,7 +464,7 @@ async def _shadow_metrics(
 ) -> dict[str, Any]:
     """The shadow reality of one assignment over the comparison window, or a note."""
     if not chain:
-        return {"note": "no shadow runs yet"}
+        return {"reason_code": "no_shadow_runs", "note": "no shadow runs yet"}
     async with sm_scope(sessionmaker) as session:
         equity = await _chain_equity(session, chain)
         fills = await _chain_window_fills(session, [run.id for run in chain], start, end)
@@ -434,7 +472,10 @@ async def _shadow_metrics(
     if len(windowed) < 2:
         assert chain_start is not None  # a non-empty chain always has a start
         age_days = max((now - chain_start).total_seconds() / 86400, 0.0)
-        return {"note": f"chain has {age_days:.1f} days so far"}
+        return {
+            "reason_code": "insufficient_shadow_observations",
+            "note": f"chain has {age_days:.1f} days so far",
+        }
     metrics = compute_metrics(equity=windowed, fills=fills, timeframe=timeframe, starting_cash=windowed[0][1])
     overlap_seconds = (now - start).total_seconds()
     overlap_days = overlap_seconds / 86400
@@ -447,6 +488,7 @@ async def _shadow_metrics(
     ):
         # the metrics stay in the entry; the note suppresses the verdict
         metrics["note"] = f"chain covers {span_days:.1f}d of the {days}d window"
+        metrics["reason_code"] = "insufficient_shadow_coverage"
     return metrics
 
 
@@ -488,6 +530,7 @@ async def _assignment_entry(
         "timeframe": assignment.timeframe,
         "start": compare_start.isoformat(),
         "replay_start": replay_start.isoformat(),
+        "lineage": _lineage(chain, first_decision),
         "liquidate_end": False,
         # the venue model both sides run under. Every entry before the kaupo#36
         # deploy is maker-mode and every entry after is skip-mode; marking it
@@ -516,14 +559,31 @@ async def _assignment_entry(
         days=days,
     )
     entry["shadow"] = shadow
-    if chain and "note" not in shadow and (first_decision is None or chain[0].config.get("resumed_from")):
-        shadow["note"] = "chain origin observations are unavailable"
+    lineage = entry["lineage"]
+    if lineage["status"] in ("missing_chain_ancestor", "chain_cycle", "missing_origin_equity"):
+        # Structural gaps take precedence over a short window: waiting for
+        # more recent observations cannot repair a missing origin.
+        shadow["reason_code"] = lineage["status"]
+        if lineage["status"] == "missing_chain_ancestor":
+            shadow["note"] = (
+                f"chain origin unavailable: missing ancestor run {lineage['unresolved_parent_run_id']}"
+            )
+        elif lineage["status"] == "chain_cycle":
+            shadow["note"] = (
+                f"chain origin unavailable: resume cycle at run {lineage['unresolved_parent_run_id']}"
+            )
+        else:
+            shadow["note"] = (
+                "chain origin unavailable: no equity observations for run "
+                f"{lineage['oldest_retained_run_id']}"
+            )
     if chain and "note" in shadow:
         # coverage below the verdict floor (or under one full bar): the
         # backtest would compare a different regime or find no closed
         # candle — skip it (no runs row, no misleading error)
         entry["backtest"] = None
         entry["verdict"] = VERDICT_UNKNOWN
+        entry["verdict_reason"] = shadow["reason_code"]
         return entry
 
     try:
@@ -578,6 +638,7 @@ async def _assignment_entry(
         return {**entry, "error": str(metrics["error"]), "verdict": VERDICT_ERROR}
     if "note" in shadow:
         entry["verdict"] = VERDICT_UNKNOWN
+        entry["verdict_reason"] = shadow["reason_code"]
         return entry
     try:
         window_metrics, comparison = await _compare_replay(
@@ -598,6 +659,7 @@ async def _assignment_entry(
     if "note" in comparison:
         shadow["note"] = comparison["note"]
         entry["verdict"] = VERDICT_UNKNOWN
+        entry["verdict_reason"] = comparison["reason_code"]
     else:
         entry["verdict"] = verdict_for(
             backtest_sharpe=float(comparison["backtest_sharpe"]),

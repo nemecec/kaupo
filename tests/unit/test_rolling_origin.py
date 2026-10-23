@@ -336,7 +336,7 @@ class TestDigestLines:
         }
         lines = rolling.digest_lines(self._body(note, error))
         assert lines == [
-            "a2 holder BTC/EUR 1h: chain has 2.0 days so far",
+            "a2 holder BTC/EUR 1h: unknown [unspecified]: chain has 2.0 days so far",
             "a3 ghost SOL/EUR 4h: error: unknown strategy 'ghost'",
         ]
 
@@ -492,17 +492,19 @@ async def test_build_report_success_notes_and_exclusions(
     assert by_id["a2"]["fees"] == expected_fees
     assert by_id["a3"]["fees"] == expected_fees
     assert by_id["a4"]["fees"] == expected_fees  # the no-verdict entry carries it too
-    assert by_id["a3"]["shadow"] == {"note": "no shadow runs yet"}
+    assert by_id["a3"]["shadow"] == {"reason_code": "no_shadow_runs", "note": "no shadow runs yet"}
     assert by_id["a3"]["verdict"] == VERDICT_UNKNOWN
+    assert by_id["a3"]["verdict_reason"] == "no_shadow_runs"
     assert by_id["a3"]["start"] == start.isoformat()  # no chain: the backtest keeps the full window
-    assert by_id["a4"]["shadow"] == {"note": "chain has 2.0 days so far"}
+    assert by_id["a4"]["verdict_reason"] == "missing_origin_equity"
+    assert by_id["a4"]["lineage"]["oldest_retained_run_id"] == "run-4"
     assert by_id["a4"]["verdict"] == VERDICT_UNKNOWN
     assert by_id["a4"]["backtest"] is None  # no equity in the window: the backtest is skipped too
 
     # portfolio assignment dispatched to the portfolio runner; no chain yet
     assert len(portfolio_seen) == 1
     assert [str(p) for p in portfolio_seen[0].pairs] == ["BTC/EUR", "SOL/EUR"]
-    assert by_id["a7"]["shadow"] == {"note": "no shadow runs yet"}
+    assert by_id["a7"]["shadow"] == {"reason_code": "no_shadow_runs", "note": "no shadow runs yet"}
 
 
 def _expected_fills(start: datetime) -> list[Fill]:
@@ -581,6 +583,7 @@ async def test_build_report_young_chain_gets_no_verdict(
     assert entry["backtest"] is None
     assert entry["shadow"]["sharpe"] == 0.0  # a correctly flat young chain
     assert entry["shadow"]["num_fills"] == 0
+    assert entry["verdict_reason"] == "insufficient_shadow_coverage"
     assert entry["shadow"]["note"] == "chain covers 1.2d of the 30d window"
     assert entry["verdict"] == VERDICT_UNKNOWN
     assert entry["verdict"] != VERDICT_LAGS
@@ -616,6 +619,7 @@ async def test_build_report_young_chain_daily_bars_no_error(
 
     (entry,) = body["assignments"]
     assert entry["backtest"] is None
+    assert entry["verdict_reason"] == "insufficient_shadow_coverage"
     assert entry["shadow"]["note"] == "chain covers 1.1d of the 30d window"
     assert entry["verdict"] == VERDICT_UNKNOWN
     assert "error" not in entry
@@ -654,6 +658,7 @@ async def test_build_report_sub_candle_overlap_skips_backtest(
     (entry,) = body["assignments"]
     assert seen == []  # the sub-bar guard fired before the backtest
     assert entry["backtest"] is None
+    assert entry["verdict_reason"] == "insufficient_shadow_coverage"
     assert entry["shadow"]["note"] == "chain covers 0.4d of the 30d window"
     assert entry["verdict"] == VERDICT_UNKNOWN
 
@@ -769,6 +774,16 @@ class TestAlignedComparison:
             shadow[50] = (shadow[50][0], float("nan"))
         aligned = rolling.aligned_comparison(shadow, replay, timeframe=TF, start=start, end=NOW)
         assert "note" in aligned
+        assert (
+            aligned["reason_code"]
+            == {
+                "empty": "insufficient_common_observations",
+                "two": "insufficient_common_observations",
+                "sparse": "insufficient_common_coverage",
+                "short-span": "insufficient_common_coverage",
+                "invalid": "invalid_common_equity",
+            }[case]
+        )
 
 
 @pytest.mark.parametrize("shadow_fills,backtest_fills", [(0, 1), (1, 0), (0, 6), (6, 0)])
@@ -813,5 +828,98 @@ async def test_missing_chain_ancestor_is_unknown(
     )
     (entry,) = body["assignments"]
     assert entry["verdict"] == VERDICT_UNKNOWN
-    assert entry["shadow"]["note"] == "chain origin observations are unavailable"
+    assert entry["shadow"]["note"] == "chain origin unavailable: missing ancestor run missing"
+    assert entry["verdict_reason"] == "missing_chain_ancestor"
+    assert entry["backtest"] is None
+    assert entry["lineage"] == {
+        "status": "missing_chain_ancestor",
+        "tip_run_id": "tip",
+        "oldest_retained_run_id": "tip",
+        "unresolved_parent_run_id": "missing",
+        "retained_run_count": 1,
+        "first_observed_decision": start.isoformat(),
+    }
+    assert "unknown [missing_chain_ancestor]" in rolling.digest_lines(body)[0]
     assert seen == []
+
+
+@pytest.mark.parametrize("problem", ["missing", "cycle", "empty-root"])
+async def test_lineage_failure_is_distinct_from_short_window(
+    problem,
+    sessionmaker,
+    strategies_dir,
+    monkeypatch,
+):
+    start = NOW - timedelta(days=2)
+    root_config = {"resumed_from": "missing"} if problem == "missing" else {}
+    if problem == "cycle":
+        root_config = {"resumed_from": "tip"}
+    async with sm_scope(sessionmaker) as session:
+        await create_assignment(session, id="broken", strategy_id="holder", pair="BTC/EUR", timeframe="1h")
+        await _seed(
+            session,
+            _run_row("root", "broken", start, **root_config),
+            _run_row("tip", "broken", start + timedelta(hours=1), resumed_from="root"),
+            _snapshot("tip", start + timedelta(hours=1), 10_041.14),
+            _snapshot("tip", NOW - timedelta(hours=1), 10_041.14),
+        )
+        if problem != "empty-root":
+            await _seed(session, _snapshot("root", start, 10_041.14))
+    seen = []
+    monkeypatch.setattr(rolling, "run_backtest", _fake_run_backtest(seen))
+    body = await rolling.build_rolling_origin_report(
+        sessionmaker,
+        days=30,
+        now=NOW,
+        persist=False,
+        strategies_dir=strategies_dir,
+    )
+    (entry,) = body["assignments"]
+    reason = {
+        "missing": "missing_chain_ancestor",
+        "cycle": "chain_cycle",
+        "empty-root": "missing_origin_equity",
+    }[problem]
+    assert entry["verdict"] == VERDICT_UNKNOWN
+    assert entry["verdict_reason"] == reason
+    assert entry["lineage"]["status"] == reason
+    assert entry["lineage"]["oldest_retained_run_id"] == "root"
+    assert entry["lineage"]["tip_run_id"] == "tip"
+    assert entry["lineage"]["retained_run_count"] == 2
+    assert entry["backtest"] is None
+    assert seen == []
+    assert f"unknown [{reason}]" in rolling.digest_lines(body)[0]
+
+
+async def test_restored_ancestor_allows_replay_again(sessionmaker, strategies_dir, monkeypatch):
+    start = NOW - timedelta(days=8)
+    async with sm_scope(sessionmaker) as session:
+        await create_assignment(session, id="restored", strategy_id="holder", pair="BTC/EUR", timeframe="1h")
+        await _seed(
+            session,
+            _run_row(
+                "tip",
+                "restored",
+                start + timedelta(hours=1),
+                resumed_from="root",
+                chain_started_at=start.isoformat(),
+            ),
+            _snapshot("tip", start + timedelta(hours=1), 10_000),
+            _snapshot("tip", start + timedelta(days=2), 10_001),
+            _snapshot("tip", start + timedelta(days=4), 10_005),
+        )
+    seen = []
+    monkeypatch.setattr(rolling, "run_backtest", _fake_run_backtest(seen))
+    kwargs = dict(days=8, now=NOW, persist=False, strategies_dir=strategies_dir)
+    before = await rolling.build_rolling_origin_report(sessionmaker, **kwargs)
+    assert before["assignments"][0]["verdict_reason"] == "missing_chain_ancestor"
+    assert seen == []
+    async with sm_scope(sessionmaker) as session:
+        await _seed(session, _run_row("root", "restored", start), _snapshot("root", start, 10_000))
+    after = await rolling.build_rolling_origin_report(sessionmaker, **kwargs)
+    (entry,) = after["assignments"]
+    assert entry["lineage"]["status"] == "complete"
+    assert entry["verdict"] in {VERDICT_TRACKS, VERDICT_LAGS, VERDICT_LEADS, VERDICT_DIVERGES}
+    assert "verdict_reason" not in entry
+    assert len(seen) == 1
+    assert seen[0].start == start
