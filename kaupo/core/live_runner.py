@@ -242,6 +242,7 @@ async def run_live(
             trading,
             bridge,
             max_notional=settings.live_max_notional,
+            timeframe=request.timeframe,
             trades_since_ms=reconciled.trades_cursor_ms,
             seen_trade_ids=reconciled.seen_trade_ids,
         )

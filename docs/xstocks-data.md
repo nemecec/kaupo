@@ -69,7 +69,7 @@ Do not add xStocks to the shared Binance candle, funding, or open-interest loops
 The following items remain prerequisites for supported xStocks trading:
 
 - Market calendars for the watchdog, poller, and activity reports.
-- Order expiry during closures and conservative fills across gaps.
+- Calendar-aware execution beyond the paper gap guard and [live limit expiry](live-order-expiry.md).
 - Risk checks that include losses across a market closure.
 - Session-aware return statistics, indicator warm-up, and rebalance timing.
 - Tick-size rounding, instrument-specific fees, and currency-aware reports.

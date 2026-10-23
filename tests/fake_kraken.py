@@ -30,6 +30,7 @@ class Placed:
     size: float
     price: float | None
     post_only: bool
+    expires_at: datetime | None = None
 
 
 DEFAULT_MARKET = MarketMeta(
@@ -146,6 +147,7 @@ class FakeKrakenClient:
         price: float | None = None,
         *,
         post_only: bool = False,
+        expires_at: datetime | None = None,
     ) -> str:
         self._check("create_order")
         if post_only and self.reject_post_only:
@@ -161,6 +163,7 @@ class FakeKrakenClient:
                 size=size,
                 price=price,
                 post_only=post_only,
+                expires_at=expires_at,
             )
         )
         self.open_txids.append(txid)

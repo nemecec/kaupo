@@ -241,6 +241,7 @@ class TestLiveRun:
         assert len(placed) == 1
         assert placed[0].order_type == "limit"
         assert placed[0].post_only is True  # the maker fee the backtests assume
+        assert placed[0].expires_at == now + timedelta(hours=2)
         assert placed[0].size == 2.0
         assert placed[0].side is Side.BUY
 

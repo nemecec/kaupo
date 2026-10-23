@@ -116,6 +116,7 @@ class TradingClient(Protocol):
         price: float | None = None,
         *,
         post_only: bool = False,
+        expires_at: datetime | None = None,
     ) -> str:
         """Place an order; returns the exchange order id (Kraken txid).
 
@@ -250,9 +251,12 @@ class BridgedClient:
         price: float | None = None,
         *,
         post_only: bool = False,
+        expires_at: datetime | None = None,
     ) -> str:
         return await self._bridge.run(
-            self._inner.create_order(pair, side, order_type, size, price, post_only=post_only)
+            self._inner.create_order(
+                pair, side, order_type, size, price, post_only=post_only, expires_at=expires_at
+            )
         )
 
     async def cancel_order(self, txid: str, pair: Pair) -> None:
@@ -346,10 +350,18 @@ class KrakenTradingClient:
         price: float | None = None,
         *,
         post_only: bool = False,
+        expires_at: datetime | None = None,
     ) -> str:
         # oflags=post is Kraken's own post-only flag: it guarantees the maker
         # fee the backtests assume (task spec section 5.1)
         params: dict[str, Any] = {"oflags": "post"} if post_only else {}
+        if expires_at is not None:
+            if order_type != "limit" or expires_at.utcoffset() is None:
+                raise ExchangeError("Order expiry requires a limit order and a timezone-aware timestamp")
+            expiry = int(expires_at.timestamp())
+            if expiry <= 0:
+                raise ExchangeError("Order expiry must be a positive Unix timestamp")
+            params.update(timeinforce="GTD", expiretm=str(expiry))
         try:
             await self._ensure_markets()
             order = await self._exchange.create_order(str(pair), order_type, side.value, size, price, params)
