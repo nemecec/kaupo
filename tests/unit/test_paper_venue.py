@@ -1,5 +1,8 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+
+import pytest
 
 from kaupo.domain import Candle, Order, OrderStatus, OrderType, Pair, Side, Timeframe
 from kaupo.venues.paper import PaperVenue
@@ -333,3 +336,74 @@ def test_protections_clamp_incrementally_against_partial_exit() -> None:
     sells = [f for f in fills if f.side is Side.SELL]
     assert sum(f.size for f in sells) == 4.0  # never more than the position
     assert v._positions[PAIR] == 0
+
+
+@pytest.mark.parametrize("mode", ["maker", "taker", "skip"])
+@pytest.mark.parametrize("side", [Side.BUY, Side.SELL])
+@pytest.mark.parametrize("periods", [2, 64])
+@pytest.mark.parametrize("timeframe", [Timeframe.M5, Timeframe.H1, Timeframe.D1])
+def test_limit_expires_before_a_later_period(mode, side, periods, timeframe):
+    v = PaperVenue(100, 50, 100, marketable_limit=mode)
+    order = Order(
+        pair=PAIR,
+        side=side,
+        order_type=OrderType.LIMIT,
+        size=1,
+        limit_price=100,
+        stop_loss=80,
+        created_ts=BASE,
+    )
+    v.submit(order)
+    # The reopened bar touches both sides. A stale limit must never fill,
+    # even in skip mode when it is not marketable at the reopened price.
+    reopened = replace(
+        candle(0, o=101 if side is Side.BUY else 99, h=110, low=90),
+        ts=BASE + timedelta(seconds=periods * timeframe.seconds),
+        timeframe=timeframe,
+    )
+    assert v.on_candle(reopened) == []
+    assert order.status is OrderStatus.CANCELLED
+    assert order.filled_ts is None
+    assert order.fee == 0
+    assert v.drain_expired() == [order]
+    assert v.drain_expired() == []
+    # No protection was armed by the expired entry.
+    assert v.on_candle(replace(reopened, ts=reopened.ts + timedelta(seconds=timeframe.seconds), low=70)) == []
+
+
+@pytest.mark.parametrize("mode", ["maker", "taker", "skip"])
+@pytest.mark.parametrize("timeframe", [Timeframe.M5, Timeframe.H1, Timeframe.D1])
+def test_limit_remains_eligible_in_immediately_following_period(mode, timeframe):
+    v = PaperVenue(100, 50, 0, marketable_limit=mode)
+    order = Order(
+        pair=PAIR,
+        side=Side.BUY,
+        order_type=OrderType.LIMIT,
+        size=1,
+        limit_price=95,
+        created_ts=BASE,
+    )
+    v.submit(order)
+    fills = v.on_candle(
+        replace(
+            candle(0, o=100, low=94),
+            timeframe=timeframe,
+            ts=BASE + timedelta(seconds=timeframe.seconds),
+        )
+    )
+    assert len(fills) == 1
+    assert fills[0].price == 95
+    assert v.drain_expired() == []
+
+
+def test_market_and_existing_stop_remain_active_across_gap():
+    v = venue()
+    order = market(stop_loss=90, created_ts=BASE)
+    v.submit(order)
+    # Market orders keep their next-available-open contract.
+    assert len(v.on_candle(candle(64))) == 1
+    # An existing position's stop must survive a later closure.
+    fills = v.on_candle(candle(128, o=80, low=70))
+    assert len(fills) == 1
+    assert fills[0].side is Side.SELL
+    assert fills[0].price == 80 * 0.99
