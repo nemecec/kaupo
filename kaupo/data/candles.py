@@ -99,9 +99,15 @@ async def get_latest_ts(
 
 
 async def get_latest_candles(
-    session: AsyncSession, pair: Pair, timeframe: Timeframe, n: int, exchange: str = "kraken"
+    session: AsyncSession,
+    pair: Pair,
+    timeframe: Timeframe,
+    n: int,
+    exchange: str = "kraken",
+    *,
+    before: datetime | None = None,
 ) -> list[Candle]:
-    """The ``n`` most recent candles, ordered oldest first."""
+    """The ``n`` most recent candles, oldest first, optionally strictly before a timestamp."""
     stmt = (
         select(CandleRow)
         .where(
@@ -112,6 +118,8 @@ async def get_latest_candles(
         .order_by(CandleRow.ts.desc())
         .limit(n)
     )
+    if before is not None:
+        stmt = stmt.where(CandleRow.ts < before)
     result = await session.execute(stmt)
     rows = list(result.scalars())
     rows.reverse()

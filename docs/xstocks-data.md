@@ -64,6 +64,16 @@ The recent mode drops Kraken's zero-volume, zero-trade bars to preserve empty pe
 The production refresh scripts still serve the crypto universe. Use these dedicated commands for xStocks imports.
 Do not add xStocks to the shared Binance candle, funding, or open-interest loops.
 
+## Backtest warm-up
+
+Backtests load up to `lookback` stored candles strictly before the evaluation start.
+They count observations instead of elapsed calendar periods. A portfolio backtest selects this history independently for each pair.
+Funding and positioning history extend to the oldest selected candle when necessary.
+
+Warm-up does not call the strategy or create equity snapshots. The strategy first runs inside the evaluation window.
+If the database has fewer candles, the backtest uses the available history. It does not invent bars or guarantee a full indicator warm-up.
+This change does not extend live or shadow API refresh requests across market closures.
+
 ## Remaining work in #43
 
 The following items remain prerequisites for supported xStocks trading:
