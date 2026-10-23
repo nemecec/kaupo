@@ -8,7 +8,8 @@ Execution model (identical in backtest and shadow):
   maker fee, no slippage
 - a limit order lives for ONE candle only: submitted after a strategy decision,
   it is eligible on the next candle and expires unfilled at that candle's
-  close (status cancelled; reported via drain_expired)
+  close (status cancelled; reported via drain_expired). If that period has no
+  candle, it expires before any later candle can fill it.
 - a limit that is MARKETABLE AT POSTING — one that would take liquidity the
   moment it rests on the book (buy: limit >= open, sell: limit <= open) — is
   handled by ``marketable_limit``; see :func:`is_marketable_at_posting`
@@ -31,7 +32,7 @@ one-candle life in all three modes.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Literal, get_args
 
@@ -209,6 +210,15 @@ class PaperVenue:
         limits = self._limit_open
         self._limit_open = []
         for order in limits:
+            # Engines stamp created_ts with the decision candle's OPEN time.
+            # Only the immediately following period can execute this limit.
+            # A later observed bar cannot extend its life across missing data
+            # or a market closure, regardless of the marketable-limit mode.
+            if candle.ts > order.created_ts + timedelta(seconds=candle.timeframe.seconds):
+                order.status = OrderStatus.CANCELLED
+                self._expired.append(order)
+                log.info("Limit order %s expired across a candle gap before %s", order.id, candle.ts)
+                continue
             skipped = self._skips_as_marketable(order, candle)
             limit_fill = None if skipped else self._try_limit(order, candle)
             if limit_fill is None:

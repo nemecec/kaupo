@@ -261,6 +261,7 @@ class OrderIntent:
     LIMIT intents need a positive ``limit_price`` and live for one candle:
     they fill at the limit or better when that candle's range touches the
     price (maker fee, no slippage) and expire unfilled at its close.
+    In paper execution, a missing next period expires the limit without a fill.
     """
 
     pair: Pair
