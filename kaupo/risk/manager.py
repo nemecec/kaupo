@@ -92,17 +92,25 @@ class RiskManager:
     halt_reason: str = ""
     _day: tuple[int, int, int] | None = None
     _day_start_floor: float = 0.0
+    _last_floor: float | None = None
     _consecutive_losses: int = 0
     _cooldown_remaining: int = 0
     rejections: deque[str] = field(default_factory=lambda: deque(maxlen=1000))
 
     def on_candle(self, state: RiskState) -> bool:
-        """Advance time-based tracking. Returns True if the run may continue."""
+        """Advance tracking, including losses since the previous observed close.
+
+        A new day starts at the last observed floor, so the first candle's
+        loss is included even after a market closure. A new manager with no
+        prior observation establishes its baseline from the current state.
+        Returns True if the run may continue.
+        """
         day = (state.ts.year, state.ts.month, state.ts.day)
         floor = _floor_equity(state)
         if day != self._day:
             self._day = day
-            self._day_start_floor = floor
+            self._day_start_floor = floor if self._last_floor is None else self._last_floor
+        self._last_floor = floor
 
         if self._cooldown_remaining > 0:
             self._cooldown_remaining -= 1
