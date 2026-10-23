@@ -162,3 +162,82 @@ class TestAsyncBridge:
         bridge = AsyncBridge(name="t5")
         bridge.close()
         bridge.close()
+
+
+@pytest.mark.parametrize("order_type", ["limit", "market"])
+async def test_order_expiry_payload(monkeypatch, order_type):
+    from unittest.mock import AsyncMock
+
+    exchange = type("Exchange", (), {})()
+    exchange.load_markets = AsyncMock()
+    exchange.create_order = AsyncMock(return_value={"id": "K1"})
+    monkeypatch.setattr(ccxt, "kraken", lambda config: exchange)
+    client = KrakenTradingClient("fake", "fake")
+    expiry = datetime(2026, 1, 2, 22, tzinfo=UTC) if order_type == "limit" else None
+    assert (
+        await client.create_order(
+            PAIR,
+            Side.BUY,
+            order_type,
+            1,
+            90 if expiry else None,
+            post_only=bool(expiry),
+            expires_at=expiry,
+        )
+        == "K1"
+    )
+    params = exchange.create_order.call_args.args[-1]
+    if expiry:
+        assert params == {"oflags": "post", "timeinforce": "GTD", "expiretm": str(int(expiry.timestamp()))}
+    else:
+        assert params == {}
+
+
+@pytest.mark.parametrize(
+    "order_type,expiry",
+    [
+        ("market", datetime(2026, 1, 2, tzinfo=UTC)),
+        ("limit", datetime(2026, 1, 2)),
+        ("limit", datetime(1970, 1, 1, tzinfo=UTC)),
+    ],
+)
+async def test_invalid_expiry_never_reaches_exchange(monkeypatch, order_type, expiry):
+    from unittest.mock import AsyncMock
+
+    exchange = type("Exchange", (), {})()
+    exchange.create_order = AsyncMock()
+    monkeypatch.setattr(ccxt, "kraken", lambda config: exchange)
+    client = KrakenTradingClient("fake", "fake")
+    with pytest.raises(ExchangeError):
+        await client.create_order(PAIR, Side.BUY, order_type, 1, 90, expires_at=expiry)
+    exchange.create_order.assert_not_called()
+
+
+async def test_bridged_client_preserves_expiry():
+    from kaupo.venues.kraken_client import BridgedClient
+    from tests.fake_kraken import FakeKrakenClient
+
+    inner = FakeKrakenClient()
+    bridge = AsyncBridge(name="expiry-bridge")
+    try:
+        client = BridgedClient(inner, bridge)
+        expiry = datetime(2026, 1, 2, 22, tzinfo=UTC)
+        await client.create_order(PAIR, Side.BUY, "limit", 1, 90, post_only=True, expires_at=expiry)
+        assert inner.placed[0].expires_at == expiry
+        assert inner.placed[0].post_only
+    finally:
+        bridge.close()
+
+
+async def test_installed_ccxt_preserves_native_gtd_parameters(monkeypatch):
+    exchange = ccxt.kraken()
+    try:
+        monkeypatch.setattr(exchange, "price_to_precision", lambda symbol, price: str(price))
+        params = {"oflags": "post", "timeinforce": "GTD", "expiretm": "1767391200"}
+        request, remaining = exchange.order_request("createOrder", str(PAIR), "limit", {}, 1, 90, params)
+        payload = exchange.extend(request, remaining)
+        assert payload["oflags"] == "post"
+        assert payload["timeinforce"] == "GTD"
+        assert payload["expiretm"] == "1767391200"
+    finally:
+        await exchange.close()

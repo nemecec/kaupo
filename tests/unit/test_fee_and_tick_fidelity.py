@@ -66,13 +66,23 @@ def client() -> FakeKrakenClient:
 
 @pytest.fixture
 def venue(bridge: AsyncBridge, client: FakeKrakenClient) -> KrakenVenue:
-    v = KrakenVenue(PAIR, client, bridge, max_notional=500.0, alert=AlertSpy())
+    v = KrakenVenue(
+        PAIR,
+        client,
+        bridge,
+        max_notional=500.0,
+        timeframe=Timeframe.H4,
+        now=lambda: BASE + timedelta(hours=4, seconds=3),
+        alert=AlertSpy(),
+    )
     v.on_candle(candle(0))  # establishes the reference price, like a real run
     return v
 
 
 def limit(price: float, side: Side = Side.BUY, size: float = 0.29) -> Order:
-    return Order(pair=PAIR, side=side, order_type=OrderType.LIMIT, size=size, limit_price=price)
+    return Order(
+        pair=PAIR, side=side, order_type=OrderType.LIMIT, size=size, limit_price=price, created_ts=BASE
+    )
 
 
 def trade(fee: float = 0.1, taker_or_maker: str | None = None, trade_id: str = "T1") -> ExchangeTrade:

@@ -52,6 +52,8 @@ def venue(bridge: AsyncBridge, client: FakeKrakenClient, alerts: AlertSpy) -> Kr
         client,
         bridge,
         max_notional=500.0,
+        timeframe=Timeframe.H4,
+        now=lambda: BASE + timedelta(hours=4, seconds=3),
         alert=alerts,
         retry_base_seconds=0.001,
     )
@@ -64,7 +66,9 @@ def market(side: Side = Side.BUY, size: float = 1.0) -> Order:
 
 
 def limit(price: float, side: Side = Side.BUY, size: float = 1.0) -> Order:
-    return Order(pair=PAIR, side=side, order_type=OrderType.LIMIT, size=size, limit_price=price)
+    return Order(
+        pair=PAIR, side=side, order_type=OrderType.LIMIT, size=size, limit_price=price, created_ts=BASE
+    )
 
 
 class TestMarketOrders:
@@ -127,7 +131,15 @@ class TestPostOnlyLimits:
         self, bridge: AsyncBridge, alerts: AlertSpy
     ) -> None:
         client = FakeKrakenClient(reject_post_only=True)
-        venue = KrakenVenue(PAIR, client, bridge, max_notional=500.0, alert=alerts)
+        venue = KrakenVenue(
+            PAIR,
+            client,
+            bridge,
+            max_notional=500.0,
+            timeframe=Timeframe.H4,
+            now=lambda: BASE + timedelta(hours=4, seconds=3),
+            alert=alerts,
+        )
         venue.on_candle(candle(0))
         order = limit(95.0)
 
@@ -213,7 +225,15 @@ class TestSizing:
                 amount_step=Decimal("0.0001"), price_step=Decimal("0.01"), min_amount=0.0, min_cost=20.0
             )
         )
-        venue = KrakenVenue(PAIR, client, bridge, max_notional=500.0, alert=alerts)
+        venue = KrakenVenue(
+            PAIR,
+            client,
+            bridge,
+            max_notional=500.0,
+            timeframe=Timeframe.H4,
+            now=lambda: BASE + timedelta(hours=4, seconds=3),
+            alert=alerts,
+        )
         venue.on_candle(candle(0, close=100.0))
         order = market(size=0.1)  # 10 EUR, under the 20 EUR minimum
 
@@ -231,7 +251,15 @@ class TestSizing:
                 amount_step=Decimal("1"), price_step=Decimal("0.01"), min_amount=0.0, min_cost=0.0
             )
         )
-        venue = KrakenVenue(PAIR, client, bridge, max_notional=500.0, alert=alerts)
+        venue = KrakenVenue(
+            PAIR,
+            client,
+            bridge,
+            max_notional=500.0,
+            timeframe=Timeframe.H4,
+            now=lambda: BASE + timedelta(hours=4, seconds=3),
+            alert=alerts,
+        )
         venue.on_candle(candle(0))
 
         venue.submit(market(size=0.4))
@@ -358,13 +386,25 @@ class TestLiquidate:
         self, venue: KrakenVenue, client: FakeKrakenClient
     ) -> None:
         class _Filling(FakeKrakenClient):
-            async def create_order(self, pair, side, order_type, size, price=None, *, post_only=False):  # type: ignore[no-untyped-def]
-                txid = await super().create_order(pair, side, order_type, size, price, post_only=post_only)
+            async def create_order(
+                self, pair, side, order_type, size, price=None, *, post_only=False, expires_at=None
+            ):  # type: ignore[no-untyped-def]
+                txid = await super().create_order(
+                    pair, side, order_type, size, price, post_only=post_only, expires_at=expires_at
+                )
                 self.add_trade(txid, price=98.0, size=size, fee=0.25, ts=BASE, side=side)
                 return txid
 
         filling = _Filling(balances={"EUR": 0.0, "SOL": 2.0})
-        v = KrakenVenue(PAIR, filling, venue._bridge, max_notional=500.0, retry_base_seconds=0.001)
+        v = KrakenVenue(
+            PAIR,
+            filling,
+            venue._bridge,
+            max_notional=500.0,
+            timeframe=Timeframe.H4,
+            now=lambda: BASE + timedelta(hours=4, seconds=3),
+            retry_base_seconds=0.001,
+        )
         v.on_candle(candle(1))
 
         fill = v.liquidate(PAIR, 2.0, candle(2))
@@ -376,7 +416,15 @@ class TestLiquidate:
         assert fill.fee == 0.25
 
     def test_raises_when_the_order_never_trades(self, bridge: AsyncBridge, client: FakeKrakenClient) -> None:
-        v = KrakenVenue(PAIR, client, bridge, max_notional=500.0, retry_base_seconds=0.001)
+        v = KrakenVenue(
+            PAIR,
+            client,
+            bridge,
+            max_notional=500.0,
+            timeframe=Timeframe.H4,
+            now=lambda: BASE + timedelta(hours=4, seconds=3),
+            retry_base_seconds=0.001,
+        )
         v.on_candle(candle(1))
         with pytest.raises(ExchangeError):
             v.liquidate(PAIR, 1.0, candle(2))
@@ -389,3 +437,91 @@ class TestTradeCursor:
 
         assert len(venue.on_candle(candle(1))) == 1
         assert venue.on_candle(candle(2)) == []  # same trade, not replayed
+
+
+@pytest.mark.parametrize("timeframe", [Timeframe.M1, Timeframe.H4, Timeframe.D1])
+@pytest.mark.parametrize("side", [Side.BUY, Side.SELL])
+def test_limit_has_fixed_exchange_expiry(bridge, client, alerts, timeframe, side):
+    decision = datetime(2026, 1, 2, 20, tzinfo=UTC)
+    v = KrakenVenue(
+        PAIR,
+        client,
+        bridge,
+        max_notional=500,
+        timeframe=timeframe,
+        now=lambda: decision + timedelta(seconds=timeframe.seconds + 3),
+        alert=alerts,
+    )
+    order = limit(90, side=side)
+    order.created_ts = decision
+    v.submit(order)
+    assert len(client.placed) == 1
+    placed = client.placed[0]
+    assert placed.post_only
+    assert placed.expires_at == decision + timedelta(seconds=2 * timeframe.seconds)
+    # Expiry is submitted with the order; no subsequent candle is required.
+    assert client.calls.count("create_order") == 1
+
+
+@pytest.mark.parametrize("lateness", [0, 1, 64 * 3600])
+def test_limit_expired_before_submit_is_not_sent(bridge, client, alerts, lateness):
+    v = KrakenVenue(
+        PAIR,
+        client,
+        bridge,
+        max_notional=500,
+        timeframe=Timeframe.H4,
+        now=lambda: BASE + timedelta(hours=8, seconds=lateness),
+        alert=alerts,
+    )
+    order = limit(90)
+    v.submit(order)
+    assert client.placed == []
+    assert "create_order" not in client.calls
+    assert order.status is OrderStatus.CANCELLED
+    assert v.drain_expired() == [order]
+    assert v.drain_expired() == []
+
+
+def test_expiry_is_checked_after_market_lookup(bridge, client, alerts):
+    current = [BASE + timedelta(hours=4)]
+    original = client.load_market
+
+    async def slow_market(pair):
+        result = await original(pair)
+        current[0] = BASE + timedelta(hours=9)
+        return result
+
+    client.load_market = slow_market
+    v = KrakenVenue(
+        PAIR, client, bridge, max_notional=500, timeframe=Timeframe.H4, now=lambda: current[0], alert=alerts
+    )
+    order = limit(90)
+    v.submit(order)
+    assert order.status is OrderStatus.CANCELLED
+    assert client.placed == []
+
+
+def test_partial_fill_survives_exchange_expiry_and_weekend(venue, client):
+    order = limit(90)
+    venue.submit(order)
+    client.fill_last(price=90, size=0.4, fee=0.1, ts=BASE + timedelta(hours=5))
+    # Kraken expires the remainder while there are no new candles.
+    client.open_txids.clear()
+    fills = venue.on_candle(candle(18))
+    assert len(fills) == 1
+    assert fills[0].size == 0.4
+    assert fills[0].fee == 0.1
+    assert order.status is OrderStatus.FILLED
+    assert venue.drain_expired() == []
+    assert venue.on_candle(candle(19)) == []
+
+
+def test_exchange_rejection_does_not_retry_without_expiry(venue, client):
+    client.fail_next("create_order", ExchangeError("invalid expiry"))
+    order = limit(90)
+    venue.submit(order)
+    assert order.status is OrderStatus.REJECTED
+    assert client.calls.count("create_order") == 1
+    assert client.placed == []
+    assert venue.drain_expired() == [order]

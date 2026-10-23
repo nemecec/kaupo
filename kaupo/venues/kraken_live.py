@@ -7,8 +7,9 @@ on the exchange, keeping the same candle-driven shape:
   it executes at the price the next candle opens around
 - a limit order is placed post-only (Kraken ``oflags=post``), which
   guarantees the maker fee the backtests assume, and lives for exactly one
-  candle: at the next candle's close it is cancelled on the exchange, and
-  the strategy reposts if it still wants the trade
+  candle: Kraken's GTD expiry ends its life at the next period's close,
+  even if the candle stream or Kaupo stops. The next candle still cancels
+  tracked orders before polling fills.
 - Kraken refusing a post-only limit as would-be-marketable is not an error.
   Paper semantics would have filled it; live semantics skip it and report it
   as expired, and the strategy re-decides next candle
@@ -43,7 +44,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, TypeVar
 
@@ -57,6 +58,8 @@ from kaupo.domain import (
     OrderType,
     Pair,
     Side,
+    Timeframe,
+    utc_now,
 )
 from kaupo.venues.kraken_client import (
     CALL_TIMEOUT_SECONDS,
@@ -153,6 +156,8 @@ class KrakenVenue:
         bridge: AsyncBridge,
         *,
         max_notional: float,
+        timeframe: Timeframe,
+        now: Callable[[], datetime] | None = None,
         trades_since_ms: int | None = None,
         seen_trade_ids: set[str] | None = None,
         alert: AlertSink | None = None,
@@ -163,6 +168,8 @@ class KrakenVenue:
         self._client = client
         self._bridge = bridge
         self._max_notional = max_notional
+        self._timeframe = timeframe
+        self._now = now or utc_now
         self._alert = alert if alert is not None else send_alert
         self._call_timeout = call_timeout
         self._retry_base = retry_base_seconds
@@ -191,6 +198,19 @@ class KrakenVenue:
         if sized is None:
             return
         post_only = order.order_type is OrderType.LIMIT
+        expires_at = None
+        if post_only:
+            # created_ts is the decision candle's OPEN time. The limit can
+            # rest during the next period, whose close is two periods later.
+            if order.created_ts.utcoffset() is None:
+                self._skip(order, "limit decision timestamp must be timezone-aware")
+                return
+            expires_at = order.created_ts + timedelta(seconds=2 * self._timeframe.seconds)
+            if expires_at <= self._now():
+                order.status = OrderStatus.CANCELLED
+                self._expired.append(order)
+                log.info("Limit order %s expired before placement at %s", order.id, expires_at)
+                return
         try:
             # deliberately NOT retried: a retry after an ambiguous timeout can
             # place a second real order. The strategy reposts next candle.
@@ -202,6 +222,7 @@ class KrakenVenue:
                     sized,
                     order.limit_price,
                     post_only=post_only,
+                    expires_at=expires_at,
                 ),
                 attempts=1,
             )
