@@ -146,6 +146,71 @@ def ingest_candles(
         console.print(warning)
 
 
+@ingest_app.command(name="xstocks-markets")
+def ingest_xstocks_markets(
+    country: Annotated[str | None, typer.Option(help="Optional ISO country filter, e.g. EE")] = None,
+) -> None:
+    """List public Kraken xStocks markets. No account credentials are required."""
+    from kaupo.data.xstocks import XStocksClient
+
+    async def _run() -> Any:
+        async with XStocksClient() as client:
+            return await client.markets(country)
+
+    table = Table("pair", "Kraken symbol", "status", "price tick")
+    for market in asyncio.run(_run()):
+        table.add_row(str(market.pair), market.api_pair, market.status, market.tick_size)
+    console.print(table)
+
+
+@ingest_app.command(name="xstocks-candles")
+def ingest_xstocks_candles(
+    pair: PairOpt,
+    timeframe: TimeframeOpt = "1h",
+    days: Annotated[int, typer.Option(min=1)] = 365,
+    start: StartOpt = None,
+    end: EndOpt = None,
+    recent: Annotated[
+        bool, typer.Option(help="Use recent OHLC instead of historical trades (720-bar limit)")
+    ] = False,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Import complete xStocks candles from public Kraken trades or recent OHLC."""
+    _setup_logging(verbose)
+    from kaupo.data.candles import get_candle_range
+    from kaupo.data.xstocks import XStocksClient, ingest_xstock_candles
+    from kaupo.db.session import get_sessionmaker
+
+    start_dt, end_dt = _range(days, start, end)
+    if start_dt >= end_dt:
+        raise typer.BadParameter("--start must be before --end")
+    p, tf = Pair.parse(pair), Timeframe.parse(timeframe)
+
+    async def _run() -> tuple[int, datetime | None, datetime | None, int]:
+        sm = get_sessionmaker()
+        async with XStocksClient() as client:
+            total = await ingest_xstock_candles(client, sm, p, tf, start_dt, end_dt, recent=recent)
+        async with sm() as session:
+            first, last, count = await get_candle_range(session, p, tf, exchange="kraken")
+        return total, first, last, count
+
+    total, first, last, count = asyncio.run(_run())
+    source = "recent OHLC" if recent else "historical trades"
+    console.print(f"[green]Ingested {total} xStocks candles[/green] for {p} {tf.value} from Kraken {source}")
+    console.print("Only complete candles within the requested range are imported; empty periods stay empty.")
+    if recent:
+        console.print(
+            "Kraken OHLC serves only the newest 720 bars; omit --recent for historical reconstruction."
+        )
+    if first is not None and last is not None:
+        console.print(
+            f"Database coverage: {count} candles, {first:%Y-%m-%d %H:%M} → {last:%Y-%m-%d %H:%M} UTC"
+        )
+    console.print(
+        "Data import only. xStocks trading and market-calendar support remain outside this command."
+    )
+
+
 @ingest_app.command(name="funding")
 def ingest_funding(
     pair: PairOpt,
