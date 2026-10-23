@@ -1365,3 +1365,63 @@ def test_report_rolling_origin(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "sharpe 0.9" not in out
     assert "tracks" in out
     assert "error: unknown strategy 'ghost'" in out
+
+
+@pytest.mark.parametrize("recent", [False, True])
+def test_ingest_xstocks_candles(monkeypatch: pytest.MonkeyPatch, recent: bool) -> None:
+    import kaupo.data.xstocks as xstocks
+
+    calls: dict[str, Any] = {}
+
+    async def fake_ingest(client, sm, pair, tf, start, end, *, recent=False):
+        calls.update(pair=str(pair), timeframe=tf.value, recent=recent)
+        return 12
+
+    monkeypatch.setattr(xstocks, "XStocksClient", _FakeKrakenClient)
+    monkeypatch.setattr(xstocks, "ingest_xstock_candles", fake_ingest)
+    _patch_coverage(monkeypatch, datetime(2025, 8, 14, tzinfo=UTC), datetime(2025, 8, 21, tzinfo=UTC), 12)
+    args = [
+        "ingest",
+        "xstocks-candles",
+        "--pair",
+        "AAPLx/USD",
+        "--timeframe",
+        "1h",
+        "--start",
+        "2025-08-14",
+        "--end",
+        "2025-08-22",
+    ]
+    if recent:
+        args.append("--recent")
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 0, result.output
+    assert calls == {"pair": "AAPLX/USD", "timeframe": "1h", "recent": recent}
+    assert "12 xStocks candles" in result.output
+    assert "Data import only" in result.output
+    assert ("newest 720 bars" in result.output) == recent
+
+
+def test_ingest_xstocks_rejects_reverse_range() -> None:
+    result = runner.invoke(
+        cli.app,
+        ["ingest", "xstocks-candles", "--pair", "AAPLx/USD", "--start", "2026-01-02", "--end", "2026-01-01"],
+    )
+    assert result.exit_code != 0
+    assert "must be before" in result.output
+
+
+def test_list_xstocks_markets(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kaupo.data.xstocks as xstocks
+    from kaupo.domain import Pair
+
+    class FakeClient(_FakeKrakenClient):
+        async def markets(self, country):
+            assert country == "EE"
+            return [xstocks.XStockMarket(Pair.parse("AAPLx/USD"), "AAPLxUSD", "online", "0.01")]
+
+    monkeypatch.setattr(xstocks, "XStocksClient", FakeClient)
+    result = runner.invoke(cli.app, ["ingest", "xstocks-markets", "--country", "EE"])
+    assert result.exit_code == 0, result.output
+    assert "AAPLX/USD" in result.output
+    assert "AAPLxUSD" in result.output
