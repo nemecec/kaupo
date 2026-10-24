@@ -112,9 +112,12 @@ export interface DailyReport {
   totals: {
     num_runs: number
     active_runs: number
-    total_pnl: number
+    total_pnl: number | null
     total_fills: number
-    total_fees: number
+    total_fees: number | null
+    quote_currency?: string | null
+    by_currency?: Record<string, { total_pnl: number; total_fees: number; active_runs: number; total_fills: number }>
+    unclassified_runs?: number
   }
 }
 
