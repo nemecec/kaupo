@@ -265,3 +265,82 @@ async def test_account_equity_unknown_strategy_is_404(client: AsyncClient, sessi
 
     r = await client.get("/api/v1/equity/account")  # strategy is required
     assert r.status_code == 422
+
+
+async def test_currency_filter_preserves_overlap_and_resume_math(client, session):
+    eur = _mk_run("eur", "shadow", "s", BASE)
+    usd = _mk_run("usd", "shadow", "s", BASE + timedelta(hours=1))
+    usd.config = {"pairs": ["BTC/USD", "SOL/USD"], "pair": "BTC/USD,SOL/USD"}
+    resumed = _mk_run("resumed", "shadow", "s", BASE + timedelta(hours=3))
+    resumed.config = {"pair": "BTC/EUR", "resumed_from": "eur"}
+    unknown = _mk_run("unknown", "shadow", "s", BASE + timedelta(hours=2))
+    unknown.config = {}
+    await _runs(session, eur, usd, resumed, unknown)
+    _snaps(session, "eur", [100, 110, 120], BASE)
+    _snaps(session, "usd", [900, 950], BASE + timedelta(hours=1))
+    _snaps(session, "resumed", [115, 125], BASE + timedelta(hours=3))
+    _snaps(session, "unknown", [8000], BASE + timedelta(hours=2))
+    await session.commit()
+
+    from kaupo.report.equity import AmbiguousEquityCurrency
+
+    with pytest.raises(AmbiguousEquityCurrency):
+        await stitch_equity(session, "shadow", "s")
+    assert [p.equity for p in await stitch_equity(session, "shadow", "s", quote_currency="eur")] == [
+        100,
+        110,
+        120,
+        115,
+        125,
+    ]
+    assert [p.equity for p in await stitch_equity(session, "shadow", "s", quote_currency="USD")] == [900, 950]
+    assert await stitch_equity(session, "shadow", "s", quote_currency="GBP") == []
+
+    response = await client.get("/api/v1/equity/account", params={"strategy": "s"})
+    assert response.status_code == 409
+    assert "EUR, USD" in response.json()["detail"]
+    response = await client.get("/api/v1/equity/account", params={"strategy": "s", "quote_currency": "usd"})
+    assert response.status_code == 200
+    assert [p["equity"] for p in response.json()] == [900, 950]
+    # The dashboard receives the same currency identity as the stitch filter.
+    response = await client.get("/api/v1/runs/usd")
+    assert response.json()["quote_currency"] == "USD"
+    response = await client.get("/api/v1/runs", params={"mode": "shadow"})
+    assert {r["id"]: r["quote_currency"] for r in response.json()} == {
+        "eur": "EUR",
+        "usd": "USD",
+        "resumed": "EUR",
+        "unknown": None,
+    }
+
+
+@pytest.mark.parametrize("config", [{}, {"pairs": ["BTC/EUR", "SOL/USD"]}])
+async def test_unknown_currency_cannot_form_an_unfiltered_curve(client, session, config):
+    run = _mk_run("unknown", "shadow", "s", BASE)
+    run.config = config
+    await _runs(session, run)
+    _snaps(session, "unknown", [100, 110], BASE)
+    await session.commit()
+    response = await client.get("/api/v1/equity/account", params={"strategy": "s"})
+    assert response.status_code == 409
+    response = await client.get("/api/v1/equity/account", params={"strategy": "s", "quote_currency": "EUR"})
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_empty_foreign_history_does_not_make_curve_ambiguous(session):
+    eur = _mk_run("eur", "shadow", "s", BASE)
+    empty = _mk_run("empty", "shadow", "s", BASE)
+    empty.config = {"pair": "BTC/USD"}
+    await _runs(session, eur, empty)
+    _snaps(session, "eur", [100, 110], BASE)
+    await session.commit()
+    assert [p.equity for p in await stitch_equity(session, "shadow", "s")] == [100, 110]
+
+
+@pytest.mark.parametrize("currency", ["", "EUR/USD", " "])
+async def test_invalid_currency_filter_is_rejected(client, currency):
+    response = await client.get(
+        "/api/v1/equity/account", params={"strategy": "s", "quote_currency": currency}
+    )
+    assert response.status_code == 422

@@ -142,8 +142,8 @@ export const api = {
 
   runPositions: (id: string) => request<Position[]>(`/api/v1/runs/${id}/positions`),
 
-  accountEquity: (strategy: string, mode = 'shadow') =>
-    request<EquityPoint[]>(`/api/v1/equity/account${qs({ mode, strategy })}`),
+  accountEquity: (strategy: string, mode = 'shadow', quoteCurrency?: string) =>
+    request<EquityPoint[]>(`/api/v1/equity/account${qs({ mode, strategy, quote_currency: quoteCurrency })}`),
 
   strategies: () => request<Strategy[]>('/api/v1/strategies'),
 

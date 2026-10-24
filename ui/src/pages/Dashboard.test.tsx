@@ -61,7 +61,8 @@ const SHADOW_RUN: Run = {
   started_at: '2026-01-01T00:00:00Z',
   ended_at: null,
   status: 'running',
-  config: {},
+  config: { pair: 'BTC/EUR' },
+  quote_currency: 'EUR',
   metrics: null,
 }
 
@@ -97,18 +98,36 @@ describe('Dashboard account equity panel', () => {
 
   it('renders the stitched series for the newest shadow run', async () => {
     renderWithProviders(<Dashboard />)
-    expect(await screen.findByText('Account equity')).toBeInTheDocument()
+    expect(await screen.findByText('Account equity (EUR)')).toBeInTheDocument()
     expect(await screen.findByTestId('equity-chart')).toBeInTheDocument()
     // queried the account endpoint for the run's strategy in shadow mode
     const calls = vi.mocked(fetch).mock.calls.map((c) => String(c[0]))
-    expect(calls).toContain('/api/v1/equity/account?mode=shadow&strategy=regime-switch')
+    expect(calls).toContain('/api/v1/equity/account?mode=shadow&strategy=regime-switch&quote_currency=EUR')
   })
 
   it('is hidden when no shadow run exists', async () => {
     mockFetch({ shadowRuns: [], accountPoints: ACCOUNT_POINTS })
     renderWithProviders(<Dashboard />)
     expect(await screen.findByText('No runs currently running')).toBeInTheDocument()
-    expect(screen.queryByText('Account equity')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Account equity/)).not.toBeInTheDocument()
+    const calls = vi.mocked(fetch).mock.calls.map((c) => String(c[0]))
+    expect(calls.some((u) => u.startsWith('/api/v1/equity/account'))).toBe(false)
+  })
+
+  it('selects and labels USD history explicitly', async () => {
+    mockFetch({ shadowRuns: [{ ...SHADOW_RUN, quote_currency: 'USD' }], accountPoints: ACCOUNT_POINTS })
+    renderWithProviders(<Dashboard />)
+    expect(await screen.findByText('Account equity (USD)')).toBeInTheDocument()
+    await screen.findByTestId('equity-chart')
+    const calls = vi.mocked(fetch).mock.calls.map((c) => String(c[0]))
+    expect(calls).toContain('/api/v1/equity/account?mode=shadow&strategy=regime-switch&quote_currency=USD')
+  })
+
+  it('does not request an unlabeled curve when run currency is unknown', async () => {
+    mockFetch({ shadowRuns: [{ ...SHADOW_RUN, quote_currency: null }], accountPoints: ACCOUNT_POINTS })
+    renderWithProviders(<Dashboard />)
+    expect(await screen.findByText('Account equity unavailable: run currency is unknown')).toBeInTheDocument()
+    expect(screen.queryByTestId('equity-chart')).not.toBeInTheDocument()
     const calls = vi.mocked(fetch).mock.calls.map((c) => String(c[0]))
     expect(calls.some((u) => u.startsWith('/api/v1/equity/account'))).toBe(false)
   })
@@ -119,7 +138,7 @@ describe('Dashboard account equity panel', () => {
     expect(await screen.findByText('No runs currently running')).toBeInTheDocument()
     // the panel may show a loading state first, then must disappear entirely
     await waitFor(() => {
-      expect(screen.queryByText('Account equity')).not.toBeInTheDocument()
+      expect(screen.queryByText(/Account equity/)).not.toBeInTheDocument()
     })
   })
 })

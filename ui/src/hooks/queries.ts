@@ -73,10 +73,10 @@ export function useStrategies() {
  * strategy (see GET /api/v1/equity/account). Pass null to disable the query
  * (e.g. no shadow run exists yet).
  */
-export function useAccountEquity(strategy: string | null, mode = 'shadow') {
+export function useAccountEquity(strategy: string | null, mode = 'shadow', quoteCurrency?: string) {
   return useQuery({
-    queryKey: ['equity', 'account', mode, strategy],
-    queryFn: () => api.accountEquity(strategy as string, mode),
+    queryKey: ['equity', 'account', mode, strategy, quoteCurrency],
+    queryFn: () => api.accountEquity(strategy as string, mode, quoteCurrency),
     enabled: strategy !== null,
     refetchInterval: 15_000,
   })

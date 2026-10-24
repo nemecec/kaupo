@@ -19,6 +19,7 @@ from kaupo.api.schemas import (
 from kaupo.db.models import CandleRow, EquitySnapshotRow, FillRow, OrderRow, RunRow
 from kaupo.db.session import get_session
 from kaupo.report.benchmark import run_benchmark
+from kaupo.report.currency import run_quote_currency
 
 router = APIRouter(prefix="/api/v1/runs", tags=["runs"])
 
@@ -34,6 +35,7 @@ def _run_out(row: RunRow) -> RunOut:
         status=row.status,
         config=row.config,
         metrics=row.metrics,
+        quote_currency=run_quote_currency(row),
     )
 
 
