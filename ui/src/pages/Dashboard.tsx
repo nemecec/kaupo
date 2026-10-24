@@ -1,13 +1,14 @@
 import { Link } from 'react-router-dom'
 import { useQueries } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { formatDateTime, formatNumber, formatSigned, shortId } from '../lib/format'
+import { formatDateTime, formatNumber, shortId } from '../lib/format'
 import { useAccountEquity, useDailyReport, useRuns, useStatus } from '../hooks/queries'
 import { EmptyState, ErrorState, Loading, Panel } from '../components/common'
 import { KillSwitch } from '../components/KillSwitch'
 import { EquityChart } from '../components/charts/EquityChart'
 import { MultiEquityChart, type NamedSeries } from '../components/charts/MultiEquityChart'
 import { equityToLine } from '../components/charts/utils'
+import { DailyMoney } from '../components/DailyMoney'
 
 const SERIES_PALETTE = ['#0072ce', '#10b981', '#f59e0b', '#a855f7', '#f43f5e', '#22d3ee']
 
@@ -97,14 +98,12 @@ export default function Dashboard() {
             reportQ.isError
               ? 'report unavailable'
               : totals
-                ? `${totals.total_fills} fills · fees ${formatNumber(totals.total_fees)}`
+                ? <>{totals.total_fills} fills · fees <DailyMoney totals={totals} field="total_fees" /></>
                 : undefined
           }
         >
           {totals ? (
-            <span className={totals.total_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-              {formatSigned(totals.total_pnl)}
-            </span>
+            <DailyMoney totals={totals} field="total_pnl" signed />
           ) : (
             '—'
           )}

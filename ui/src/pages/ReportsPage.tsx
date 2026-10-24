@@ -4,6 +4,7 @@ import { useDailyReport } from '../hooks/queries'
 import { formatDateTime, formatNumber, formatSigned, isRecord, metricLabel, shortId } from '../lib/format'
 import { EmptyState, ErrorState, Loading, Panel } from '../components/common'
 import { StatusBadge } from '../components/StatusBadge'
+import { DailyMoney } from '../components/DailyMoney'
 
 function todayUtc(): string {
   return new Date().toISOString().slice(0, 10)
@@ -27,6 +28,7 @@ const PREFERRED_COLUMNS = [
   'mode',
   'strategy_id',
   'status',
+  'quote_currency',
   'pnl',
   'num_fills',
   'fees_paid',
@@ -108,9 +110,15 @@ export default function ReportsPage() {
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
             <TotalCard label="Runs" value={report.totals.num_runs} />
             <TotalCard label="Active" value={report.totals.active_runs} />
-            <TotalCard label="Total P&L" value={report.totals.total_pnl} colored />
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
+              <div className="text-xs text-zinc-500">P&L by currency</div>
+              <DailyMoney totals={report.totals} field="total_pnl" signed />
+            </div>
             <TotalCard label="Fills" value={report.totals.total_fills} />
-            <TotalCard label="Fees" value={report.totals.total_fees} />
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
+              <div className="text-xs text-zinc-500">Fees by currency</div>
+              <DailyMoney totals={report.totals} field="total_fees" />
+            </div>
           </div>
 
           <Panel

@@ -16,6 +16,6 @@ fi
 day=$(date -u -d 'yesterday' +%F)
 report=$(curl -fsSL -m 15 -H "Authorization: Bearer $KAUPO_READONLY_TOKEN" \
   "https://kaupo.trade/api/v1/reports/daily?day=$day")
-summary=$(echo "$report" | jq -r \
-  '"Kaupo " + .period + ": runs \(.totals.num_runs) (\(.totals.active_runs) active), fills \(.totals.total_fills), P&L \(.totals.total_pnl) EUR, fees \(.totals.total_fees) EUR"')
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+summary=$(echo "$report" | jq -r -f "$script_dir/daily-summary.jq")
 curl -fsSL -m 10 -d "$summary" "https://ntfy.sh/$KAUPO_NTFY_TOPIC"

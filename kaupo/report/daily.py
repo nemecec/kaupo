@@ -1,6 +1,7 @@
 """Daily machine-readable performance reports — the agent feedback artifact."""
 
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
@@ -15,6 +16,62 @@ from kaupo.domain import Fill, OrderId, Pair, Side, new_id, utc_now
 def _day_bounds(day: date) -> tuple[datetime, datetime]:
     start = datetime(day.year, day.month, day.day, tzinfo=UTC)
     return start, start + timedelta(days=1)
+
+
+def _quote_currency(run: RunRow) -> str | None:
+    """Read the ledger denomination from a single pair or portfolio universe."""
+    config = run.config or {}
+    pairs = config.get("pairs")
+    if pairs is None:
+        pair = config.get("pair")
+        pairs = pair.split(",") if isinstance(pair, str) else []
+    if not isinstance(pairs, list) or not pairs:
+        return None
+    try:
+        quotes = {Pair.parse(pair).quote for pair in pairs if isinstance(pair, str)}
+        if len(quotes) == 1 and all(isinstance(pair, str) for pair in pairs):
+            return quotes.pop()
+    except ValueError:
+        pass
+    return None
+
+
+def _totals(run_reports: list[dict[str, Any]]) -> dict[str, Any]:
+    active = [r for r in run_reports if r.get("active")]
+    currencies = sorted(
+        {r["quote_currency"] for r in active if r["quote_currency"] is not None}
+        | {currency for r in active for currency in r.get("fees_by_currency", {})}
+    )
+    by_currency = {}
+    for currency in currencies:
+        group = [r for r in active if r["quote_currency"] == currency]
+        by_currency[currency] = {
+            "active_runs": len(group),
+            "total_pnl": float(
+                sum((Decimal(str(r["pnl"])) for r in group if r.get("pnl") is not None), Decimal(0))
+            ),
+            "total_fills": sum(r.get("num_fills", 0) for r in group),
+            "total_fees": float(
+                sum(
+                    (Decimal(str(r.get("fees_by_currency", {}).get(currency, 0.0))) for r in active),
+                    Decimal(0),
+                )
+            ),
+        }
+    unclassified = sum(r["quote_currency"] is None or r.get("unclassified_fee_fills", 0) > 0 for r in active)
+    currency = currencies[0] if len(currencies) == 1 and not unclassified else None
+    # Keep scalar amounts for single-currency consumers, but never sum
+    # different or unknown denominations. No activity retains zero totals.
+    return {
+        "num_runs": len(run_reports),
+        "active_runs": len(active),
+        "total_fills": sum(r.get("num_fills", 0) for r in active),
+        "quote_currency": currency,
+        "total_pnl": by_currency[currency]["total_pnl"] if currency else (None if active else 0.0),
+        "total_fees": by_currency[currency]["total_fees"] if currency else (None if active else 0.0),
+        "by_currency": by_currency,
+        "unclassified_runs": unclassified,
+    }
 
 
 async def _run_report(session: AsyncSession, run: RunRow, start: datetime, end: datetime) -> dict[str, Any]:
@@ -66,6 +123,7 @@ async def _run_report(session: AsyncSession, run: RunRow, start: datetime, end: 
             "mode": run.mode,
             "strategy_id": run.strategy_id,
             "status": run.status,
+            "quote_currency": _quote_currency(run),
             "active": False,
         }
 
@@ -101,17 +159,40 @@ async def _run_report(session: AsyncSession, run: RunRow, start: datetime, end: 
     initial = open_position([to_domain(f) for f in pre_fills]) if pre_fills else (0.0, 0.0)
     trips = round_trips([to_domain(f) for f in fills], initial=initial)
 
+    quote_currency = _quote_currency(run)
+    fee_amounts: dict[str, Decimal] = {}
+    unclassified_fee_fills = 0
+    for fill in fills:
+        # Legacy and paper fills omit the label: their fee uses the pair's
+        # quote. Preserve an explicit exchange fee currency without FX.
+        currency = (fill.fee_currency or Pair.parse(fill.pair).quote).upper()
+        if currency == "MIXED":
+            unclassified_fee_fills += 1
+            continue
+        fee_amounts[currency] = fee_amounts.get(currency, Decimal(0)) + Decimal(str(fill.fee))
+    fees_by_currency = {currency: float(amount) for currency, amount in sorted(fee_amounts.items())}
+    fees_paid = (
+        fees_by_currency.get(quote_currency, 0.0)
+        if quote_currency is not None
+        and set(fees_by_currency) <= {quote_currency}
+        and not unclassified_fee_fills
+        else None
+    )
+
     return {
         "run_id": run.id,
         "mode": run.mode,
         "strategy_id": run.strategy_id,
         "status": run.status,
+        "quote_currency": quote_currency,
         "active": True,
         "start_equity": start_equity,
         "end_equity": end_equity,
         "pnl": pnl,
         "num_fills": len(fills),
-        "fees_paid": round(sum(f.fee for f in fills), 2),
+        "fees_paid": fees_paid,
+        "fees_by_currency": fees_by_currency,
+        "unclassified_fee_fills": unclassified_fee_fills,
         "round_trips": len(trips),
         "winning_trips": sum(1 for t in trips if t.pnl > 0),
         "max_equity": max((s.equity for s in snapshots), default=end_equity),
@@ -145,14 +226,7 @@ async def build_daily_report(
         )
         run_reports = [await _run_report(session, run, start, end) for run in runs]
 
-    active = [r for r in run_reports if r.get("active")]
-    totals = {
-        "num_runs": len(run_reports),
-        "active_runs": len(active),
-        "total_pnl": round(sum(r["pnl"] for r in active if r.get("pnl") is not None), 2),
-        "total_fills": sum(r.get("num_fills", 0) for r in active),
-        "total_fees": round(sum(r.get("fees_paid", 0.0) for r in active), 2),
-    }
+    totals = _totals(run_reports)
     body: dict[str, Any] = {
         "period": day.isoformat(),
         "generated_at": utc_now().isoformat(),
