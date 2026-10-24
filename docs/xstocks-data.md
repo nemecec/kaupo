@@ -72,7 +72,19 @@ Funding and positioning history extend to the oldest selected candle when necess
 
 Warm-up does not call the strategy or create equity snapshots. The strategy first runs inside the evaluation window.
 If the database has fewer candles, the backtest uses the available history. It does not invent bars or guarantee a full indicator warm-up.
-This change does not extend live or shadow API refresh requests across market closures.
+
+## Live and shadow warm-up
+
+At startup, live and shadow runners request Kraken's latest closed candle page without a calendar cutoff.
+Portfolio shadow runs refresh each pair separately. The runners then select the requested count from stored observations.
+Older imported candles remain available when the requested warm-up exceeds the API page limit.
+
+The refresh makes one candle request per pair. It does not retrieve history beyond Kraken's OHLC limit or create missing candles.
+If the refresh fails, the runner logs a warning and uses stored history.
+Sparse source history can still leave indicators short of their requested warm-up.
+
+This change does not add xStocks API routing to the live runners or recognize scheduled closures.
+The watchdog, poller, and stale-tail warnings still require calendar support.
 
 ## Remaining work in #43
 

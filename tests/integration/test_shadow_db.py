@@ -26,6 +26,7 @@ from kaupo.sdk.protocol import StrategyBase
 class Noop(StrategyBase):
     id = "noop"
     def on_candle(self, ctx):
+        assert len(ctx.history(50)) == 50
         return []
 """
 
@@ -46,28 +47,26 @@ class ScriptedClient:
 
     async def fetch_candles(self, pair, timeframe, since=None, limit=720):  # type: ignore[no-untyped-def]
         if self.in_backfill:
-            if since is None:
-                return []
-            page = [c for c in self.history if c.ts >= since]
-            if not page:
-                self.in_backfill = False
-            return page
+            assert since is None
+            self.in_backfill = False
+            return self.history[-limit:]
         if self.poll_batches:
             return self.poll_batches.pop(0)
         self.stop.set()
         return []
 
 
-async def test_shadow_run_processes_new_candles(session: AsyncSession, tmp_path: Path) -> None:
+@pytest.mark.parametrize("closure_hours", [0, 64])
+async def test_shadow_run_processes_new_candles(
+    session: AsyncSession, tmp_path: Path, closure_hours: int
+) -> None:
     import asyncio
 
     # history ends at the last full hour
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
-    history_end = now - timedelta(hours=1)
+    history_end = now - timedelta(hours=1 + closure_hours)
     history = [hourly_candle(i, history_end) for i in reversed(range(120))]
     history.sort(key=lambda c: c.ts)
-    await upsert_candles(session, history)
-    await session.commit()
 
     new_candle = Candle(pair=PAIR, timeframe=TF, ts=now, open=101, high=102, low=100, close=101, volume=2.0)
 
@@ -128,12 +127,9 @@ class GatedClient(ScriptedClient):
 
     async def fetch_candles(self, pair, timeframe, since=None, limit=720):  # type: ignore[no-untyped-def]
         if self.in_backfill:
-            if since is None:
-                return []
-            page = [c for c in self.history if c.ts >= since]
-            if not page:
-                self.in_backfill = False
-            return page
+            assert since is None
+            self.in_backfill = False
+            return self.history[-limit:]
         if self.poll_batches:
             return self.poll_batches.pop(0)
         await self.gate.wait()  # hold the run open; never ends the stream itself

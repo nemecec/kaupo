@@ -29,7 +29,7 @@ from kaupo.core.resume import prepare_resume
 from kaupo.data.binance import BinanceClient
 from kaupo.data.candles import get_latest_candles, upsert_candles
 from kaupo.data.funding import upsert_funding_rates
-from kaupo.data.ingest import LiveCandlePoller, backfill
+from kaupo.data.ingest import LiveCandlePoller, refresh_recent_candles
 from kaupo.data.kraken import KrakenClient
 from kaupo.db.models import EventRow
 from kaupo.db.session import sm_scope
@@ -174,9 +174,8 @@ async def run_shadow(
     warmup = request.warmup if request.warmup is not None else request.lookback
 
     # freshen the store so warm-up reaches the latest closed candle
-    freshen_since = datetime.now(UTC) - timedelta(seconds=request.timeframe.seconds * (warmup + 5))
     try:
-        await backfill(client, sessionmaker, request.pair, request.timeframe, freshen_since)
+        await refresh_recent_candles(client, sessionmaker, request.pair, request.timeframe)
     except Exception:
         log.warning("Store freshening failed; continuing with existing data", exc_info=True)
 
@@ -507,10 +506,9 @@ async def run_portfolio_shadow(
     warmup = request.warmup if request.warmup is not None else request.lookback
 
     # freshen the store per pair so warm-up reaches the latest closed candle
-    freshen_since = datetime.now(UTC) - timedelta(seconds=request.timeframe.seconds * (warmup + 5))
     for pair in request.pairs:
         try:
-            await backfill(client, sessionmaker, pair, request.timeframe, freshen_since)
+            await refresh_recent_candles(client, sessionmaker, pair, request.timeframe)
         except Exception:
             log.warning("Store freshening failed for %s; continuing with existing data", pair, exc_info=True)
 

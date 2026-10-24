@@ -101,12 +101,9 @@ class ScriptedCandles:
 
     async def fetch_candles(self, pair, timeframe, since=None, limit=720):  # type: ignore[no-untyped-def]
         if self.in_backfill:
-            if since is None:
-                return []
-            page = [c for c in self.history if c.ts >= since]
-            if not page:
-                self.in_backfill = False
-            return page
+            assert since is None
+            self.in_backfill = False
+            return self.history[-limit:]
         if self.batches:
             return self.batches.pop(0)
         self.stop.set()

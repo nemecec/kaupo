@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from kaupo.core.runner import PortfolioShadowRequest, run_portfolio_shadow
-from kaupo.data.candles import get_candles, upsert_candles
+from kaupo.data.candles import get_candles
 from kaupo.db.models import EquitySnapshotRow, RunRow
 from kaupo.db.session import get_sessionmaker
 from kaupo.domain import Candle, Pair, Timeframe
@@ -28,6 +28,7 @@ from kaupo.sdk.protocol import PortfolioStrategyBase
 class Noop(PortfolioStrategyBase):
     id = "noop-portfolio"
     def on_candle(self, ctx):
+        assert all(len(ctx.history(pair, 50)) == 50 for pair in ctx.candles)
         return []
 """
 
@@ -56,12 +57,9 @@ class ScriptedUniverseClient:
 
     async def fetch_candles(self, pair, timeframe, since=None, limit=720):  # type: ignore[no-untyped-def]
         if pair in self.in_backfill:
-            if since is None:
-                return []
-            page = [c for c in self.history[pair] if c.ts >= since]
-            if not page:
-                self.in_backfill.discard(pair)
-            return page
+            assert since is None
+            self.in_backfill.discard(pair)
+            return self.history[pair][-limit:]
         if self.poll_batches[pair]:
             return self.poll_batches[pair].pop(0)
         if all(not batches for batches in self.poll_batches.values()) and not self.stop_scheduled:
@@ -72,17 +70,18 @@ class ScriptedUniverseClient:
         return []
 
 
-async def test_portfolio_shadow_run_processes_new_candles(session: AsyncSession, tmp_path: Path) -> None:
+@pytest.mark.parametrize("closure_hours", [0, 64])
+async def test_portfolio_shadow_run_processes_new_candles(
+    session: AsyncSession, tmp_path: Path, closure_hours: int
+) -> None:
     # history ends at the last full hour, per pair
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
-    history_end = now - timedelta(hours=1)
+    history_end = now - timedelta(hours=1 + closure_hours)
     history: dict[Pair, list[Candle]] = {}
     for j, pair in enumerate(PAIRS):
         candles = [hourly_candle(pair, i, history_end, 100 * (j + 1)) for i in reversed(range(120))]
         candles.sort(key=lambda c: c.ts)
         history[pair] = candles
-        await upsert_candles(session, candles)
-    await session.commit()
 
     new_candles = {
         pair: Candle(pair=pair, timeframe=TF, ts=now, open=101, high=102, low=100, close=101, volume=2.0)
