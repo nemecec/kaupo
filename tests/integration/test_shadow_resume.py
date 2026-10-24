@@ -75,13 +75,7 @@ def hourly_history(pair: Pair, end: datetime, price: float) -> list[Candle]:
 
 
 class ScriptedClient:
-    """Serves backfill pages, then scripted poll batches; sets stop at the end.
-
-    Backfill is paginated explicitly and the backfill/poll switch flips when
-    a backfill fetch finds the pages exhausted — the run's freshening loop
-    can also end on ``since >= now`` (no empty final page), so keying the
-    switch on an empty page can stick the client in backfill mode forever.
-    """
+    """Serves one recent-history page, then scripted poll batches."""
 
     def __init__(self, history: list[Candle], poll_batches: list[list[Candle]], stop: asyncio.Event) -> None:
         self.pages = [history[i : i + 50] for i in range(0, len(history), 50)]
@@ -91,12 +85,9 @@ class ScriptedClient:
 
     async def fetch_candles(self, pair, timeframe, since=None, limit=720):  # type: ignore[no-untyped-def]
         if self.in_backfill:
-            if since is None:
-                return []
-            if not self.pages:
-                self.in_backfill = False
-                return []
-            return self.pages.pop(0)
+            assert since is None
+            self.in_backfill = False
+            return [c for page in self.pages for c in page][-limit:]
         if self.poll_batches:
             return self.poll_batches.pop(0)
         self.stop.set()
@@ -123,12 +114,9 @@ class ScriptedUniverseClient:
 
     async def fetch_candles(self, pair, timeframe, since=None, limit=720):  # type: ignore[no-untyped-def]
         if pair in self.in_backfill:
-            if since is None:
-                return []
-            if not self.pages[pair]:
-                self.in_backfill.discard(pair)
-                return []
-            return self.pages[pair].pop(0)
+            assert since is None
+            self.in_backfill.discard(pair)
+            return [c for page in self.pages[pair] for c in page][-limit:]
         if self.poll_batches[pair]:
             return self.poll_batches[pair].pop(0)
         if all(not batches for batches in self.poll_batches.values()) and not self.stop_scheduled:
@@ -149,8 +137,9 @@ class StopAfterClient(ScriptedClient):
     """
 
     async def fetch_candles(self, pair, timeframe, since=None, limit=720):  # type: ignore[no-untyped-def]
+        was_refresh = self.in_backfill
         batch = await super().fetch_candles(pair, timeframe, since=since, limit=limit)
-        if not self.in_backfill and batch and not self.poll_batches:
+        if not was_refresh and batch and not self.poll_batches:
             self.stop.set()
         return batch
 
@@ -166,8 +155,9 @@ class KillAfterClient(ScriptedClient):
         self._served = 0
 
     async def fetch_candles(self, pair, timeframe, since=None, limit=720):  # type: ignore[no-untyped-def]
+        was_refresh = self.in_backfill
         batch = await super().fetch_candles(pair, timeframe, since=since, limit=limit)
-        if not self.in_backfill and batch:
+        if not was_refresh and batch:
             self._served += 1
             if self._served == self._kill_on_batch:
                 async with sm_scope(get_sessionmaker()) as session:

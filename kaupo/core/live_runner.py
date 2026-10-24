@@ -23,7 +23,7 @@ import asyncio
 import logging
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -41,7 +41,7 @@ from kaupo.core.resume import ResumeState, prepare_resume
 from kaupo.core.runner import DbControlProbe, _chain_persist, _funding_refresh_loop
 from kaupo.data.binance import BinanceClient
 from kaupo.data.candles import get_latest_candles
-from kaupo.data.ingest import LiveCandlePoller, backfill
+from kaupo.data.ingest import LiveCandlePoller, refresh_recent_candles
 from kaupo.data.kraken import KrakenClient
 from kaupo.db.session import sm_scope
 from kaupo.domain import Candle, Fill, Order, Pair, RunMode, RunStatus, Timeframe
@@ -308,9 +308,8 @@ async def _warm_up(
 ) -> list[Candle]:
     """Freshen the candle store and load the run's history, exactly like shadow."""
     warmup = request.warmup if request.warmup is not None else request.lookback
-    freshen_since = datetime.now(UTC) - timedelta(seconds=request.timeframe.seconds * (warmup + 5))
     try:
-        await backfill(client, sessionmaker, request.pair, request.timeframe, freshen_since)
+        await refresh_recent_candles(client, sessionmaker, request.pair, request.timeframe)
     except Exception:
         log.warning("Store freshening failed; continuing with existing data", exc_info=True)
     async with sm_scope(sessionmaker) as session:

@@ -20,6 +20,26 @@ from kaupo.domain import Candle, Pair, Timeframe
 log = logging.getLogger(__name__)
 
 
+async def refresh_recent_candles(
+    client: KrakenClient,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    pair: Pair,
+    timeframe: Timeframe,
+) -> int:
+    """Store Kraken's latest closed candle page without a calendar cutoff.
+
+    The client bounds the page to Kraken's OHLC limit and excludes open
+    candles. Older stored history remains available for larger warm-ups.
+    """
+    batch = await client.fetch_candles(pair, timeframe)
+    if not batch:
+        return 0
+    async with sessionmaker() as session:
+        await upsert_candles(session, batch)
+        await session.commit()
+    return len(batch)
+
+
 async def backfill(
     client: CcxtExchangeClient,
     sessionmaker: async_sessionmaker[AsyncSession],
