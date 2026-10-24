@@ -89,7 +89,7 @@ The watchdog, poller, and stale-tail warnings still require calendar support.
 ## Remaining work in #43
 
 Daily reports and notifications separate amounts by currency. See [daily report currencies](daily-reports.md) for the API fields and compatibility rules.
-Equity-curve stitching still needs currency isolation.
+Account-equity curves support [currency filtering](account-equity.md).
 
 The following items remain prerequisites for supported xStocks trading:
 

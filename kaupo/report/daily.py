@@ -11,29 +11,12 @@ from kaupo.backtest.metrics import open_position, round_trips
 from kaupo.db.models import EquitySnapshotRow, FillRow, ReportRow, RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Fill, OrderId, Pair, Side, new_id, utc_now
+from kaupo.report.currency import run_quote_currency as _quote_currency
 
 
 def _day_bounds(day: date) -> tuple[datetime, datetime]:
     start = datetime(day.year, day.month, day.day, tzinfo=UTC)
     return start, start + timedelta(days=1)
-
-
-def _quote_currency(run: RunRow) -> str | None:
-    """Read the ledger denomination from a single pair or portfolio universe."""
-    config = run.config or {}
-    pairs = config.get("pairs")
-    if pairs is None:
-        pair = config.get("pair")
-        pairs = pair.split(",") if isinstance(pair, str) else []
-    if not isinstance(pairs, list) or not pairs:
-        return None
-    try:
-        quotes = {Pair.parse(pair).quote for pair in pairs if isinstance(pair, str)}
-        if len(quotes) == 1 and all(isinstance(pair, str) for pair in pairs):
-            return quotes.pop()
-    except ValueError:
-        pass
-    return None
 
 
 def _totals(run_reports: list[dict[str, Any]]) -> dict[str, Any]:

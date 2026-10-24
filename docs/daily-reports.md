@@ -25,4 +25,4 @@ API consumers must handle null scalar amounts. Use `totals.by_currency` for mone
 The updated UI and notification omit monetary totals from older reports without currency metadata.
 Regenerating a report replaces its stored body with the current format.
 
-Equity-curve stitching remains separate work under #43. This change does not convert historical equity curves or change trade accounting.
+Account equity also supports [currency filtering](account-equity.md). Neither report converts currencies or changes trade accounting.
