@@ -21,6 +21,7 @@ export interface Run {
   status: RunStatus
   config: Record<string, unknown>
   metrics: Record<string, unknown> | null
+  quote_currency?: string | null
 }
 
 export interface EquityPoint {

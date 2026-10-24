@@ -35,11 +35,12 @@ export default function Dashboard() {
   // newest shadow run decides which strategy the account-level curve follows
   const shadowQ = useRuns({ mode: 'shadow', limit: 1 })
   const accountStrategy = shadowQ.data?.[0]?.strategy_id ?? null
-  const accountQ = useAccountEquity(accountStrategy)
+  const accountCurrency = shadowQ.data?.[0]?.quote_currency ?? null
+  const accountQ = useAccountEquity(accountCurrency ? accountStrategy : null, 'shadow', accountCurrency ?? undefined)
   const accountPoints = accountQ.data ?? []
   // hidden without a shadow run or when the stitched history is empty
   const showAccountPanel =
-    accountStrategy !== null && (accountQ.isLoading || accountQ.isError || accountPoints.length > 0)
+    accountStrategy !== null && (accountCurrency === null || accountQ.isLoading || accountQ.isError || accountPoints.length > 0)
 
   const equityQueries = useQueries({
     queries: runningRuns.map((run) => ({
@@ -126,8 +127,10 @@ export default function Dashboard() {
       </div>
 
       {showAccountPanel && (
-        <Panel title="Account equity">
-          {accountQ.isLoading ? (
+        <Panel title={accountCurrency ? `Account equity (${accountCurrency})` : 'Account equity'}>
+          {accountCurrency === null ? (
+            <EmptyState text="Account equity unavailable: run currency is unknown" />
+          ) : accountQ.isLoading ? (
             <Loading />
           ) : accountQ.isError ? (
             <ErrorState error={accountQ.error} />

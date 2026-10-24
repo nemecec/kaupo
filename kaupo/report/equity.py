@@ -16,6 +16,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from kaupo.db.models import EquitySnapshotRow, RunRow
+from kaupo.report.currency import run_quote_currency
+
+
+class AmbiguousEquityCurrency(ValueError):
+    """The requested history cannot form one curve with a known currency."""
 
 
 @dataclass(frozen=True)
@@ -26,7 +31,9 @@ class StitchedPoint:
     unrealized_pnl: float
 
 
-async def stitch_equity(session: AsyncSession, mode: str, strategy_id: str) -> list[StitchedPoint]:
+async def stitch_equity(
+    session: AsyncSession, mode: str, strategy_id: str, *, quote_currency: str | None = None
+) -> list[StitchedPoint]:
     """Continuous equity curve for (mode, strategy_id) across runs, ascending by ts.
 
     Runs are chained oldest to newest: each run's snapshots are offset so the
@@ -35,6 +42,9 @@ async def stitch_equity(session: AsyncSession, mode: str, strategy_id: str) -> l
     run wins: earlier-run points at or after the next run's first snapshot are
     dropped. Equity and cash carry the offset, so equity - cash = unrealized
     P&L still holds for every stitched point.
+
+    An explicit currency excludes other and unknown denominations. Without
+    one, all runs with snapshots must share one known quote currency.
     """
     runs = list(
         (
@@ -47,6 +57,8 @@ async def stitch_equity(session: AsyncSession, mode: str, strategy_id: str) -> l
         .scalars()
         .all()
     )
+    if quote_currency is not None:
+        runs = [r for r in runs if run_quote_currency(r) == quote_currency.upper()]
     if not runs:
         return []
     snapshots = list(
@@ -63,6 +75,15 @@ async def stitch_equity(session: AsyncSession, mode: str, strategy_id: str) -> l
     by_run: dict[str, list[EquitySnapshotRow]] = {}
     for s in snapshots:
         by_run.setdefault(s.run_id, []).append(s)
+
+    if quote_currency is None:
+        currencies = {run_quote_currency(r) for r in runs if r.id in by_run}
+        if None in currencies or len(currencies) > 1:
+            available = ", ".join(sorted(c for c in currencies if c is not None)) or "none"
+            raise AmbiguousEquityCurrency(
+                "Equity history has mixed or unknown quote currencies; "
+                f"specify quote_currency to select known history (available: {available})"
+            )
 
     stitched: list[StitchedPoint] = []
     for run in runs:

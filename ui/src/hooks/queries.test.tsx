@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { renderHook } from '@testing-library/react'
+import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { useInvalidateRunQueriesOnStop } from './queries'
+import { useAccountEquity, useInvalidateRunQueriesOnStop } from './queries'
+import { api } from '../lib/api'
 import type { RunStatus } from '../lib/types'
 
 function makeWrapper(client: QueryClient) {
@@ -10,6 +11,29 @@ function makeWrapper(client: QueryClient) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>
   }
 }
+
+it('keeps account equity caches separate across currencies', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+  const spy = vi.spyOn(api, 'accountEquity').mockImplementation(async (_strategy, _mode, currency) => [
+    { ts: '2026-01-01T00:00:00Z', equity: currency === 'EUR' ? 100 : 900, cash: 0, unrealized_pnl: 0 },
+  ])
+  try {
+    const { result, rerender, unmount } = renderHook(
+      ({ currency }) => useAccountEquity('s', 'shadow', currency),
+      { wrapper: makeWrapper(client), initialProps: { currency: 'EUR' } },
+    )
+    await waitFor(() => expect(result.current.data?.[0].equity).toBe(100))
+    rerender({ currency: 'USD' })
+    await waitFor(() => expect(result.current.data?.[0].equity).toBe(900))
+    rerender({ currency: 'EUR' })
+    await waitFor(() => expect(result.current.data?.[0].equity).toBe(100))
+    expect(spy).toHaveBeenCalledTimes(2)
+    unmount()
+  } finally {
+    spy.mockRestore()
+    client.clear()
+  }
+})
 
 describe('useInvalidateRunQueriesOnStop', () => {
   it('invalidates the run queries exactly once on the running -> terminal transition', () => {

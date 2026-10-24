@@ -28,6 +28,7 @@ class RunOut(BaseModel):
     status: str
     config: dict[str, Any]
     metrics: dict[str, Any] | None
+    quote_currency: str | None = None
 
 
 class EquityPoint(BaseModel):
