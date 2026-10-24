@@ -3,8 +3,9 @@
 Ranks the universe by total return over ``lookback`` candles. Holds the top
 ``top_k`` pairs with a positive return, at equal weight, long-only. Pairs
 with a non-positive return stay in cash. Rebalances every
-``rebalance_interval`` steps (default: one week, derived from the observed
-candle spacing).
+``rebalance_interval`` steps (default: one week's nominal candle count,
+derived from the declared timeframe). Missing candles do not shorten this
+step interval. A market closure can extend the elapsed time between rebalances.
 
 Each rebalance runs in two phases (see kaupo.sdk.portfolio): the rebalance
 step emits the exits and reductions; the next step emits the entries and
@@ -26,7 +27,7 @@ from kaupo.sdk.protocol import PortfolioContext, PortfolioStrategyBase
 class Params(BaseModel):
     lookback: int = Field(default=24 * 30, gt=0)  # candles of return history
     top_k: int = Field(default=3, gt=0)
-    rebalance_interval: int | None = Field(default=None, gt=0)  # steps; null = one week
+    rebalance_interval: int | None = Field(default=None, gt=0)  # steps; null = nominal week
     cash_buffer_pct: float = Field(default=0.0, ge=0, lt=1)
     min_trade_value: float = Field(default=10.0, gt=0)  # quote; below this, trades are dust
 
@@ -85,11 +86,9 @@ class MomentumRotation(PortfolioStrategyBase):
         return {pair: weight for pair in winners}
 
     def _week_in_steps(self, ctx: PortfolioContext) -> int:
-        """One week in steps, derived from the observed candle spacing."""
+        """One week's nominal steps, independent of gaps between candles."""
         for pair in sorted(self._seen, key=str):
-            hist = ctx.history(pair, 2)
-            if len(hist) == 2:
-                seconds = (hist[-1].ts - hist[-2].ts).total_seconds()
-                if seconds > 0:
-                    return max(1, round(7 * 86400 / seconds))
+            hist = ctx.history(pair, 1)
+            if hist:
+                return max(1, round(7 * 86400 / hist[-1].timeframe.seconds))
         return 1

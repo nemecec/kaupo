@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from examples.strategies.momentum_rotation import MomentumRotation, Params
 from kaupo.core.portfolio_engine import PortfolioEngine, PortfolioEngineConfig, joined_steps
 from kaupo.core.recorder import InMemoryRecorder, RunInfo
 from kaupo.domain import (
@@ -128,6 +129,31 @@ async def test_two_pairs_exact_fills_and_equity() -> None:
     # positions() exposes per-pair sizes as fills land
     assert strategy.pos_sizes[2] == {"BTC/EUR": 1.0}
     assert strategy.pos_sizes[3] == {"BTC/EUR": 1.0, "SOL/EUR": 2.0}
+
+
+@pytest.mark.parametrize("gap_hours", [0, 64])
+async def test_momentum_rotation_waits_for_nominal_week_across_gap(gap_hours: int) -> None:
+    recorder = InMemoryRecorder()
+    strategy = MomentumRotation(Params(lookback=1, top_k=1, cash_buffer_pct=0.1))
+    engine = build_engine(recorder, strategy)
+    # The third observation straddles a closure. SOL is absent at that step,
+    # so the joined portfolio also exercises independent pair histories.
+    bars = {
+        pair: [
+            candle(pair, i + (gap_hours if i >= 2 else 0), 100 + i)
+            for i in range(171)
+            if pair == BTC or i != 2
+        ]
+        for pair in (BTC, SOL)
+    }
+    result = await engine.run(aiter(steps_of(bars)))
+
+    assert result.status is RunStatus.COMPLETED
+    (fill,) = recorder.fills
+    assert fill.pair == BTC
+    assert fill.side is Side.BUY
+    # Targets on observation 168, entry intent on 169, fill on 170.
+    assert fill.ts == BASE + timedelta(hours=169 + gap_hours)
 
 
 async def test_missing_candle_step_uses_stale_close_for_equity() -> None:
