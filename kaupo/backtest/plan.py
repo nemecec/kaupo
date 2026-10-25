@@ -88,6 +88,7 @@ def build_backtest_request(
             exchange=body.exchange,
             risk=risk,
             marketable_limit=marketable_limit,
+            trading_schedule=body.trading_schedule,
         )
     if loaded.is_portfolio:
         raise ValueError(f"strategy {body.strategy!r} is a portfolio strategy; pass pairs")
@@ -104,4 +105,5 @@ def build_backtest_request(
         instrument=body.instrument,
         risk=risk,
         marketable_limit=marketable_limit,
+        trading_schedule=body.trading_schedule,
     )

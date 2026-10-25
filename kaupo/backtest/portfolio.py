@@ -42,6 +42,7 @@ from kaupo.domain import (
     Timeframe,
 )
 from kaupo.ledger.ledger import Ledger
+from kaupo.market_calendar import TradingSchedule
 from kaupo.risk.manager import RiskConfig, RiskManager
 from kaupo.sdk.protocol import LoadedStrategy, PortfolioStrategyBase
 from kaupo.venues.paper import DEFAULT_MARKETABLE_LIMIT, MarketableLimit, PaperVenue
@@ -75,6 +76,7 @@ class PortfolioBacktestRequest:
     # how a limit marketable at posting is priced and charged (kaupo#36);
     # the default is the legacy maker model, so recorded numbers stay comparable
     marketable_limit: MarketableLimit = DEFAULT_MARKETABLE_LIMIT
+    trading_schedule: TradingSchedule | None = None
 
     def __post_init__(self) -> None:
         if len(self.pairs) < 2:
@@ -227,6 +229,11 @@ async def run_portfolio_backtest(
                 **({"stability": request.stability} if request.stability is not None else {}),
                 **({"sweep": request.sweep} if request.sweep is not None else {}),
                 **({"rolling_origin": request.rolling_origin} if request.rolling_origin is not None else {}),
+                **(
+                    {"trading_schedule": request.trading_schedule.model_dump(mode="json")}
+                    if request.trading_schedule is not None
+                    else {}
+                ),
             },
         ),
     )
@@ -239,6 +246,8 @@ async def run_portfolio_backtest(
         timeframe=request.timeframe,
         starting_cash=request.starting_cash,
         risk_rejections=len(risk.rejections),
+        trading_schedule=request.trading_schedule,
+        valuation_end=request.end,
         universe=universe,
     )
     metrics["status"] = result.status.value

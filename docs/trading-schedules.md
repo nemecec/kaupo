@@ -2,6 +2,7 @@
 
 An assignment can specify `trading_schedule` through `POST` or `PUT /api/v1/assignments`.
 The schedule controls the supervisor watchdog, polling diagnostics, and closure explanations in daily reports.
+It also controls return sampling in backtests and rolling reports.
 A missing or null schedule keeps the existing 24/7 behavior.
 
 The schedule contains three fields:
@@ -66,8 +67,7 @@ For repeated local times, sessions open at the first occurrence and close at the
 Missing local boundary times move forward by the daylight-saving gap.
 
 The schedule does not restrict order submission or change order expiry.
-It does not change return sampling or metric annualization.
-Those parts of issue #43 remain separate work.
+Order submission and expiry remain separate work under issue #43.
 
 ## Polling diagnostics
 
@@ -111,3 +111,44 @@ The current assignment must predate both the report day and its last prior snaps
 An assignment edit after either point makes the schedule evidence unavailable, even when that edit changes another field.
 Regenerating an old report after such an edit can replace `market_closed` with `inactive`.
 The `activity_reason` field explains the result; the report does not guess which schedule applied in the past.
+
+
+## Backtest and rolling-report returns
+
+Backtest requests accept the same optional `trading_schedule` object.
+For the CLI, pass `--trading-schedule schedule.json`.
+The JSON file contains the schedule itself, without the outer `trading_schedule` field.
+Single-pair and portfolio runs store the schedule in their run config.
+
+With an explicit schedule, Sharpe and Sortino use UTC daily equity returns.
+Each daily boundary uses the latest available candle close.
+Snapshot timestamps identify candle opens, so a snapshot becomes available one timeframe later.
+Partial first and last days do not contribute returns.
+
+The sampler carries the last value through configured closures, including weekends and holidays.
+A missing candle during scheduled hours prevents this carry.
+Hourly intervals that overlap part of a session count as expected candles.
+Unavailable ratios are null, with a reason in `return_sampling.reason_code`.
+At least two daily returns are necessary.
+
+The `utc_daily_v1` method uses 365.25 periods per year and a zero return target.
+Sharpe retains the sample standard deviation of returns.
+Sortino retains Kaupo's existing sample standard deviation of negative returns.
+Zero denominators produce zero, as before.
+This change does not redefine the Sortino denominator.
+
+Annualization multiplies each ratio by the square root of 365.25.
+This is a reporting convention for equal calendar-day intervals.
+It does not correct for serial correlation.
+See [Sharpe's discussion of time dependence](https://stanford.edu/~wfsharpe/art/sr/sr.htm).
+
+Rolling reports apply the current assignment schedule to both shadow and replay equity.
+Each entry records this analysis basis as `metric_schedule`.
+It does not establish the historical execution schedule.
+Coverage counts expected candle intervals, while the minimum chain age remains seven calendar days.
+Missing scheduled candles produce an unknown verdict.
+
+Without an explicit schedule, existing per-candle metrics stay unchanged.
+P&L, drawdown, CAGR, and trade statistics continue to use the original equity and fills.
+Schedules do not filter backtest candles or restrict simulated orders.
+Other report types retain their existing metric calculations.

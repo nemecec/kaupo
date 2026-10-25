@@ -183,6 +183,7 @@ class BacktestIn(BaseModel):
     # null keeps the legacy maker model, so every recorded backtest number
     # stays comparable; "taker" and "skip" are opt-in impact measurements
     marketable_limit: MarketableLimit | None = None
+    trading_schedule: TradingSchedule | None = None
     # research overrides for the backtest risk caps; null keeps the live defaults
     max_position_quote: float | None = Field(default=None, gt=0)
     max_gross_exposure_quote: float | None = Field(default=None, gt=0)
