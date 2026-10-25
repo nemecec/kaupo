@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from kaupo.backtest.metrics import compute_metrics
 from kaupo.backtest.run import BacktestRequest, run_backtest
+from kaupo.config import default_maker_bps, default_taker_bps
 from kaupo.data.assignments import create_assignment
 from kaupo.data.candles import upsert_candles
 from kaupo.db.models import EquitySnapshotRow, FillRow, OrderRow, ReportRow, RunRow
@@ -62,6 +63,7 @@ def _run_row(run_id: str, started: datetime, **config_extra: object) -> RunRow:
         "pair": "BTC/EUR",
         "timeframe": "1h",
         "starting_cash": 10_000.0,
+        "fees": {"taker_bps": default_taker_bps(), "maker_bps": default_maker_bps()},
         **config_extra,
     }
     return RunRow(
@@ -140,6 +142,7 @@ async def test_report_matches_backtest_and_shadow_reality(session: AsyncSession,
     assert entry["pair"] == "BTC/EUR"
     assert entry["timeframe"] == "1h"
     assert entry["start"] == start.isoformat()  # chain as old as the window: the full window is compared
+    assert entry["backtest"] is not None, entry
 
     # the backtest side equals a directly-invoked run_backtest of the same config
     direct_id, _, direct_metrics = await run_backtest(
