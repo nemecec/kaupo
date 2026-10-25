@@ -46,6 +46,7 @@ from kaupo.data.kraken import KrakenClient
 from kaupo.db.session import sm_scope
 from kaupo.domain import Candle, Fill, Order, Pair, RunMode, RunStatus, Timeframe
 from kaupo.ledger.ledger import InsufficientFunds, InsufficientPosition, Ledger, LedgerEntry
+from kaupo.market_calendar import ScheduleProvider
 from kaupo.risk.manager import RiskConfig, RiskManager
 from kaupo.sdk.protocol import LoadedStrategy, StrategyBase
 from kaupo.venues.kraken_client import (
@@ -84,6 +85,7 @@ class LiveRequest:
     poll_interval_seconds: float = 20.0
     # supervisor-managed runs carry their desired-state row id
     assignment_id: str | None = None
+    schedule_provider: ScheduleProvider | None = None
     # seconds between funding-rate refreshes (Binance perp of the base asset)
     funding_refresh_seconds: float = 1800.0
 
@@ -425,6 +427,7 @@ async def _run_engine(
         request.timeframe,
         poll_interval_seconds=request.poll_interval_seconds,
         baseline=warmup_candles[-1].ts if warmup_candles else None,
+        schedule_provider=request.schedule_provider,
     )
     log.info(
         "Starting LIVE run %s: %s on %s %s (%d warm-up candles)",

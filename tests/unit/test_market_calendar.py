@@ -155,3 +155,20 @@ def test_api_schema_and_json_roundtrip():
 
 def test_no_schedule_preserves_24_hour_watchdog():
     assert watchdog_is_stale(ts("2026-10-23T19:00:00+00:00"), ts("2026-10-25T18:00:00+00:00"), Timeframe.H1)
+
+
+@pytest.mark.parametrize(
+    "reference,now,expected",
+    [
+        ("2026-10-23T19:00:00+00:00", "2026-10-25T18:00:00+00:00", False),
+        ("2026-10-23T18:00:00+00:00", "2026-10-25T18:00:00+00:00", True),
+        ("2026-10-23T19:00:00+00:00", "2026-10-26T13:59:59+00:00", False),
+        ("2026-10-23T19:00:00+00:00", "2026-10-26T14:00:00+00:00", True),
+    ],
+)
+def test_startup_tail_warning_uses_expected_candles(reference, now, expected):
+    from kaupo.core.runner import _warmup_tail_is_stale
+
+    assert _warmup_tail_is_stale(ts(reference), ts(now), Timeframe.H1, schedule) is expected
+    assert _warmup_tail_is_stale(ts(reference), ts(now), Timeframe.H1, None)
+    assert _warmup_tail_is_stale(ts(reference), ts(now), Timeframe.H1, lambda: None)

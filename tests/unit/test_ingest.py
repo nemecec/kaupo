@@ -6,6 +6,7 @@ import pytest
 
 from kaupo.data.ingest import LiveCandlePoller, backfill
 from kaupo.domain import Candle, Pair, Timeframe
+from kaupo.market_calendar import TradingSchedule
 
 PAIR = Pair.parse("BTC/EUR")
 TF = Timeframe.H1
@@ -15,6 +16,40 @@ BASE = datetime(2026, 1, 1, tzinfo=UTC)
 def candle(i: int) -> Candle:
     ts = BASE + timedelta(hours=i)
     return Candle(pair=PAIR, timeframe=TF, ts=ts, open=100, high=101, low=99, close=100.5, volume=1.0)
+
+
+def market_schedule(**changes: Any) -> TradingSchedule:
+    return TradingSchedule.model_validate(
+        {
+            "timezone": "America/New_York",
+            "week": {str(day): [{"start": 570, "end": 960}] for day in range(5)},
+            **changes,
+        }
+    )
+
+
+def at(ts: str, timeframe: Timeframe = TF) -> Candle:
+    return Candle(
+        pair=PAIR,
+        timeframe=timeframe,
+        ts=datetime.fromisoformat(ts),
+        open=100,
+        high=101,
+        low=99,
+        close=100.5,
+        volume=1.0,
+    )
+
+
+def freeze_ingest_now(monkeypatch: pytest.MonkeyPatch, now: datetime) -> None:
+    import kaupo.data.ingest as ingest
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return now if tz is None else now.astimezone(tz)
+
+    monkeypatch.setattr(ingest, "datetime", FrozenDatetime)
 
 
 class FakeClient:
@@ -266,6 +301,141 @@ class TestPollerOwedWarning:
         with caplog.at_level("WARNING"):
             assert await poller.poll_once() == []
         assert not caplog.records
+
+
+class TestPollerScheduledDiagnostics:
+    async def test_weekend_is_quiet_but_missed_final_friday_candle_warns(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        schedule = market_schedule()
+        client = FakeClient([[at("2026-10-23T19:00:00+00:00")], [at("2026-10-23T19:00:00+00:00")]])
+        poller = LiveCandlePoller(
+            client,
+            PAIR,
+            TF,
+            poll_interval_seconds=0,
+            schedule_provider=lambda: schedule,  # type: ignore[arg-type]
+        )
+        await poller.poll_once()
+
+        freeze_ingest_now(monkeypatch, datetime.fromisoformat("2026-10-25T18:00:00+00:00"))
+        with caplog.at_level("WARNING"):
+            await poller.poll_once()
+        assert not caplog.records
+
+        caplog.clear()
+        freeze_ingest_now(monkeypatch, datetime.fromisoformat("2026-10-26T14:10:00+00:00"))
+        with caplog.at_level("WARNING"):
+            await poller.poll_once()
+        assert any("owed a candle since" in record.message for record in caplog.records)
+
+    async def test_monday_first_candle_warns_at_close_plus_two_minutes(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        schedule = market_schedule()
+        client = FakeClient([[at("2026-10-23T19:00:00+00:00")], [at("2026-10-23T19:00:00+00:00")]])
+        poller = LiveCandlePoller(
+            client,
+            PAIR,
+            TF,
+            poll_interval_seconds=0,
+            schedule_provider=lambda: schedule,  # type: ignore[arg-type]
+        )
+        await poller.poll_once()
+
+        freeze_ingest_now(monkeypatch, datetime.fromisoformat("2026-10-26T14:01:59+00:00"))
+        with caplog.at_level("WARNING"):
+            await poller.poll_once()
+        assert not caplog.records
+
+        caplog.clear()
+        freeze_ingest_now(monkeypatch, datetime.fromisoformat("2026-10-26T14:02:00+00:00"))
+        with caplog.at_level("WARNING"):
+            await poller.poll_once()
+        assert any("owed a candle since" in record.message for record in caplog.records)
+
+    async def test_holiday_delays_warning_until_next_open_day(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        schedule = market_schedule(overrides={"2026-10-26": []})
+        client = FakeClient([[at("2026-10-23T19:00:00+00:00")], [at("2026-10-23T19:00:00+00:00")]])
+        poller = LiveCandlePoller(
+            client,
+            PAIR,
+            TF,
+            poll_interval_seconds=0,
+            schedule_provider=lambda: schedule,  # type: ignore[arg-type]
+        )
+        await poller.poll_once()
+
+        freeze_ingest_now(monkeypatch, datetime.fromisoformat("2026-10-26T18:00:00+00:00"))
+        with caplog.at_level("WARNING"):
+            await poller.poll_once()
+        assert not caplog.records
+
+        caplog.clear()
+        freeze_ingest_now(monkeypatch, datetime.fromisoformat("2026-10-27T14:02:00+00:00"))
+        with caplog.at_level("WARNING"):
+            await poller.poll_once()
+        assert any("owed a candle since" in record.message for record in caplog.records)
+
+    async def test_daily_timeframe_counts_open_trading_dates(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        schedule = market_schedule()
+        daily = at("2026-10-23T00:00:00+00:00", Timeframe.D1)
+        client = FakeClient([[daily], [daily]])
+        poller = LiveCandlePoller(
+            client,
+            PAIR,
+            Timeframe.D1,
+            poll_interval_seconds=0,
+            schedule_provider=lambda: schedule,  # type: ignore[arg-type]
+        )
+        await poller.poll_once()
+
+        freeze_ingest_now(monkeypatch, datetime.fromisoformat("2026-10-27T00:01:59+00:00"))
+        with caplog.at_level("WARNING"):
+            await poller.poll_once()
+        assert not caplog.records
+
+        caplog.clear()
+        freeze_ingest_now(monkeypatch, datetime.fromisoformat("2026-10-27T00:02:00+00:00"))
+        with caplog.at_level("WARNING"):
+            await poller.poll_once()
+        assert any("owed a candle since" in record.message for record in caplog.records)
+
+    async def test_provider_is_read_each_pass_and_closed_hours_candles_are_delivered(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        current: list[TradingSchedule | None] = [market_schedule()]
+        provider_calls = 0
+
+        def provider() -> TradingSchedule | None:
+            nonlocal provider_calls
+            provider_calls += 1
+            return current[0]
+
+        baseline = at("2026-10-23T19:00:00+00:00")
+        unexpected = at("2026-10-24T00:00:00+00:00")
+        client = FakeClient([[baseline], [baseline], [baseline], [unexpected]])
+        poller = LiveCandlePoller(client, PAIR, TF, poll_interval_seconds=0, schedule_provider=provider)  # type: ignore[arg-type]
+        await poller.poll_once()
+
+        freeze_ingest_now(monkeypatch, datetime.fromisoformat("2026-10-25T18:00:00+00:00"))
+        with caplog.at_level("WARNING"):
+            assert await poller.poll_once() == []
+        assert provider_calls == 1
+        assert not caplog.records
+
+        current[0] = None
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            assert await poller.poll_once() == []
+        assert provider_calls == 2
+        assert any("owed a candle since" in record.message for record in caplog.records)
+
+        assert await poller.poll_once() == [unexpected]
 
     async def test_one_timeframe_old_baseline_is_not_owed(self, caplog: pytest.LogCaptureFixture) -> None:
         # the baseline candle closes one timeframe after its ts; its successor
