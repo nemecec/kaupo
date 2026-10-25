@@ -71,3 +71,31 @@ def test_notification_preserves_currency(groups, unknown, expected):
     assert "999" not in result.stdout
     if groups is not None and "EUR" not in groups:
         assert "EUR" not in result.stdout
+
+
+def test_notification_distinguishes_run_activity_states():
+    body = {
+        "period": "2026-10-20",
+        "totals": {
+            "num_runs": 6,
+            "active_runs": 2,
+            "market_closed_runs": 3,
+            "inactive_runs": 1,
+            "total_fills": 4,
+            "total_pnl": 0,
+            "total_fees": 0,
+            "by_currency": {},
+            "unclassified_runs": 0,
+        },
+    }
+    script = Path(__file__).resolve().parents[2] / "deploy" / "daily-summary.jq"
+    jq = shutil.which("jq")
+    assert jq is not None
+    result = subprocess.run(  # noqa: S603 — fixed local formatter; test data uses stdin
+        [jq, "-r", "-f", str(script)],
+        input=json.dumps(body),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert "runs 6 (2 active, 3 market closed, 1 inactive)" in result.stdout

@@ -51,6 +51,36 @@ describe('Dashboard', () => {
     expect(screen.getByText('Active runs')).toBeInTheDocument()
     expect(screen.getByText('No runs currently running')).toBeInTheDocument()
   })
+
+  it('shows market-closed and inactive runs separately in today\'s summary', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url === '/api/v1/status') return jsonResponse(STATUS)
+        if (url.startsWith('/api/v1/reports/daily')) {
+          return jsonResponse({
+            period: '2026-08-20',
+            generated_at: '2026-08-21T00:05:00Z',
+            runs: [],
+            totals: {
+              num_runs: 6,
+              active_runs: 2,
+              market_closed_runs: 3,
+              inactive_runs: 1,
+              total_pnl: 0,
+              total_fills: 0,
+              total_fees: 0,
+            },
+          })
+        }
+        if (url.startsWith('/api/v1/runs')) return jsonResponse([])
+        throw new Error(`unexpected fetch: ${url}`)
+      }),
+    )
+    renderWithProviders(<Dashboard />)
+    expect(await screen.findByText('2 active · 3 market closed · 1 inactive')).toBeInTheDocument()
+  })
 })
 
 const SHADOW_RUN: Run = {

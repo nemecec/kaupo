@@ -28,6 +28,9 @@ const PREFERRED_COLUMNS = [
   'mode',
   'strategy_id',
   'status',
+  'activity_state',
+  'activity_reason',
+  'last_snapshot_at',
   'quote_currency',
   'pnl',
   'num_fills',
@@ -48,6 +51,16 @@ function reportColumns(runs: Record<string, unknown>[]): string[] {
   return [...preferred, ...rest]
 }
 
+function ActivityBadge({ state }: { state: string }) {
+  const styles: Record<string, string> = {
+    active: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400',
+    market_closed: 'border-amber-500/40 bg-amber-500/10 text-amber-400',
+    inactive: 'border-zinc-600 bg-zinc-700/20 text-zinc-400',
+  }
+  const labels: Record<string, string> = { active: 'Active', market_closed: 'Market closed', inactive: 'Inactive' }
+  return <span className={`inline-block rounded-full border px-2 py-0.5 text-xs font-medium ${styles[state] ?? styles.inactive}`}>{labels[state] ?? state}</span>
+}
+
 function ReportCell({ column, value }: { column: string; value: unknown }) {
   if (value === null || value === undefined) return <span className="text-zinc-600">—</span>
   if (column === 'run_id' && typeof value === 'string') {
@@ -58,6 +71,8 @@ function ReportCell({ column, value }: { column: string; value: unknown }) {
     )
   }
   if (column === 'status' && typeof value === 'string') return <StatusBadge status={value} />
+  if (column === 'activity_state' && typeof value === 'string') return <ActivityBadge state={value} />
+  if (column === 'last_snapshot_at' && typeof value === 'string') return <span className="text-zinc-300">{formatDateTime(value)}</span>
   if (typeof value === 'number') {
     if (column === 'pnl') {
       return (
@@ -110,6 +125,8 @@ export default function ReportsPage() {
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
             <TotalCard label="Runs" value={report.totals.num_runs} />
             <TotalCard label="Active" value={report.totals.active_runs} />
+            {report.totals.market_closed_runs !== undefined && <TotalCard label="Market closed" value={report.totals.market_closed_runs} />}
+            {report.totals.inactive_runs !== undefined && <TotalCard label="Inactive" value={report.totals.inactive_runs} />}
             <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
               <div className="text-xs text-zinc-500">P&L by currency</div>
               <DailyMoney totals={report.totals} field="total_pnl" signed />

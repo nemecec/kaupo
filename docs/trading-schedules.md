@@ -1,7 +1,7 @@
 # Assignment trading schedules
 
 An assignment can specify `trading_schedule` through `POST` or `PUT /api/v1/assignments`.
-The schedule controls the supervisor watchdog.
+The schedule controls the supervisor watchdog and helps explain silence in daily reports.
 A missing or null schedule keeps the existing 24/7 behavior.
 
 The schedule contains three fields:
@@ -66,5 +66,30 @@ For repeated local times, sessions open at the first occurrence and close at the
 Missing local boundary times move forward by the daylight-saving gap.
 
 The schedule does not restrict order submission or change order expiry.
-It does not change polling, daily activity reports, return sampling, or metric annualization.
+It does not change polling, return sampling, or metric annualization.
 Those parts of issue #43 remain separate work.
+
+## Daily activity reports
+
+Daily reports distinguish three activity states:
+
+- `active`: The report contains snapshots or fills for the UTC day
+- `market_closed`: The schedule explains the absence of observations for the entire UTC day
+- `inactive`: The report has no observations and cannot establish a scheduled closure
+
+The existing `active` flag still means observed activity.
+Only observed activity contributes to financial totals.
+Closure rows include `last_snapshot_at`; they do not invent a new equity value or daily P&L.
+The digest and UI show separate active, market-closed, and inactive counts.
+These states describe recorded activity, not current process health.
+
+A closure requires an enabled, matching assignment and a prior snapshot that passes the schedule-aware watchdog check.
+A missing final Friday candle remains inactive throughout the weekend.
+A run without a prior snapshot remains inactive because the report lacks evidence of progress.
+Observed snapshots or fills always take priority over the schedule.
+
+Assignment history is not versioned.
+The current assignment must predate both the report day and its last prior snapshot.
+An assignment edit after either point makes the schedule evidence unavailable, even when that edit changes another field.
+Regenerating an old report after such an edit can replace `market_closed` with `inactive`.
+The `activity_reason` field explains the result; the report does not guess which schedule applied in the past.

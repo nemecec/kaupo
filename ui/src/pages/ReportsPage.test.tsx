@@ -11,6 +11,26 @@ const REPORT: DailyReport = {
   totals: { num_runs: 0, active_runs: 0, total_pnl: 0, total_fills: 0, total_fees: 0 },
 }
 
+const ACTIVITY_REPORT: DailyReport = {
+  period: '2026-08-20',
+  generated_at: '2026-08-21T00:05:00Z',
+  runs: [{
+    run_id: 'run-market-closed',
+    activity_state: 'market_closed',
+    activity_reason: 'scheduled_closure',
+    last_snapshot_at: '2026-08-19T19:00:00Z',
+  }],
+  totals: {
+    num_runs: 6,
+    active_runs: 2,
+    market_closed_runs: 3,
+    inactive_runs: 1,
+    total_pnl: 0,
+    total_fills: 0,
+    total_fees: 0,
+  },
+}
+
 function todayUtc(): string {
   return new Date().toISOString().slice(0, 10)
 }
@@ -61,5 +81,14 @@ describe('ReportsPage', () => {
     expect(input).toHaveValue(todayUtc())
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('2999-01-01'))).toBe(false)
     expect(fetchMock.mock.calls.some(([url]) => /day=$/.test(String(url)))).toBe(false)
+  })
+
+  it('shows the activity breakdown and per-run reason when supplied', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(ACTIVITY_REPORT)))
+    renderWithProviders(<ReportsPage />)
+
+    expect((await screen.findAllByText('Market closed')).length).toBeGreaterThan(0)
+    expect(screen.getByText('Inactive')).toBeInTheDocument()
+    expect(screen.getByText('scheduled_closure')).toBeInTheDocument()
   })
 })

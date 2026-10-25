@@ -69,6 +69,9 @@ export default function Dashboard() {
     if (!v.latest) return acc
     return acc === null || v.latest > acc ? v.latest : acc
   }, null)
+  const runBreakdown = totals && totals.market_closed_runs !== undefined && totals.inactive_runs !== undefined
+    ? `${totals.active_runs} active · ${totals.market_closed_runs} market closed · ${totals.inactive_runs} inactive`
+    : totals ? `${totals.active_runs} active` : undefined
 
   return (
     <div className="space-y-6">
@@ -112,7 +115,7 @@ export default function Dashboard() {
 
         <StatCard
           label="Today runs"
-          sub={totals ? `${totals.active_runs} active` : undefined}
+          sub={runBreakdown}
         >
           {totals ? totals.num_runs : '—'}
         </StatCard>
