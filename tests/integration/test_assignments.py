@@ -1227,3 +1227,105 @@ async def test_assignment_api_rejects_invalid_fees(client, field, value):
         },
     )
     assert response.status_code == 422
+
+
+async def test_assignment_trading_schedule_create_update_and_clear(client):
+    schedule = {
+        "timezone": "America/New_York",
+        "week": {str(day): [{"start": 570, "end": 960}] for day in range(5)},
+        "overrides": {"2026-12-25": []},
+    }
+    response = await client.post(
+        "/api/v1/assignments",
+        json={
+            "id": "calendar",
+            "strategy_id": "regime-switch",
+            "pair": "BTC/EUR",
+            "timeframe": "1h",
+            "trading_schedule": schedule,
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["trading_schedule"] == schedule
+    response = await client.put("/api/v1/assignments/calendar", json={"enabled": False})
+    assert response.status_code == 200
+    assert response.json()["trading_schedule"] == schedule
+    schedule["overrides"]["2026-12-24"] = [{"start": 570, "end": 780}]
+    response = await client.put("/api/v1/assignments/calendar", json={"trading_schedule": schedule})
+    assert response.status_code == 200
+    async with sm_scope(get_sessionmaker()) as s:
+        stored = await assignments_repo.get_assignment(s, "calendar")
+        assert stored.trading_schedule.model_dump(mode="json") == schedule
+    response = await client.get("/api/v1/assignments")
+    assert next(row for row in response.json() if row["id"] == "calendar")["trading_schedule"] == schedule
+    response = await client.put("/api/v1/assignments/calendar", json={"trading_schedule": None})
+    assert response.status_code == 200
+    async with sm_scope(get_sessionmaker()) as s:
+        assert (await assignments_repo.get_assignment(s, "calendar")).trading_schedule is None
+
+
+@pytest.mark.parametrize("method", ["post", "put"])
+async def test_assignment_api_rejects_invalid_trading_schedule(client, method):
+    payload = {"strategy_id": "regime-switch", "pair": "BTC/EUR", "timeframe": "1h"}
+    response = await client.post("/api/v1/assignments", json=payload)
+    assert response.status_code == 201
+    path = "/api/v1/assignments" if method == "post" else f"/api/v1/assignments/{response.json()['id']}"
+    response = await client.request(method, path, json={**payload, "trading_schedule": {"timezone": "bad"}})
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "own_row,snapshot,expected_stalled",
+    [(True, True, False), (True, False, False), (False, True, True)],
+)
+async def test_watchdog_schedule_applies_only_after_run_row_exists(
+    session, monkeypatch, own_row, snapshot, expected_stalled
+):
+    from datetime import UTC, datetime
+
+    from kaupo.market_calendar import TradingSchedule
+
+    friday = datetime(2026, 10, 23, 19, tzinfo=UTC)
+    sunday = datetime(2026, 10, 25, 18, tzinfo=UTC)
+    monkeypatch.setattr(sup, "utc_now", lambda: sunday)
+    schedule = TradingSchedule.model_validate(
+        {"timezone": "America/New_York", "week": {day: [{"start": 570, "end": 960}] for day in range(5)}}
+    )
+    assignment = await assignments_repo.create_assignment(
+        session, id="calendar", strategy_id="s", pair="BTC/EUR", timeframe="1h", trading_schedule=schedule
+    )
+    session.add(
+        RunRow(
+            id="scheduled-run",
+            mode="shadow",
+            strategy_id="s",
+            strategy_version="v",
+            started_at=friday,
+            status="running",
+            config={"assignment_id": "calendar"},
+        )
+    )
+    await session.flush()
+    if snapshot:
+        session.add(
+            EquitySnapshotRow(
+                id=new_id(), run_id="scheduled-run", ts=friday, equity=1000, cash=1000, unrealized_pnl=0
+            )
+        )
+    await session.commit()
+    stop = asyncio.Event()
+    task = asyncio.create_task(stop.wait())
+    started = friday - timedelta(seconds=1) if own_row else friday + timedelta(hours=1)
+    live = {"calendar": sup._LiveRun("hash", stop, task, started)}
+    try:
+        stalled = await sup._stalled_runs(get_sessionmaker(), live, {"calendar": assignment})
+        assert stalled == (["calendar"] if expected_stalled else [])
+        # A schedule edit takes effect on the next check without restarting a run.
+        from dataclasses import replace
+
+        continuous = replace(assignment, trading_schedule=None)
+        assert sup.assignment_config_hash(continuous) == sup.assignment_config_hash(assignment)
+        assert await sup._stalled_runs(get_sessionmaker(), live, {"calendar": continuous}) == ["calendar"]
+    finally:
+        stop.set()
+        await task

@@ -36,6 +36,7 @@ from kaupo.data.kraken import KrakenClient
 from kaupo.db.models import EquitySnapshotRow, EventRow, RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Pair, RunMode, RunStatus, Timeframe, utc_now
+from kaupo.market_calendar import TradingSchedule
 from kaupo.sdk.protocol import LoadedStrategy
 
 log = logging.getLogger(__name__)
@@ -99,10 +100,20 @@ def watchdog_stale_after(timeframe: Timeframe, grace: timedelta = WATCHDOG_GRACE
 
 
 def watchdog_is_stale(
-    reference: datetime, now: datetime, timeframe: Timeframe, grace: timedelta = WATCHDOG_GRACE
+    reference: datetime,
+    now: datetime,
+    timeframe: Timeframe,
+    grace: timedelta = WATCHDOG_GRACE,
+    *,
+    trading_schedule: TradingSchedule | None = None,
 ) -> bool:
     """``reference`` is the last sign of progress: max(run start, latest snapshot ts)."""
-    return now - reference > watchdog_stale_after(timeframe, grace)
+    if trading_schedule is None:
+        return now - reference > watchdog_stale_after(timeframe, grace)
+    # Grace is wall time after delivery is due, including after a market close.
+    # Daily/4h candles count as whole intervals even for short trading sessions.
+    elapsed = trading_schedule.open_elapsed(reference, now - grace, candle_seconds=timeframe.seconds)
+    return elapsed >= timedelta(seconds=WATCHDOG_STALE_MULTIPLIER * timeframe.seconds)
 
 
 def staleness_reference(
@@ -362,7 +373,12 @@ async def _stalled_runs(
                 )
             ).scalar_one_or_none()
             reference = staleness_reference(lr.started_at, row.started_at, last_ts)
-            if watchdog_is_stale(reference, now, Timeframe.parse(assignment.timeframe)):
+            # A task still preparing its own run uses wall time. Once its row
+            # exists, it can wait through a closure even before its first candle.
+            schedule = assignment.trading_schedule if row.started_at >= lr.started_at else None
+            if watchdog_is_stale(
+                reference, now, Timeframe.parse(assignment.timeframe), trading_schedule=schedule
+            ):
                 stalled.append(aid)
     return stalled
 

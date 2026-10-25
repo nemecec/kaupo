@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from kaupo.config import default_maker_bps, default_taker_bps
 from kaupo.db.models import RunAssignmentRow
 from kaupo.domain import Pair, RunMode, utc_now
+from kaupo.market_calendar import TradingSchedule
 
 # the settings facade (PUT /api/v1/settings) keeps this row in sync
 PRIMARY_ASSIGNMENT_ID = "primary"
@@ -53,6 +54,7 @@ class Assignment:
     starting_cash: float | None
     created_at: datetime
     updated_at: datetime
+    trading_schedule: TradingSchedule | None = None
     taker_fee_bps: float | None = None
     maker_fee_bps: float | None = None
 
@@ -76,6 +78,9 @@ def _to_assignment(row: RunAssignmentRow) -> Assignment:
         params=row.params or {},
         enabled=row.enabled,
         starting_cash=row.starting_cash,
+        trading_schedule=(
+            TradingSchedule.model_validate(row.trading_schedule) if row.trading_schedule is not None else None
+        ),
         taker_fee_bps=row.taker_fee_bps,
         maker_fee_bps=row.maker_fee_bps,
         created_at=row.created_at,
@@ -109,6 +114,7 @@ async def create_assignment(
     enabled: bool = True,
     starting_cash: float | None = None,
     pairs: list[str] | None = None,
+    trading_schedule: TradingSchedule | None = None,
     taker_fee_bps: float | None = None,
     maker_fee_bps: float | None = None,
 ) -> Assignment:
@@ -127,6 +133,7 @@ async def create_assignment(
         params=params or {},
         enabled=enabled,
         starting_cash=starting_cash,
+        trading_schedule=trading_schedule.model_dump(mode="json") if trading_schedule is not None else None,
         taker_fee_bps=taker_fee_bps,
         maker_fee_bps=maker_fee_bps,
         created_at=now,
@@ -154,6 +161,10 @@ async def update_assignment(session: AsyncSession, assignment_id: str, **changes
         changes["pair"] = ",".join(universe)
     elif "pair" in changes:
         changes["pairs"] = None
+    if changes.get("trading_schedule") is not None:
+        changes["trading_schedule"] = TradingSchedule.model_validate(changes["trading_schedule"]).model_dump(
+            mode="json"
+        )
     for key, value in changes.items():
         setattr(row, key, value)
     row.updated_at = utc_now()

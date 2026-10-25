@@ -76,6 +76,7 @@ jobs:
         run: |
           docker run --rm kaupo:ci kaupo --help > /dev/null
           docker run --rm kaupo:ci alembic --version > /dev/null
+          docker run --rm -e PYTHONTZPATH= kaupo:ci python -c 'from zoneinfo import ZoneInfo; ZoneInfo("America/New_York")'
 
       - name: Build UI image
         run: docker build ./ui

@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from kaupo.backtest.sweep import validate_sweep_spec
+from kaupo.market_calendar import TradingSchedule
 from kaupo.venues.paper import MarketableLimit
 
 
@@ -247,6 +248,7 @@ class EventOut(BaseModel):
 
 
 class AssignmentIn(BaseModel):
+    trading_schedule: TradingSchedule | None = None
     id: str | None = Field(default=None, min_length=1, max_length=100)  # generated when absent
     strategy_id: str
     pair: str | None = None  # single-pair run
@@ -270,6 +272,7 @@ class AssignmentIn(BaseModel):
 
 
 class AssignmentUpdate(BaseModel):
+    trading_schedule: TradingSchedule | None = None
     strategy_id: str | None = None
     pair: str | None = None
     pairs: list[str] | None = None  # setting pairs rewrites pair to the joined universe
@@ -291,6 +294,7 @@ class AssignmentUpdate(BaseModel):
 
 
 class AssignmentOut(BaseModel):
+    trading_schedule: TradingSchedule | None = None
     id: str
     strategy_id: str
     pair: str
