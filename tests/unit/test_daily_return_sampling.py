@@ -136,7 +136,7 @@ def test_metrics_use_daily_returns_and_hand_checked_ratios() -> None:
     assert metrics["sortino"] == 0.0
     assert metrics["return_sampling"]["start"] == utc_day(23).isoformat()
 
-    extended = curve + [(utc_day(28), 112.86)]
+    extended = [*curve, (utc_day(28), 112.86)]
     metrics = compute_metrics(
         extended, [], Timeframe.D1, 100, trading_schedule=NY_WEEKDAYS, valuation_end=utc_day(29)
     )
