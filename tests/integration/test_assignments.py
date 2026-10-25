@@ -838,8 +838,9 @@ async def _control_event(command: str, run_id: str | None) -> None:
         )
 
 
+@pytest.mark.parametrize("change", [{"params": {"adx_threshold": 30}}, {"maker_fee_bps": -2}])
 async def test_supervisor_starts_restarts_on_change_and_stops_on_disable(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, change: dict
 ) -> None:
     started: list[tuple[str, str]] = []
     _patch_supervisor(monkeypatch, started)
@@ -864,7 +865,7 @@ async def test_supervisor_starts_restarts_on_change_and_stops_on_disable(
 
         # a config change stops the old run and starts a new one
         async with sm_scope(get_sessionmaker()) as s:
-            await assignments_repo.update_assignment(s, "a1", params={"adx_threshold": 30})
+            await assignments_repo.update_assignment(s, "a1", **change)
         await _wait_for(lambda: len(started) == 2)
         assert await _run_status(started[0][1]) == "halted"
 
@@ -1179,3 +1180,50 @@ async def test_supervisor_does_not_start_a_pairs_assignment_with_a_single_pair_s
     finally:
         stop.set()
         await asyncio.wait_for(task, timeout=10)
+
+
+async def test_assignment_fee_overrides_create_update_and_clear(client, session):
+    response = await client.post(
+        "/api/v1/assignments",
+        json={
+            "id": "fees",
+            "strategy_id": "regime-switch",
+            "pair": "BTC/EUR",
+            "timeframe": "1h",
+            "taker_fee_bps": 0,
+            "maker_fee_bps": -2,
+        },
+    )
+    assert response.status_code == 201
+    assert (response.json()["taker_fee_bps"], response.json()["maker_fee_bps"]) == (0, -2)
+    # Omitted fields preserve existing overrides.
+    response = await client.put("/api/v1/assignments/fees", json={"taker_fee_bps": 10})
+    assert response.status_code == 200
+    assert (response.json()["taker_fee_bps"], response.json()["maker_fee_bps"]) == (10, -2)
+    # Explicit null clears only the named override.
+    response = await client.put("/api/v1/assignments/fees", json={"maker_fee_bps": None})
+    assert response.status_code == 200
+    assert (response.json()["taker_fee_bps"], response.json()["maker_fee_bps"]) == (10, None)
+    async with sm_scope(get_sessionmaker()) as s:
+        stored = await assignments_repo.get_assignment(s, "fees")
+        assert stored is not None
+        assert (stored.taker_fee_bps, stored.maker_fee_bps) == (10, None)
+    response = await client.put("/api/v1/assignments/fees", json={"taker_fee_bps": None})
+    assert response.status_code == 200
+    response = await client.get("/api/v1/assignments")
+    row = next(a for a in response.json() if a["id"] == "fees")
+    assert row["taker_fee_bps"] is None and row["maker_fee_bps"] is None
+
+
+@pytest.mark.parametrize("field,value", [("taker_fee_bps", -1), ("maker_fee_bps", -10000)])
+async def test_assignment_api_rejects_invalid_fees(client, field, value):
+    response = await client.post(
+        "/api/v1/assignments",
+        json={
+            "strategy_id": "regime-switch",
+            "pair": "BTC/EUR",
+            "timeframe": "1h",
+            field: value,
+        },
+    )
+    assert response.status_code == 422

@@ -305,6 +305,8 @@ class RunAssignmentRow(Base):
     params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(default=True)
     starting_cash: Mapped[float | None] = mapped_column(nullable=True)
+    taker_fee_bps: Mapped[float | None] = mapped_column(nullable=True)
+    maker_fee_bps: Mapped[float | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 

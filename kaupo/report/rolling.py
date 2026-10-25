@@ -70,9 +70,9 @@ from kaupo.backtest.metrics import compute_metrics
 from kaupo.backtest.plan import lint_and_load_strategies
 from kaupo.backtest.portfolio import PortfolioBacktestRequest, run_portfolio_backtest
 from kaupo.backtest.run import BacktestRequest, run_backtest
-from kaupo.config import default_maker_bps, default_taker_bps, get_settings
+from kaupo.config import get_settings
 from kaupo.core.notify import send_alert
-from kaupo.data.assignments import Assignment, list_assignments
+from kaupo.data.assignments import Assignment, effective_fees, list_assignments
 from kaupo.db.models import EquitySnapshotRow, FillRow, ReportRow, RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Fill, OrderId, Pair, RunMode, Side, Timeframe, new_id, utc_now
@@ -520,8 +520,7 @@ async def _assignment_entry(
     # Run creation is wall-clock time; decisions are stamped with candle
     # OPEN times. A 10:15 startup can first trade the 10:00 candle (#54).
     replay_start = _aware(first_decision) if first_decision is not None else chain_start or compare_start
-    taker_bps = default_taker_bps()
-    maker_bps = default_maker_bps()
+    taker_bps, maker_bps = effective_fees(assignment)
     entry: dict[str, Any] = {
         "id": assignment.id,
         "strategy_id": assignment.strategy_id,
@@ -584,6 +583,26 @@ async def _assignment_entry(
         entry["backtest"] = None
         entry["verdict"] = VERDICT_UNKNOWN
         entry["verdict_reason"] = shadow["reason_code"]
+        return entry
+
+    # A constant-fee replay cannot reproduce a chain that changed schedules.
+    # Check the whole replay prefix, not only the displayed comparison window.
+    expected_fees = {"taker_bps": taker_bps, "maker_bps": maker_bps}
+    fee_mismatches = []
+    for row in chain:
+        recorded = (row.config or {}).get("fees")
+        if not isinstance(recorded, dict) or any(
+            isinstance(recorded.get(key), bool) or recorded.get(key) != value
+            for key, value in expected_fees.items()
+        ):
+            fee_mismatches.append(row.id)
+    if fee_mismatches:
+        shadow["reason_code"] = "fee_schedule_mismatch"
+        shadow["note"] = "recorded chain fees differ from the replay schedule or are unavailable"
+        entry["fee_mismatch_run_ids"] = fee_mismatches
+        entry["backtest"] = None
+        entry["verdict"] = VERDICT_UNKNOWN
+        entry["verdict_reason"] = "fee_schedule_mismatch"
         return entry
 
     try:

@@ -16,6 +16,7 @@ An `unknown` result is neither a kill signal nor an all-clear. Automation must t
 | `verdict_reason` | Meaning |
 | --- | --- |
 | `missing_chain_ancestor` | A retained run references an absent parent. |
+| `fee_schedule_mismatch` | Recorded chain fees differ from the replay schedule or are unavailable. |
 | `chain_cycle` | The resume links contain a cycle. |
 | `missing_origin_equity` | The original retained run has no equity observations. |
 | `no_shadow_runs` | The assignment has no shadow run. |
@@ -78,3 +79,5 @@ Waiting for new candles does not repair a missing ancestor or a resume cycle.
 
 Without an authoritative history source, the comparison remains unknown. Editing `resumed_from` or inventing an opening balance does not restore historical decisions.
 A fresh evaluation chain establishes new evidence, but it does not repair the old comparison.
+
+See [assignment fee schedules](assignment-fees.md) for overrides, restart behavior, and the fee comparison guard.

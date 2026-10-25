@@ -257,6 +257,9 @@ class AssignmentIn(BaseModel):
     enabled: bool = True
     starting_cash: float | None = Field(default=None, gt=0)
 
+    taker_fee_bps: float | None = Field(default=None, ge=0, lt=10_000, allow_inf_nan=False)
+    maker_fee_bps: float | None = Field(default=None, gt=-10_000, lt=10_000, allow_inf_nan=False)
+
     @model_validator(mode="after")
     def _check(self) -> AssignmentIn:
         if (self.pair is None) == (self.pairs is None):
@@ -274,6 +277,9 @@ class AssignmentUpdate(BaseModel):
     params: dict[str, Any] | None = None
     enabled: bool | None = None
     starting_cash: float | None = Field(default=None, gt=0)  # null = leave unchanged
+
+    taker_fee_bps: float | None = Field(default=None, ge=0, lt=10_000, allow_inf_nan=False)
+    maker_fee_bps: float | None = Field(default=None, gt=-10_000, lt=10_000, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _check(self) -> AssignmentUpdate:
@@ -294,6 +300,8 @@ class AssignmentOut(BaseModel):
     params: dict[str, Any]
     enabled: bool
     starting_cash: float | None
+    taker_fee_bps: float | None
+    maker_fee_bps: float | None
     created_at: datetime
     updated_at: datetime
     run_id: str | None  # the matching live run; null when not running
