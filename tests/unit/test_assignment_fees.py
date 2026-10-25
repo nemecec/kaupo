@@ -13,6 +13,7 @@ from kaupo.config import default_maker_bps, default_taker_bps
 from kaupo.core import supervisor as sup
 from kaupo.core.resume import config_hash
 from kaupo.data.assignments import Assignment, effective_fees
+from kaupo.market_calendar import TradingSchedule
 
 
 def assignment(**changes):
@@ -87,7 +88,8 @@ def test_fee_change_restarts_run_without_changing_resume_identity():
         ("live", False, "run_live"),
     ],
 )
-async def test_supervisor_passes_effective_fees(monkeypatch, mode, portfolio, target):
+@pytest.mark.parametrize("provided", [False, True])
+async def test_supervisor_passes_effective_fees_and_schedule(monkeypatch, mode, portfolio, target, provided):
     class Client:
         async def __aenter__(self):
             return self
@@ -99,9 +101,20 @@ async def test_supervisor_passes_effective_fees(monkeypatch, mode, portfolio, ta
     monkeypatch.setattr(sup, "BinanceClient", Client)
     runner = AsyncMock(return_value="done")
     monkeypatch.setattr(sup, target, runner)
+    schedule = TradingSchedule.model_validate({"timezone": "UTC", "week": {0: [{"start": 0, "end": 1440}]}})
     row = assignment(
-        mode=mode, pairs=["BTC/EUR", "SOL/EUR"] if portfolio else None, taker_fee_bps=0, maker_fee_bps=-2
+        mode=mode,
+        pairs=["BTC/EUR", "SOL/EUR"] if portfolio else None,
+        taker_fee_bps=0,
+        maker_fee_bps=-2,
+        trading_schedule=schedule,
     )
-    await sup._run_assignment(row, {"s": object()}, None, asyncio.Event(), 20, 1800)
+    current = None
+    kwargs = {"schedule_provider": lambda: current} if provided else {}
+    await sup._run_assignment(row, {"s": object()}, None, asyncio.Event(), 20, 1800, **kwargs)
     request = runner.call_args.args[0]
     assert (request.taker_fee_bps, request.maker_fee_bps) == (0, -2)
+
+    assert request.schedule_provider() == (None if provided else schedule)
+    current = schedule
+    assert request.schedule_provider() == schedule

@@ -1,7 +1,7 @@
 # Assignment trading schedules
 
 An assignment can specify `trading_schedule` through `POST` or `PUT /api/v1/assignments`.
-The schedule controls the supervisor watchdog and helps explain silence in daily reports.
+The schedule controls the supervisor watchdog, polling diagnostics, and closure explanations in daily reports.
 A missing or null schedule keeps the existing 24/7 behavior.
 
 The schedule contains three fields:
@@ -66,8 +66,26 @@ For repeated local times, sessions open at the first occurrence and close at the
 Missing local boundary times move forward by the daylight-saving gap.
 
 The schedule does not restrict order submission or change order expiry.
-It does not change polling, return sampling, or metric annualization.
+It does not change return sampling or metric annualization.
 Those parts of issue #43 remain separate work.
+
+## Polling diagnostics
+
+Live and shadow pollers use the schedule when deciding whether to warn about a missing candle.
+A healthy final Friday candle produces no owed-candle warnings during the weekend.
+A missed final Friday candle still produces warnings after its delivery deadline.
+The poller allows two minutes for delivery after the next expected candle closes.
+
+Shadow startup also uses the schedule for stale warm-up-tail warnings, including portfolio runs.
+The warning about insufficient warm-up history still uses the number of available candles.
+
+The supervisor refreshes schedules on each reconciliation pass.
+Schedule edits and clearing reach existing pollers without restarting their runs.
+Portfolio pollers share the assignment schedule; there is no separate schedule for each pair.
+
+Polling frequency, retries, and candle delivery stay unchanged.
+Pollers continue to fetch during closures and accept candles outside configured hours.
+The schedule does not filter market data or suppress fetch-error diagnostics.
 
 ## Daily activity reports
 

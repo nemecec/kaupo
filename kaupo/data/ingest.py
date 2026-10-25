@@ -16,6 +16,7 @@ from kaupo.data.kraken import KrakenClient
 from kaupo.data.open_interest import upsert_open_interest
 from kaupo.data.trades import upsert_trade_ticks
 from kaupo.domain import Candle, Pair, Timeframe
+from kaupo.market_calendar import ScheduleProvider
 
 log = logging.getLogger(__name__)
 
@@ -246,6 +247,7 @@ class LiveCandlePoller:
         timeframe: Timeframe,
         poll_interval_seconds: float = 20.0,
         baseline: datetime | None = None,
+        schedule_provider: ScheduleProvider | None = None,
     ) -> None:
         self._client = client
         self._pair = pair
@@ -255,6 +257,7 @@ class LiveCandlePoller:
         # poll pick up anything closed between warm-up and start
         self._baseline: datetime | None = baseline
         self._empty_streak = 0
+        self._schedule_provider = schedule_provider
 
     async def poll_once(self) -> list[Candle]:
         if self._baseline is not None:
@@ -289,8 +292,16 @@ class LiveCandlePoller:
         or behind the baseline — venue-side commitment lag).
         """
         assert self._baseline is not None
-        deadline = self._baseline + timedelta(seconds=2 * self._timeframe.seconds) + self.OWED_SLACK
-        if datetime.now(UTC) < deadline:
+        now = datetime.now(UTC)
+        schedule = self._schedule_provider() if self._schedule_provider is not None else None
+        if schedule is not None:
+            owed = schedule.candle_due(
+                self._baseline, now, candle_seconds=self._timeframe.seconds, slack=self.OWED_SLACK
+            )
+        else:
+            deadline = self._baseline + timedelta(seconds=2 * self._timeframe.seconds) + self.OWED_SLACK
+            owed = now >= deadline
+        if not owed:
             self._empty_streak = 0
             return
         self._empty_streak += 1

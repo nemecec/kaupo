@@ -35,11 +35,21 @@ from kaupo.db.models import EventRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Candle, Pair, RunMode, Timeframe
 from kaupo.ledger.ledger import Ledger
+from kaupo.market_calendar import ScheduleProvider
 from kaupo.risk.manager import RiskConfig, RiskManager
 from kaupo.sdk.protocol import LoadedStrategy, PortfolioStrategyBase, StrategyBase
 from kaupo.venues.paper import LIVE_MIRROR_MARKETABLE_LIMIT, PaperVenue
 
 log = logging.getLogger(__name__)
+
+
+def _warmup_tail_is_stale(
+    tail: datetime, now: datetime, timeframe: Timeframe, schedule_provider: ScheduleProvider | None
+) -> bool:
+    schedule = schedule_provider() if schedule_provider is not None else None
+    if schedule is None:
+        return now - tail > timedelta(seconds=2 * timeframe.seconds)
+    return schedule.candle_due(tail, now, candle_seconds=timeframe.seconds)
 
 
 @dataclass(frozen=True)
@@ -60,6 +70,7 @@ class ShadowRequest:
     poll_interval_seconds: float = 20.0
     # supervisor-managed runs carry their desired-state row id
     assignment_id: str | None = None
+    schedule_provider: ScheduleProvider | None = None
     # seconds between funding-rate refreshes (Binance perp of the base asset)
     funding_refresh_seconds: float = 1800.0
 
@@ -182,8 +193,9 @@ async def run_shadow(
     async with sm_scope(sessionmaker) as session:
         warmup_candles = await get_latest_candles(session, request.pair, request.timeframe, warmup)
     if warmup_candles:
-        tail_age = datetime.now(UTC) - warmup_candles[-1].ts
-        if tail_age > timedelta(seconds=2 * request.timeframe.seconds):
+        now = datetime.now(UTC)
+        tail_age = now - warmup_candles[-1].ts
+        if _warmup_tail_is_stale(warmup_candles[-1].ts, now, request.timeframe, request.schedule_provider):
             log.warning(
                 "Warm-up tail is %s old — the store has a data hole; the poller will refill it",
                 tail_age,
@@ -300,6 +312,7 @@ async def run_shadow(
         request.timeframe,
         poll_interval_seconds=request.poll_interval_seconds,
         baseline=warmup_candles[-1].ts if warmup_candles else None,
+        schedule_provider=request.schedule_provider,
     )
     log.info(
         "Starting shadow run %s: %s on %s %s (%d warm-up candles)",
@@ -466,6 +479,7 @@ class PortfolioShadowRequest:
     poll_interval_seconds: float = 20.0
     # supervisor-managed runs carry their desired-state row id
     assignment_id: str | None = None
+    schedule_provider: ScheduleProvider | None = None
     # seconds between funding-rate refreshes (Binance perp per base asset)
     funding_refresh_seconds: float = 1800.0
     # how long the joiner waits for a pair's candle before emitting a
@@ -518,8 +532,9 @@ async def run_portfolio_shadow(
             warmup_by_pair[pair] = await get_latest_candles(session, pair, request.timeframe, warmup)
     for pair, candles in warmup_by_pair.items():
         if candles:
-            tail_age = datetime.now(UTC) - candles[-1].ts
-            if tail_age > timedelta(seconds=2 * request.timeframe.seconds):
+            now = datetime.now(UTC)
+            tail_age = now - candles[-1].ts
+            if _warmup_tail_is_stale(candles[-1].ts, now, request.timeframe, request.schedule_provider):
                 log.warning(
                     "Warm-up tail for %s is %s old — the store has a data hole; the poller will refill it",
                     pair,
@@ -641,6 +656,7 @@ async def run_portfolio_shadow(
             request.timeframe,
             poll_interval_seconds=request.poll_interval_seconds,
             baseline=warmup_by_pair[pair][-1].ts if warmup_by_pair[pair] else None,
+            schedule_provider=request.schedule_provider,
         )
         for pair in request.pairs
     }

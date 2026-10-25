@@ -1329,3 +1329,58 @@ async def test_watchdog_schedule_applies_only_after_run_row_exists(
     finally:
         stop.set()
         await task
+
+
+async def test_schedule_changes_reach_running_pollers_without_restart(session, monkeypatch):
+    from kaupo.market_calendar import TradingSchedule
+
+    schedule = TradingSchedule.model_validate(
+        {"timezone": "America/New_York", "week": {day: [{"start": 570, "end": 960}] for day in range(5)}}
+    )
+    requests = {}
+    starts = []
+
+    async def fake_run(request, sm, client, stop, funding_client=None):
+        requests[request.assignment_id] = request
+        starts.append(request.assignment_id)
+        await stop.wait()
+
+    monkeypatch.setattr(sup, "run_shadow", fake_run)
+    monkeypatch.setattr(sup, "KrakenClient", _FakeKrakenClient)
+    monkeypatch.setattr(sup, "BinanceClient", _FakeKrakenClient)
+    for aid, calendar in (("scheduled", schedule), ("continuous", None)):
+        await assignments_repo.create_assignment(
+            session,
+            id=aid,
+            strategy_id="regime-switch",
+            pair="BTC/EUR",
+            timeframe="1h",
+            trading_schedule=calendar,
+        )
+    await session.commit()
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        sup.run_supervisor(
+            get_sessionmaker(), load_strategies(EXAMPLES_DIR), stop, reconcile_interval_seconds=0.02
+        )
+    )
+    try:
+        await _wait_for(lambda: len(requests) == 2)
+        original = requests["scheduled"]
+        assert original.schedule_provider() == schedule
+        assert requests["continuous"].schedule_provider() is None
+        changed = TradingSchedule.model_validate(
+            {**schedule.model_dump(mode="json"), "overrides": {"2026-12-25": []}}
+        )
+        await assignments_repo.update_assignment(session, "scheduled", trading_schedule=changed)
+        await session.commit()
+        await _wait_for(lambda: original.schedule_provider() == changed)
+        assert requests["continuous"].schedule_provider() is None
+        await assignments_repo.update_assignment(session, "scheduled", trading_schedule=None)
+        await session.commit()
+        await _wait_for(lambda: original.schedule_provider() is None)
+        assert requests["scheduled"] is original
+        assert sorted(starts) == ["continuous", "scheduled"]
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=10)

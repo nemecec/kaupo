@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import partial
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -36,7 +37,7 @@ from kaupo.data.kraken import KrakenClient
 from kaupo.db.models import EquitySnapshotRow, EventRow, RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Pair, RunMode, RunStatus, Timeframe, utc_now
-from kaupo.market_calendar import TradingSchedule
+from kaupo.market_calendar import ScheduleProvider, TradingSchedule
 from kaupo.sdk.protocol import LoadedStrategy
 
 log = logging.getLogger(__name__)
@@ -112,8 +113,7 @@ def watchdog_is_stale(
         return now - reference > watchdog_stale_after(timeframe, grace)
     # Grace is wall time after delivery is due, including after a market close.
     # Daily/4h candles count as whole intervals even for short trading sessions.
-    elapsed = trading_schedule.open_elapsed(reference, now - grace, candle_seconds=timeframe.seconds)
-    return elapsed >= timedelta(seconds=WATCHDOG_STALE_MULTIPLIER * timeframe.seconds)
+    return trading_schedule.candle_due(reference, now, candle_seconds=timeframe.seconds, slack=grace)
 
 
 def staleness_reference(
@@ -282,9 +282,17 @@ async def _run_assignment(
     stop: asyncio.Event,
     poll_interval_seconds: float,
     funding_refresh_seconds: float,
+    *,
+    schedule_provider: ScheduleProvider | None = None,
 ) -> RunResult:
     strategy = strategies[assignment.strategy_id]  # guarded by the supervisor's start check
     taker_bps, maker_bps = effective_fees(assignment)
+
+    def initial_schedule() -> TradingSchedule | None:
+        return assignment.trading_schedule
+
+    if schedule_provider is None:
+        schedule_provider = initial_schedule
     if assignment.mode == RunMode.LIVE.value:
         # the live venue owns the authenticated client; this one stays public
         # market data, and the funding client feeds the same advisory series
@@ -300,6 +308,7 @@ async def _run_assignment(
                 maker_fee_bps=maker_bps,
                 poll_interval_seconds=poll_interval_seconds,
                 assignment_id=assignment.id,
+                schedule_provider=schedule_provider,
                 funding_refresh_seconds=funding_refresh_seconds,
             )
             return await run_live(live_request, sessionmaker, client, stop, funding_client=funding_client)
@@ -317,6 +326,7 @@ async def _run_assignment(
                 maker_fee_bps=maker_bps,
                 poll_interval_seconds=poll_interval_seconds,
                 assignment_id=assignment.id,
+                schedule_provider=schedule_provider,
                 funding_refresh_seconds=funding_refresh_seconds,
             )
             return await run_portfolio_shadow(
@@ -332,6 +342,7 @@ async def _run_assignment(
             maker_fee_bps=maker_bps,
             poll_interval_seconds=poll_interval_seconds,
             assignment_id=assignment.id,
+            schedule_provider=schedule_provider,
             funding_refresh_seconds=funding_refresh_seconds,
         )
         return await run_shadow(request, sessionmaker, client, stop, funding_client=funding_client)
@@ -484,6 +495,7 @@ async def run_supervisor(
 ) -> None:
     """Reconcile live shadow runs to the enabled assignments until ``stop`` is set."""
     live: dict[str, _LiveRun] = {}
+    schedules: dict[str, TradingSchedule | None] = {}
     killed: dict[str, _KilledRun] = {}
     backoff: dict[str, datetime] = {}
     async with sm_scope(sessionmaker) as session:
@@ -498,6 +510,10 @@ async def run_supervisor(
                 rows = await list_assignments(session, enabled_only=True)
             rows = [a for a in rows if a.mode in SUPERVISED_MODES]
             by_id = {a.id: a for a in rows}
+            # Providers retain this mapping across reconciliation passes.
+            # Update diagnostics without restarting venues or cancelling orders.
+            schedules.clear()
+            schedules.update({a.id: a.trading_schedule for a in rows})
             for aid in await _stalled_runs(sessionmaker, live, by_id):
                 lr = live.pop(aid)
                 _log_task_stack(aid, lr.task)
@@ -557,6 +573,7 @@ async def run_supervisor(
                         stop_event,
                         run_poll_interval_seconds,
                         run_funding_refresh_seconds,
+                        schedule_provider=partial(schedules.get, aid),
                     ),
                     name=f"assignment-{aid}",
                 )

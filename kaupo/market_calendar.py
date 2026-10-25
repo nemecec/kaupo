@@ -1,6 +1,7 @@
 """Explicit local trading hours. No exchange calendar is inferred from symbols."""
 
 import math
+from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 from itertools import pairwise
 from typing import Annotated, Self
@@ -86,6 +87,16 @@ class TradingSchedule(BaseModel):
                 covered_until = max(covered_until, closed)
             day += timedelta(days=1)
         return elapsed
+
+    def candle_due(
+        self, baseline: datetime, now: datetime, *, candle_seconds: int, slack: timedelta = timedelta(0)
+    ) -> bool:
+        """Whether the baseline's successor should have arrived, plus wall-time slack."""
+        elapsed = self.open_elapsed(baseline, now - slack, candle_seconds=candle_seconds)
+        return elapsed >= timedelta(seconds=2 * candle_seconds)
+
+
+ScheduleProvider = Callable[[], TradingSchedule | None]
 
 
 def _boundary(local: datetime, zone: ZoneInfo, *, closing: bool) -> datetime:
