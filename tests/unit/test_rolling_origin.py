@@ -80,6 +80,7 @@ def _run_row(run_id: str, assignment_id: str, started: datetime, **config_extra:
         "pair": "BTC/EUR",
         "timeframe": "1h",
         "starting_cash": 10_000.0,
+        "fees": {"taker_bps": default_taker_bps(), "maker_bps": default_maker_bps()},
         **config_extra,
     }
     return RunRow(
@@ -923,3 +924,72 @@ async def test_restored_ancestor_allows_replay_again(sessionmaker, strategies_di
     assert "verdict_reason" not in entry
     assert len(seen) == 1
     assert seen[0].start == start
+
+
+@pytest.mark.parametrize("portfolio", [False, True])
+@pytest.mark.parametrize(
+    "recorded",
+    [
+        {"taker_bps": 0, "maker_bps": -2},
+        {"taker_bps": 80, "maker_bps": 40},
+        None,
+        {},
+        [],
+        {"taker_bps": False, "maker_bps": -2},
+    ],
+)
+async def test_assignment_fees_match_entire_replay_chain(
+    sessionmaker, strategies_dir, monkeypatch, portfolio, recorded
+):
+    start = NOW - timedelta(days=10)
+    async with sm_scope(sessionmaker) as session:
+        await create_assignment(
+            session,
+            id="fees",
+            strategy_id="porter" if portfolio else "holder",
+            pair="BTC/EUR",
+            pairs=["BTC/EUR", "SOL/EUR"] if portfolio else None,
+            timeframe="1h",
+            taker_fee_bps=0,
+            maker_fee_bps=-2,
+        )
+        parent = _run_row("parent", "fees", start, fees=recorded)
+        child = _run_row(
+            "child",
+            "fees",
+            NOW - timedelta(days=7),
+            resumed_from="parent",
+            chain_started_at=start.isoformat(),
+            fees={"taker_bps": 0, "maker_bps": -2},
+        )
+        await _seed(
+            session,
+            parent,
+            child,
+            _snapshot("parent", start, 10000),
+            _snapshot("parent", start + timedelta(hours=1), 10001),
+            _snapshot("child", NOW - timedelta(days=7), 10002),
+            _snapshot("child", NOW - timedelta(days=4), 10003),
+            _snapshot("child", NOW - timedelta(hours=1), 10004),
+        )
+    seen = []
+    monkeypatch.setattr(rolling, "run_backtest", _fake_run_backtest(seen))
+    monkeypatch.setattr(rolling, "run_portfolio_backtest", _fake_run_backtest(seen))
+    body = await rolling.build_rolling_origin_report(
+        sessionmaker,
+        days=7,
+        now=NOW,
+        persist=False,
+        strategies_dir=strategies_dir,
+    )
+    (entry,) = body["assignments"]
+    assert entry["fees"] == {"taker_bps": 0, "maker_bps": -2}
+    if recorded == {"taker_bps": 0, "maker_bps": -2} and not isinstance(recorded["taker_bps"], bool):
+        assert len(seen) == 1
+        assert (seen[0].taker_fee_bps, seen[0].maker_fee_bps) == (0, -2)
+        assert "fee_mismatch_run_ids" not in entry
+    else:
+        assert seen == []
+        assert entry["verdict"] == "unknown"
+        assert entry["verdict_reason"] == "fee_schedule_mismatch"
+        assert entry["fee_mismatch_run_ids"] == ["parent"]

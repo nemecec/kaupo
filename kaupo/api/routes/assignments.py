@@ -114,6 +114,8 @@ def _assignment_out(assignment: Assignment, run_id: str | None) -> AssignmentOut
         params=assignment.params,
         enabled=assignment.enabled,
         starting_cash=assignment.starting_cash,
+        taker_fee_bps=assignment.taker_fee_bps,
+        maker_fee_bps=assignment.maker_fee_bps,
         created_at=assignment.created_at,
         updated_at=assignment.updated_at,
         run_id=run_id,
@@ -250,6 +252,8 @@ async def create_assignment(
         params=body.params,
         enabled=body.enabled,
         starting_cash=body.starting_cash,
+        taker_fee_bps=body.taker_fee_bps,
+        maker_fee_bps=body.maker_fee_bps,
         pairs=pairs,
     )
     return _assignment_out(assignment, await _live_run_id(session, assignment))
@@ -286,6 +290,9 @@ async def update_assignment(
         changes["enabled"] = body.enabled
     if body.starting_cash is not None:
         changes["starting_cash"] = body.starting_cash
+    for name in ("taker_fee_bps", "maker_fee_bps"):
+        if name in body.model_fields_set:
+            changes[name] = getattr(body, name)  # explicit null restores the global default
     if not changes:
         raise HTTPException(status_code=422, detail="at least one field is required")
     if "pairs" in changes or "pair" in changes:

@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 
 from kaupo.domain import Candle, Order, OrderStatus, OrderType, Pair, Side, Timeframe
+from kaupo.ledger.ledger import Ledger
 from kaupo.venues.paper import PaperVenue
 
 PAIR = Pair.parse("BTC/EUR")
@@ -52,6 +53,23 @@ class TestMarketOrders:
 
 
 class TestLimitOrders:
+    def test_maker_rebates_credit_cash_and_realized_profit(self) -> None:
+        v = PaperVenue(taker_fee_bps=0, maker_fee_bps=-2, slippage_bps=0)
+        ledger = Ledger("EUR", 1000, BASE)
+        v.submit(Order(pair=PAIR, side=Side.BUY, order_type=OrderType.LIMIT, size=1, limit_price=95))
+        (buy,) = v.on_candle(candle(0, low=94))
+        assert buy.fee == pytest.approx(-0.019)
+        ledger.apply_fill(buy)
+        assert float(ledger.cash) == pytest.approx(905.019)
+        assert ledger.position(PAIR).avg_entry == pytest.approx(94.981)
+
+        v.submit(Order(pair=PAIR, side=Side.SELL, order_type=OrderType.LIMIT, size=1, limit_price=105))
+        (sell,) = v.on_candle(candle(1, h=106))
+        assert sell.fee == pytest.approx(-0.021)
+        assert float(ledger.apply_fill(sell)) == pytest.approx(10.04)
+        assert float(ledger.cash) == pytest.approx(1010.04)
+        assert ledger.position(PAIR).size == 0
+
     def test_buy_fills_when_low_touches(self) -> None:
         v = venue()
         order = Order(pair=PAIR, side=Side.BUY, order_type=OrderType.LIMIT, size=1.0, limit_price=95.0)

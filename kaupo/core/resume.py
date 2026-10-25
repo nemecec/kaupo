@@ -67,7 +67,8 @@ def config_hash(
     """Stable hash of the run-defining fields of an assignment.
 
     A change in strategy, pair, universe (``pairs``), timeframe, or params
-    restarts the run; anything else (enabled flag, starting cash) does not.
+    changes ledger identity. The supervisor separately tracks mode and fee
+    changes to restart execution without changing this identity.
     """
     canonical = json.dumps(
         {

@@ -30,7 +30,7 @@ from kaupo.core.live_runner import LiveRequest, LiveTradingUnavailable, check_ar
 from kaupo.core.recorder import WATCHDOG_HALT_REASON
 from kaupo.core.resume import config_hash as config_hash
 from kaupo.core.runner import PortfolioShadowRequest, ShadowRequest, run_portfolio_shadow, run_shadow
-from kaupo.data.assignments import Assignment, list_assignments
+from kaupo.data.assignments import Assignment, effective_fees, list_assignments
 from kaupo.data.binance import BinanceClient
 from kaupo.data.kraken import KrakenClient
 from kaupo.db.models import EquitySnapshotRow, EventRow, RunRow
@@ -256,6 +256,14 @@ def live_start_error(assignment: Assignment, settings: Settings) -> str | None:
     return None
 
 
+def assignment_config_hash(assignment: Assignment) -> str:
+    """Restart when effective fees change without changing ledger resume identity."""
+    identity = config_hash(
+        assignment.strategy_id, assignment.pair, assignment.timeframe, assignment.params, assignment.pairs
+    )
+    return f"{assignment.mode}:{identity}:{effective_fees(assignment)}"
+
+
 async def _run_assignment(
     assignment: Assignment,
     strategies: dict[str, LoadedStrategy],
@@ -265,6 +273,7 @@ async def _run_assignment(
     funding_refresh_seconds: float,
 ) -> RunResult:
     strategy = strategies[assignment.strategy_id]  # guarded by the supervisor's start check
+    taker_bps, maker_bps = effective_fees(assignment)
     if assignment.mode == RunMode.LIVE.value:
         # the live venue owns the authenticated client; this one stays public
         # market data, and the funding client feeds the same advisory series
@@ -276,6 +285,8 @@ async def _run_assignment(
                 pair=Pair.parse(assignment.pair),
                 timeframe=Timeframe.parse(assignment.timeframe),
                 starting_cash=assignment.starting_cash or DEFAULT_STARTING_CASH,
+                taker_fee_bps=taker_bps,
+                maker_fee_bps=maker_bps,
                 poll_interval_seconds=poll_interval_seconds,
                 assignment_id=assignment.id,
                 funding_refresh_seconds=funding_refresh_seconds,
@@ -291,6 +302,8 @@ async def _run_assignment(
                 pairs=[Pair.parse(p) for p in assignment.pairs],
                 timeframe=Timeframe.parse(assignment.timeframe),
                 starting_cash=assignment.starting_cash or DEFAULT_STARTING_CASH,
+                taker_fee_bps=taker_bps,
+                maker_fee_bps=maker_bps,
                 poll_interval_seconds=poll_interval_seconds,
                 assignment_id=assignment.id,
                 funding_refresh_seconds=funding_refresh_seconds,
@@ -304,6 +317,8 @@ async def _run_assignment(
             pair=Pair.parse(assignment.pair),
             timeframe=Timeframe.parse(assignment.timeframe),
             starting_cash=assignment.starting_cash or DEFAULT_STARTING_CASH,
+            taker_fee_bps=taker_bps,
+            maker_fee_bps=maker_bps,
             poll_interval_seconds=poll_interval_seconds,
             assignment_id=assignment.id,
             funding_refresh_seconds=funding_refresh_seconds,
@@ -483,12 +498,8 @@ async def run_supervisor(
             held_down = set(killed) | {
                 aid for aid, failed_at in backoff.items() if in_backoff(failed_at, utc_now(), restart_backoff)
             }
-            # the mode joins the hash here only (never in the persisted run
-            # config): switching a row between shadow and live must restart it
-            desired = {
-                a.id: f"{a.mode}:{config_hash(a.strategy_id, a.pair, a.timeframe, a.params, a.pairs)}"
-                for a in rows
-            }
+            # Fee changes restart the venue/risk model while the ledger continues.
+            desired = {a.id: assignment_config_hash(a) for a in rows}
             plan = reconcile(desired, {aid: lr.config_hash for aid, lr in live.items()}, held_down)
             for aid in plan.stop:
                 log.info("Stopping run for assignment %s (disabled, deleted, or changed)", aid)

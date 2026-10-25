@@ -97,7 +97,9 @@ The following items remain prerequisites for supported xStocks trading:
 - Calendar-aware execution beyond the paper gap guard and [live limit expiry](live-order-expiry.md).
 - Risk checks that include losses across a market closure.
 - Session-aware return statistics, indicator warm-up, and rebalance timing.
-- Tick-size rounding, instrument-specific fees, and currency-aware reports.
+- Instrument-specific setup and the remaining execution/calendar safeguards.
+
+The assignment API supports [fee schedules](assignment-fees.md), including maker rebates.
 
 ## References and validation
 

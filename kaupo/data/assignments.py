@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from kaupo.config import default_maker_bps, default_taker_bps
 from kaupo.db.models import RunAssignmentRow
 from kaupo.domain import Pair, RunMode, utc_now
 
@@ -52,6 +53,16 @@ class Assignment:
     starting_cash: float | None
     created_at: datetime
     updated_at: datetime
+    taker_fee_bps: float | None = None
+    maker_fee_bps: float | None = None
+
+
+def effective_fees(assignment: Assignment) -> tuple[float, float]:
+    """Taker and maker basis points, with each absent override using its default."""
+    return (
+        default_taker_bps() if assignment.taker_fee_bps is None else assignment.taker_fee_bps,
+        default_maker_bps() if assignment.maker_fee_bps is None else assignment.maker_fee_bps,
+    )
 
 
 def _to_assignment(row: RunAssignmentRow) -> Assignment:
@@ -65,6 +76,8 @@ def _to_assignment(row: RunAssignmentRow) -> Assignment:
         params=row.params or {},
         enabled=row.enabled,
         starting_cash=row.starting_cash,
+        taker_fee_bps=row.taker_fee_bps,
+        maker_fee_bps=row.maker_fee_bps,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -96,6 +109,8 @@ async def create_assignment(
     enabled: bool = True,
     starting_cash: float | None = None,
     pairs: list[str] | None = None,
+    taker_fee_bps: float | None = None,
+    maker_fee_bps: float | None = None,
 ) -> Assignment:
     if pairs is not None:
         # portfolio assignment: pair stores the joined canonical universe
@@ -112,6 +127,8 @@ async def create_assignment(
         params=params or {},
         enabled=enabled,
         starting_cash=starting_cash,
+        taker_fee_bps=taker_fee_bps,
+        maker_fee_bps=maker_fee_bps,
         created_at=now,
         updated_at=now,
     )
