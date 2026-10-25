@@ -109,10 +109,12 @@ export interface DailyReport {
   period: string
   generated_at: string
   /** Per-run entries; keys vary with run activity, render defensively. */
-  runs: Record<string, unknown>[]
+  runs: DailyReportRun[]
   totals: {
     num_runs: number
     active_runs: number
+    market_closed_runs?: number
+    inactive_runs?: number
     total_pnl: number | null
     total_fills: number
     total_fees: number | null
@@ -120,6 +122,14 @@ export interface DailyReport {
     by_currency?: Record<string, { total_pnl: number; total_fees: number; active_runs: number; total_fills: number }>
     unclassified_runs?: number
   }
+}
+
+export type DailyActivityState = 'active' | 'market_closed' | 'inactive'
+
+export interface DailyReportRun extends Record<string, unknown> {
+  activity_state?: DailyActivityState
+  activity_reason?: string | null
+  last_snapshot_at?: string | null
 }
 
 export interface Candle {

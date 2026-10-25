@@ -8,9 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.backtest.metrics import open_position, round_trips
+from kaupo.core.supervisor import watchdog_is_stale
+from kaupo.data.assignments import Assignment, list_assignments
 from kaupo.db.models import EquitySnapshotRow, FillRow, ReportRow, RunRow
 from kaupo.db.session import sm_scope
-from kaupo.domain import Fill, OrderId, Pair, Side, new_id, utc_now
+from kaupo.domain import Fill, OrderId, Pair, Side, Timeframe, new_id, utc_now
 from kaupo.report.currency import run_quote_currency as _quote_currency
 
 
@@ -21,6 +23,7 @@ def _day_bounds(day: date) -> tuple[datetime, datetime]:
 
 def _totals(run_reports: list[dict[str, Any]]) -> dict[str, Any]:
     active = [r for r in run_reports if r.get("active")]
+    closed = sum(r.get("activity_state") == "market_closed" for r in run_reports)
     currencies = sorted(
         {r["quote_currency"] for r in active if r["quote_currency"] is not None}
         | {currency for r in active for currency in r.get("fees_by_currency", {})}
@@ -48,6 +51,8 @@ def _totals(run_reports: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "num_runs": len(run_reports),
         "active_runs": len(active),
+        "market_closed_runs": closed,
+        "inactive_runs": len(run_reports) - len(active) - closed,
         "total_fills": sum(r.get("num_fills", 0) for r in active),
         "quote_currency": currency,
         "total_pnl": by_currency[currency]["total_pnl"] if currency else (None if active else 0.0),
@@ -57,7 +62,60 @@ def _totals(run_reports: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-async def _run_report(session: AsyncSession, run: RunRow, start: datetime, end: datetime) -> dict[str, Any]:
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _inactivity_reason(
+    run: RunRow,
+    assignment: Assignment | None,
+    prev: EquitySnapshotRow | None,
+    start: datetime,
+    end: datetime,
+) -> str:
+    """Explain silence only when the current schedule is valid for the evidence window.
+
+    Assignment history is not versioned. A later edit must not retroactively
+    excuse an outage, even if the edit changed a field other than the schedule.
+    A closure explains missing observations; it does not prove process health.
+    """
+    if assignment is None or assignment.trading_schedule is None:
+        return "no_schedule_evidence"
+    config = run.config or {}
+    if not assignment.enabled or (
+        assignment.mode,
+        assignment.strategy_id,
+        assignment.pair,
+        assignment.timeframe,
+    ) != (run.mode, run.strategy_id, config.get("pair"), config.get("timeframe")):
+        return "assignment_mismatch"
+    if (run.ended_at is not None and _utc(run.ended_at) < end) or (
+        run.ended_at is None and run.status != "running"
+    ):
+        return "run_stopped"
+    if prev is None:
+        return "no_prior_snapshot"
+    if _utc(assignment.updated_at) > min(start, _utc(prev.ts)):
+        return "assignment_changed_since_evidence"
+    try:
+        timeframe = Timeframe.parse(assignment.timeframe)
+    except ValueError:
+        return "invalid_timeframe"
+    schedule = assignment.trading_schedule
+    if schedule.open_elapsed(start, end, candle_seconds=timeframe.seconds) > timedelta(0):
+        return "market_was_open"
+    if watchdog_is_stale(_utc(prev.ts), end, timeframe, trading_schedule=schedule):
+        return "stale_before_closure"
+    return "scheduled_closure"
+
+
+async def _run_report(
+    session: AsyncSession,
+    run: RunRow,
+    start: datetime,
+    end: datetime,
+    assignment: Assignment | None = None,
+) -> dict[str, Any]:
     snapshots = (
         (
             await session.execute(
@@ -99,8 +157,7 @@ async def _run_report(session: AsyncSession, run: RunRow, start: datetime, end: 
     )
 
     if not snapshots and not fills:
-        # no activity today: inactive even if the run row looks alive
-        # (e.g. a container-killed run that never got ended_at)
+        reason = _inactivity_reason(run, assignment, prev, start, end)
         return {
             "run_id": run.id,
             "mode": run.mode,
@@ -108,6 +165,9 @@ async def _run_report(session: AsyncSession, run: RunRow, start: datetime, end: 
             "status": run.status,
             "quote_currency": _quote_currency(run),
             "active": False,
+            "activity_state": "market_closed" if reason == "scheduled_closure" else "inactive",
+            "activity_reason": reason,
+            "last_snapshot_at": _utc(prev.ts).isoformat() if prev is not None else None,
         }
 
     # baseline: last snapshot before the day; falling back to starting cash
@@ -169,6 +229,12 @@ async def _run_report(session: AsyncSession, run: RunRow, start: datetime, end: 
         "status": run.status,
         "quote_currency": quote_currency,
         "active": True,
+        "activity_state": "active",
+        "last_snapshot_at": (
+            _utc(snapshots[-1].ts).isoformat()
+            if snapshots
+            else (_utc(prev.ts).isoformat() if prev is not None else None)
+        ),
         "start_equity": start_equity,
         "end_equity": end_equity,
         "pnl": pnl,
@@ -207,7 +273,12 @@ async def build_daily_report(
             .scalars()
             .all()
         )
-        run_reports = [await _run_report(session, run, start, end) for run in runs]
+        assignments = {a.id: a for a in await list_assignments(session)} if runs else {}
+        run_reports = []
+        for run in runs:
+            assignment_id = (run.config or {}).get("assignment_id")
+            assignment = assignments.get(assignment_id) if isinstance(assignment_id, str) else None
+            run_reports.append(await _run_report(session, run, start, end, assignment))
 
     totals = _totals(run_reports)
     body: dict[str, Any] = {
