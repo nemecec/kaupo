@@ -13,6 +13,7 @@ from kaupo.data.candles import upsert_candles
 from kaupo.db.models import EquitySnapshotRow, FillRow, OrderRow, RunRow, StrategyRow
 from kaupo.db.session import get_sessionmaker
 from kaupo.domain import Candle, Pair, Timeframe
+from kaupo.market_calendar import TradingSchedule
 from kaupo.sdk.loader import load_strategies
 
 pytestmark = pytest.mark.integration
@@ -42,7 +43,15 @@ STRATEGY = textwrap.dedent(
 )
 
 
-async def test_backtest_persists_full_run(session: AsyncSession, tmp_path: Path) -> None:
+@pytest.mark.parametrize("scheduled", [False, True])
+async def test_backtest_persists_full_run(session: AsyncSession, tmp_path: Path, scheduled: bool) -> None:
+    schedule = (
+        TradingSchedule.model_validate(
+            {"timezone": "UTC", "week": {day: [{"start": 0, "end": 1440}] for day in range(5)}}
+        )
+        if scheduled
+        else None
+    )
     candles = [
         Candle(
             pair=PAIR,
@@ -71,6 +80,7 @@ async def test_backtest_persists_full_run(session: AsyncSession, tmp_path: Path)
             timeframe=Timeframe.H1,
             start=BASE,
             end=BASE + timedelta(hours=12),
+            trading_schedule=schedule,
         ),
         sessionmaker,
     )
@@ -84,6 +94,13 @@ async def test_backtest_persists_full_run(session: AsyncSession, tmp_path: Path)
     assert run.strategy_id == "buy-and-sell"
     assert run.metrics["num_fills"] == 2
     assert run.ended_at is not None
+    if schedule is not None:
+        assert run.config["trading_schedule"] == schedule.model_dump(mode="json")
+        assert run.metrics["sharpe"] is None
+        assert run.metrics["return_sampling"]["reason_code"] == "insufficient_daily_returns"
+    else:
+        assert "trading_schedule" not in run.config
+        assert "return_sampling" not in run.metrics
 
     strat = (await session.execute(select(StrategyRow))).scalar_one()
     assert strat.id == "buy-and-sell"

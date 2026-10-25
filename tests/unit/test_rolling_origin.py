@@ -993,3 +993,74 @@ async def test_assignment_fees_match_entire_replay_chain(
         assert entry["verdict"] == "unknown"
         assert entry["verdict_reason"] == "fee_schedule_mismatch"
         assert entry["fee_mismatch_run_ids"] == ["parent"]
+
+
+@pytest.mark.parametrize("portfolio", [False, True])
+@pytest.mark.parametrize("missing", [False, True])
+async def test_scheduled_report_uses_daily_metrics(
+    sessionmaker, strategies_dir, monkeypatch, portfolio, missing
+):
+    from kaupo.market_calendar import TradingSchedule
+
+    start = datetime(2026, 10, 19, tzinfo=UTC)
+    end = start + timedelta(days=7)
+    schedule = TradingSchedule.model_validate(
+        {
+            "timezone": "UTC",
+            "week": {day: [{"start": 540, "end": 1020}] for day in range(5)},
+        }
+    )
+    curve = [
+        (start + timedelta(days=day, hours=hour), 10000 + day * 10 + hour)
+        for day in range(5)
+        for hour in range(9, 17)
+    ]
+    if missing:
+        del curve[10]
+    async with sm_scope(sessionmaker) as session:
+        await create_assignment(
+            session,
+            id="scheduled",
+            strategy_id="porter" if portfolio else "holder",
+            pair="BTC/EUR",
+            pairs=["BTC/EUR", "SOL/EUR"] if portfolio else None,
+            timeframe="1h",
+            trading_schedule=schedule,
+        )
+        await _seed(
+            session,
+            _run_row("scheduled-run", "scheduled", start),
+            *[_snapshot("scheduled-run", ts, value) for ts, value in curve],
+        )
+    seen = []
+
+    async def replay(request, sm):
+        seen.append(request)
+        async with sm_scope(sm) as session:
+            run = _run_row("scheduled-replay", "replay", request.start)
+            run.mode = "backtest"
+            await _seed(session, run, *[_snapshot(run.id, ts, value) for ts, value in curve])
+        return RunId("scheduled-replay"), None, dict(FAKE_METRICS)
+
+    monkeypatch.setattr(rolling, "run_backtest", replay)
+    monkeypatch.setattr(rolling, "run_portfolio_backtest", replay)
+    body = await rolling.build_rolling_origin_report(
+        sessionmaker,
+        days=7,
+        now=end,
+        persist=False,
+        strategies_dir=strategies_dir,
+    )
+    (entry,) = body["assignments"]
+    assert entry["metric_schedule"] == schedule.model_dump(mode="json")
+    if missing:
+        assert not seen
+        assert entry["shadow"]["sharpe"] is None
+        assert entry["verdict"] == "unknown"
+        assert entry["verdict_reason"] == "missing_scheduled_candles"
+    else:
+        assert len(seen) == 1
+        assert seen[0].trading_schedule == schedule
+        assert entry["shadow"]["return_sampling"]["num_returns"] == 6
+        assert entry["comparison"]["return_sampling"]["method"] == "utc_daily_v1"
+        assert entry["verdict"] == "tracks"

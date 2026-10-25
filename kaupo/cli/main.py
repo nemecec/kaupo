@@ -13,6 +13,7 @@ from rich.table import Table
 
 from kaupo.config import get_settings
 from kaupo.domain import Pair, Timeframe
+from kaupo.market_calendar import TradingSchedule
 
 app = typer.Typer(name="kaupo", help="Kaupo — autonomous algorithmic trading", no_args_is_help=True)
 ingest_app = typer.Typer(help="Download historical market data into Postgres", no_args_is_help=True)
@@ -73,6 +74,22 @@ def _parse_sweep(sweeps: list[str]) -> dict[str, list[Any]]:
                 values.append(part)  # plain string
         out[key] = values
     return out
+
+
+def _load_trading_schedule(path: Path | None) -> TradingSchedule | None:
+    """Load and validate a schedule from the explicitly supplied JSON path."""
+    if path is None:
+        return None
+    try:
+        raw = json.loads(path.read_text())
+    except OSError as exc:
+        raise typer.BadParameter(f"--trading-schedule cannot read {path}: {exc}") from None
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter(f"--trading-schedule must be valid JSON: {exc.msg}") from None
+    try:
+        return TradingSchedule.model_validate(raw)
+    except ValueError as exc:
+        raise typer.BadParameter(f"--trading-schedule is invalid: {exc}") from None
 
 
 def _parse_dt(value: str) -> datetime:
@@ -614,6 +631,9 @@ def backtest(
     max_daily_loss_quote: Annotated[
         float | None, typer.Option(help="research override: daily loss halt (quote)")
     ] = None,
+    trading_schedule: Annotated[
+        Path | None, typer.Option(help="JSON file containing a TradingSchedule")
+    ] = None,
     strategies_dir: StrategiesDirOpt = None,
     no_persist: Annotated[bool, typer.Option(help="do not store the run in Postgres")] = False,
     verbose: VerboseOpt = False,
@@ -655,6 +675,7 @@ def backtest(
             raise typer.Exit(1) from exc
 
     start_dt, end_dt = _range(days, start, end)
+    schedule = _load_trading_schedule(trading_schedule)
     request: BacktestRequest | PortfolioBacktestRequest
     try:
         risk = backtest_risk_config(
@@ -681,6 +702,7 @@ def backtest(
                 instrument=instrument,
                 risk=risk,
                 persist=not no_persist,
+                trading_schedule=schedule,
             )
         elif pairs is not None and pair is None:
             if not loaded.is_portfolio:
@@ -702,6 +724,7 @@ def backtest(
                 exchange=exchange,
                 risk=risk,
                 persist=not no_persist,
+                trading_schedule=schedule,
             )
         else:
             err_console.print("[red]Pass exactly one of --pair or --pairs[/red]")

@@ -76,6 +76,7 @@ from kaupo.data.assignments import Assignment, effective_fees, list_assignments
 from kaupo.db.models import EquitySnapshotRow, FillRow, ReportRow, RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Fill, OrderId, Pair, RunMode, Side, Timeframe, new_id, utc_now
+from kaupo.market_calendar import TradingSchedule
 from kaupo.sdk.protocol import LoadedStrategy
 from kaupo.venues.paper import LIVE_MIRROR_MARKETABLE_LIMIT
 
@@ -188,6 +189,25 @@ def verdict_for(
     return VERDICT_TRACKS
 
 
+def _scheduled_coverage(
+    first: datetime,
+    last: datetime,
+    start: datetime,
+    end: datetime,
+    timeframe: Timeframe,
+    schedule: TradingSchedule,
+) -> float:
+    expected = schedule.open_elapsed(start, end, candle_seconds=timeframe.seconds)
+    if expected <= timedelta(0):
+        return 0.0
+    covered = schedule.open_elapsed(
+        max(start, first),
+        min(end, last + timedelta(seconds=timeframe.seconds)),
+        candle_seconds=timeframe.seconds,
+    )
+    return covered / expected
+
+
 def aligned_comparison(
     shadow: list[tuple[datetime, float]],
     backtest: list[tuple[datetime, float]],
@@ -195,6 +215,7 @@ def aligned_comparison(
     timeframe: Timeframe,
     start: datetime,
     end: datetime,
+    trading_schedule: TradingSchedule | None = None,
 ) -> dict[str, Any]:
     """Compare observed equity on one shared grid; never invent missing bars."""
     shadow_by_ts, backtest_by_ts = dict(shadow), dict(backtest)
@@ -216,7 +237,14 @@ def aligned_comparison(
         }
     result.update(start=common[0].isoformat(), end=common[-1].isoformat())
     span = (common[-1] - common[0]).total_seconds()
-    if coverage < MIN_EQUITY_SPAN_FRACTION or span < (end - start).total_seconds() * MIN_EQUITY_SPAN_FRACTION:
+    span_fraction = (
+        _scheduled_coverage(common[0], common[-1], start, end, timeframe, trading_schedule)
+        if trading_schedule is not None
+        else span / (end - start).total_seconds()
+        if end > start
+        else 0.0
+    )
+    if coverage < MIN_EQUITY_SPAN_FRACTION or span_fraction < MIN_EQUITY_SPAN_FRACTION:
         return {
             **result,
             "reason_code": "insufficient_common_coverage",
@@ -230,7 +258,22 @@ def aligned_comparison(
                 "reason_code": "invalid_common_equity",
                 "note": "non-positive or non-finite equity on the common grid",
             }
-        metrics = compute_metrics(values, [], timeframe, starting_cash=values[0][1])
+        metrics = compute_metrics(
+            values,
+            [],
+            timeframe,
+            starting_cash=values[0][1],
+            trading_schedule=trading_schedule,
+            valuation_end=end,
+        )
+        if "return_sampling" in metrics:
+            result["return_sampling"] = metrics["return_sampling"]
+        if metrics["sharpe"] is None:
+            return {
+                **result,
+                "reason_code": metrics["return_sampling"]["reason_code"],
+                "note": "scheduled daily returns are unavailable on the common grid",
+            }
         if not math.isfinite(metrics["sharpe"]):
             return {
                 **result,
@@ -251,6 +294,7 @@ async def _compare_replay(
     end: datetime,
     timeframe: Timeframe,
     metrics: dict[str, Any],
+    trading_schedule: TradingSchedule | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Window the replay and align its curve with the shadow's observed curve."""
     async with sm_scope(sessionmaker) as session:
@@ -265,7 +309,9 @@ async def _compare_replay(
         shadow = slice_window(await _chain_equity(session, chain), start, end)
         fills = await _chain_window_fills(session, [run_id], start, end)
     windowed = slice_window(replay, start, end)
-    comparison = aligned_comparison(shadow, windowed, timeframe=timeframe, start=start, end=end)
+    comparison = aligned_comparison(
+        shadow, windowed, timeframe=timeframe, start=start, end=end, trading_schedule=trading_schedule
+    )
     # Crypto bars are continuous. Starting later means the replay could have
     # missed the pre-window signal that created a carried position (#54).
     if not replay or replay[0][0] != replay_start:
@@ -277,6 +323,8 @@ async def _compare_replay(
         timeframe,
         starting_cash=windowed[0][1] if windowed else 1.0,
         universe=metrics.get("universe"),
+        trading_schedule=trading_schedule,
+        valuation_end=end,
     )
     # Keep run-level status, but never present lifetime risk rejections as a
     # window count. They are available on the referenced replay run.
@@ -461,6 +509,7 @@ async def _shadow_metrics(
     end: datetime,
     now: datetime,
     days: int,
+    trading_schedule: TradingSchedule | None = None,
 ) -> dict[str, Any]:
     """The shadow reality of one assignment over the comparison window, or a note."""
     if not chain:
@@ -476,16 +525,31 @@ async def _shadow_metrics(
             "reason_code": "insufficient_shadow_observations",
             "note": f"chain has {age_days:.1f} days so far",
         }
-    metrics = compute_metrics(equity=windowed, fills=fills, timeframe=timeframe, starting_cash=windowed[0][1])
+    metrics = compute_metrics(
+        equity=windowed,
+        fills=fills,
+        timeframe=timeframe,
+        starting_cash=windowed[0][1],
+        trading_schedule=trading_schedule,
+        valuation_end=end,
+    )
+    sampling = metrics.get("return_sampling", {})
+    if "reason_code" in sampling:
+        metrics["reason_code"] = sampling["reason_code"]
+        metrics["note"] = "scheduled daily returns are unavailable"
     overlap_seconds = (now - start).total_seconds()
     overlap_days = overlap_seconds / 86400
     span_days = (windowed[-1][0] - windowed[0][0]).total_seconds() / 86400
     # belt and braces: below one full bar no closed candle can sit in the
     # slice (the bar covering the slice start opened before it), so the
     # backtest would find zero candles and die with a misleading error
-    if overlap_seconds < timeframe.seconds or not has_min_coverage(
-        overlap_days=overlap_days, span_days=span_days
-    ):
+    enough_coverage = has_min_coverage(overlap_days=overlap_days, span_days=span_days)
+    if trading_schedule is not None:
+        fraction = _scheduled_coverage(
+            windowed[0][0], windowed[-1][0], start, end, timeframe, trading_schedule
+        )
+        enough_coverage = overlap_days >= MIN_OVERLAP_DAYS and fraction >= MIN_EQUITY_SPAN_FRACTION
+    if overlap_seconds < timeframe.seconds or not enough_coverage:
         # the metrics stay in the entry; the note suppresses the verdict
         metrics["note"] = f"chain covers {span_days:.1f}d of the {days}d window"
         metrics["reason_code"] = "insufficient_shadow_coverage"
@@ -539,6 +603,11 @@ async def _assignment_entry(
         # to 80/40 move (kaupo#44) shifts every sharpe in the series, and a
         # silent shift reads as strategy decay to whoever kills the strategy
         "fees": {"taker_bps": taker_bps, "maker_bps": maker_bps},
+        **(
+            {"metric_schedule": assignment.trading_schedule.model_dump(mode="json")}
+            if assignment.trading_schedule is not None
+            else {}
+        ),
     }
     try:
         timeframe = Timeframe.parse(assignment.timeframe)
@@ -556,6 +625,7 @@ async def _assignment_entry(
         end=end,
         now=now,
         days=days,
+        trading_schedule=assignment.trading_schedule,
     )
     entry["shadow"] = shadow
     lineage = entry["lineage"]
@@ -629,6 +699,7 @@ async def _assignment_entry(
                 marketable_limit=LIVE_MIRROR_MARKETABLE_LIMIT,
                 # named, not inherited, so the entry's "fees" stamp is the
                 # tier that actually ran
+                trading_schedule=assignment.trading_schedule,
                 taker_fee_bps=taker_bps,
                 maker_fee_bps=maker_bps,
             )
@@ -645,6 +716,7 @@ async def _assignment_entry(
                 rolling_origin=marker,
                 liquidate_end=False,
                 marketable_limit=LIVE_MIRROR_MARKETABLE_LIMIT,  # as in run_shadow
+                trading_schedule=assignment.trading_schedule,
                 taker_fee_bps=taker_bps,  # as in the entry's "fees" stamp
                 maker_fee_bps=maker_bps,
             )
@@ -669,6 +741,7 @@ async def _assignment_entry(
             end=end,
             timeframe=timeframe,
             metrics=metrics,
+            trading_schedule=assignment.trading_schedule,
         )
     except Exception as exc:
         log.warning("rolling-origin comparison failed for %s", assignment.id, exc_info=True)

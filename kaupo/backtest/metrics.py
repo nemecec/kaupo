@@ -7,7 +7,9 @@ from typing import Any
 
 import numpy as np
 
+from kaupo.backtest.sampling import daily_equity
 from kaupo.domain import Fill, Pair, Side, Timeframe
+from kaupo.market_calendar import TradingSchedule
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,8 @@ def compute_metrics(
     starting_cash: float,
     risk_rejections: int = 0,
     universe: list[str] | None = None,
+    trading_schedule: TradingSchedule | None = None,
+    valuation_end: datetime | None = None,
 ) -> dict[str, Any]:
     """Compute the metric set. Round trips pair fills FIFO per pair (a
     single-pair run has exactly one group, so its numbers are unchanged).
@@ -89,13 +93,33 @@ def compute_metrics(
     years = days / 365.25
     cagr = (final / starting_cash) ** (1 / years) - 1 if years > 0 and final > 0 else 0.0
 
-    returns = np.diff(values) / values[:-1]
+    sampling: dict[str, Any] | None = None
+    return_values = values
     ppy = timeframe.periods_per_year
-    std = returns.std(ddof=1)
-    sharpe = float(returns.mean() / std * math.sqrt(ppy)) if std > 0 else 0.0
-    downside = returns[returns < 0]
-    downside_std = downside.std(ddof=1) if len(downside) > 1 else 0.0
-    sortino = float(returns.mean() / downside_std * math.sqrt(ppy)) if downside_std > 0 else 0.0
+    if trading_schedule is not None:
+        sampled, reason = daily_equity(equity, timeframe, trading_schedule, valuation_end)
+        sampling = {
+            "method": "utc_daily_v1",
+            "periods_per_year": 365.25,
+            "num_returns": max(0, len(sampled) - 1),
+            "start": sampled[0][0].isoformat() if sampled else None,
+            "end": sampled[-1][0].isoformat() if sampled else None,
+        }
+        if reason is not None or len(sampled) < 3:
+            sampling["reason_code"] = reason or "insufficient_daily_returns"
+        return_values = np.array([value for _, value in sampled], dtype=np.float64)
+        ppy = 365.25
+    sharpe: float | None
+    sortino: float | None
+    if sampling is not None and "reason_code" in sampling:
+        sharpe = sortino = None
+    else:
+        returns = np.diff(return_values) / return_values[:-1]
+        std = returns.std(ddof=1)
+        sharpe = float(returns.mean() / std * math.sqrt(ppy)) if std > 0 else 0.0
+        downside = returns[returns < 0]
+        downside_std = downside.std(ddof=1) if len(downside) > 1 else 0.0
+        sortino = float(returns.mean() / downside_std * math.sqrt(ppy)) if downside_std > 0 else 0.0
 
     peak = np.maximum.accumulate(values)
     drawdowns = (values - peak) / peak
@@ -113,8 +137,8 @@ def compute_metrics(
         "final_equity": round(float(final), 2),
         "total_return_pct": round(total_return * 100, 2),
         "cagr_pct": round(cagr * 100, 2),
-        "sharpe": round(sharpe, 3),
-        "sortino": round(sortino, 3),
+        "sharpe": round(sharpe, 3) if sharpe is not None else None,
+        "sortino": round(sortino, 3) if sortino is not None else None,
         "max_drawdown_pct": round(max_dd * 100, 2),
         "num_fills": len(fills),
         "num_round_trips": len(trips),
@@ -126,6 +150,8 @@ def compute_metrics(
         "days": round(days, 1),
         "risk_rejections": risk_rejections,
     }
+    if sampling is not None:
+        metrics["return_sampling"] = sampling
     if universe is not None:
         metrics["universe"] = universe
         metrics["per_pair"] = {

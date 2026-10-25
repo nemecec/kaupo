@@ -14,6 +14,7 @@ from kaupo.data.candles import upsert_candles
 from kaupo.db.models import EquitySnapshotRow, FillRow, OrderRow, RunRow
 from kaupo.db.session import get_sessionmaker
 from kaupo.domain import Candle, Pair, Timeframe
+from kaupo.market_calendar import TradingSchedule
 from kaupo.risk.manager import RiskConfig
 from kaupo.sdk.loader import load_strategies
 
@@ -61,7 +62,17 @@ def _candles(pair: Pair, base_price: float, n: int) -> list[Candle]:
     ]
 
 
-async def test_portfolio_backtest_persists_full_run(session: AsyncSession, tmp_path: Path) -> None:
+@pytest.mark.parametrize("scheduled", [False, True])
+async def test_portfolio_backtest_persists_full_run(
+    session: AsyncSession, tmp_path: Path, scheduled: bool
+) -> None:
+    schedule = (
+        TradingSchedule.model_validate(
+            {"timezone": "UTC", "week": {day: [{"start": 0, "end": 1440}] for day in range(5)}}
+        )
+        if scheduled
+        else None
+    )
     for j, pair in enumerate(PAIRS):
         await upsert_candles(session, _candles(pair, 100 * (j + 1), 12))
     await session.commit()
@@ -78,6 +89,7 @@ async def test_portfolio_backtest_persists_full_run(session: AsyncSession, tmp_p
             timeframe=Timeframe.H1,
             start=BASE,
             end=BASE + timedelta(hours=12),
+            trading_schedule=schedule,
         ),
         get_sessionmaker(),
     )
@@ -111,6 +123,13 @@ async def test_portfolio_backtest_persists_full_run(session: AsyncSession, tmp_p
     assert run.config["pairs"] == ["ADA/EUR", "BTC/EUR", "SOL/EUR"]
     assert run.metrics["universe"] == ["ADA/EUR", "BTC/EUR", "SOL/EUR"]
     assert run.ended_at is not None
+    if schedule is not None:
+        assert run.config["trading_schedule"] == schedule.model_dump(mode="json")
+        assert run.metrics["sharpe"] is None
+        assert run.metrics["return_sampling"]["reason_code"] == "insufficient_daily_returns"
+    else:
+        assert "trading_schedule" not in run.config
+        assert "return_sampling" not in run.metrics
 
     orders = (await session.execute(select(OrderRow).where(OrderRow.run_id == run_id))).scalars().all()
     assert len(orders) == 2
