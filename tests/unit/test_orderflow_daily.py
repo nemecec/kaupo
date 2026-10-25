@@ -42,6 +42,9 @@ class TestOrderflowDailyOut:
             "book_snapshots": 24,
             "spread_mean_bps": 5.0,
             "spread_max_bps": 9.0,
+            "scheduled_open_seconds": None,
+            "trading_schedule": None,
+            "session_state": "unknown",
         }
 
     def test_spread_fields_are_nullable(self) -> None:

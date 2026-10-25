@@ -548,6 +548,9 @@ def ingest_orderflow_rollup(
     ] = [],
     day: Annotated[str | None, typer.Option(help="UTC date, YYYY-MM-DD (default: yesterday)")] = None,
     exchange: Annotated[str, typer.Option(help="raw order-flow source exchange")] = "kraken",
+    trading_schedule: Annotated[
+        Path | None, typer.Option(help="Schedule JSON for one explicitly selected --pair")
+    ] = None,
     verbose: VerboseOpt = False,
 ) -> None:
     """Roll up one UTC day of raw order flow into permanent daily aggregates.
@@ -571,12 +574,18 @@ def ingest_orderflow_rollup(
     except ValueError:
         raise typer.BadParameter(f"--day must be an ISO date (YYYY-MM-DD), got {day!r}") from None
     selected = [str(Pair.parse(p)) for p in pair]
+    schedule = _load_trading_schedule(trading_schedule)
+    if schedule is not None and len(selected) != 1:
+        raise typer.BadParameter("--trading-schedule requires exactly one --pair")
 
     async def _run() -> list[OrderflowDaily]:
         sm = get_sessionmaker()
         async with sm() as session:
             pairs = selected or await list_orderflow_source_pairs(session, exchange)
-            rows = [await rollup_orderflow_daily(session, exchange, p, target) for p in pairs]
+            rows = [
+                await rollup_orderflow_daily(session, exchange, p, target, trading_schedule=schedule)
+                for p in pairs
+            ]
             await upsert_orderflow_daily(session, rows)
             await session.commit()
         return rows
@@ -586,7 +595,10 @@ def ingest_orderflow_rollup(
         f"[green]Rolled up order flow[/green] for {len(rows)} pairs on {target:%Y-%m-%d} from {exchange}"
     )
     for row in rows:
-        console.print(f"  {row.pair}: {row.trade_count} trades, {row.book_snapshots} book snapshots")
+        console.print(
+            f"  {row.pair}: {row.trade_count} trades, {row.book_snapshots} book snapshots, "
+            f"{row.session_state}"
+        )
 
 
 @app.command()

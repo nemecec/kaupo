@@ -9,8 +9,10 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from typing import NewType
+from typing import Literal, NewType
 from uuid import uuid4
+
+from kaupo.market_calendar import TradingSchedule
 
 RunId = NewType("RunId", str)
 OrderId = NewType("OrderId", str)
@@ -198,6 +200,15 @@ class OrderflowDaily:
     book_snapshots: int  # 0 when the book collector served nothing that day
     spread_mean_bps: float | None  # mean of (ask-bid)/mid*10000 over the day's snapshots
     spread_max_bps: float | None  # max of the same; both null when book_snapshots is 0
+    scheduled_open_seconds: int | None = None
+    trading_schedule: TradingSchedule | None = None
+
+    @property
+    def session_state(self) -> Literal["unknown", "scheduled_open", "scheduled_closed"]:
+        """Expected UTC-day session, independent of collection completeness."""
+        if self.scheduled_open_seconds is None:
+            return "unknown"
+        return "scheduled_open" if self.scheduled_open_seconds > 0 else "scheduled_closed"
 
 
 @dataclass(frozen=True)

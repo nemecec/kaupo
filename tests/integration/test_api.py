@@ -908,6 +908,9 @@ async def test_orderflow_daily_endpoint(client: AsyncClient, session: AsyncSessi
         "book_snapshots": 24,
         "spread_mean_bps": 5.0,
         "spread_max_bps": 9.0,
+        "scheduled_open_seconds": None,
+        "trading_schedule": None,
+        "session_state": "unknown",
     }
     assert body[1]["spread_mean_bps"] is None  # a day without book snapshots
 

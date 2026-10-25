@@ -126,6 +126,9 @@ class StrategyContext(Protocol):
         forward from 2026-08-28, and days before that (or without raw
         coverage) are absent. Empty when no aggregates exist for the pair,
         so strategies must tolerate an empty series.
+        Each row's session_state distinguishes scheduled-open,
+        scheduled-closed, and unknown days. A scheduled-open row with zero
+        trades does not establish complete collection or zero market volume.
         """
         ...
 
@@ -266,6 +269,9 @@ class PortfolioContext(Protocol):
         permanent: they accumulate forward from 2026-08-28, and days before
         that (or without raw coverage) are absent. Empty for pairs outside
         the universe and when no aggregates exist for the pair.
+        Each row's session_state distinguishes scheduled-open,
+        scheduled-closed, and unknown days. Counts remain observed data,
+        independent of the recorded schedule.
         """
         ...
 

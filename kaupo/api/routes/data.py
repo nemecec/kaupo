@@ -280,6 +280,9 @@ async def orderflow_daily(
             book_snapshots=r.book_snapshots,
             spread_mean_bps=r.spread_mean_bps,
             spread_max_bps=r.spread_max_bps,
+            scheduled_open_seconds=r.scheduled_open_seconds,
+            trading_schedule=r.trading_schedule,
+            session_state=r.session_state,
         )
         for r in rows
     ]

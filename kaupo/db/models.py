@@ -175,6 +175,8 @@ class OrderflowDailyRow(Base):
     book_snapshots: Mapped[int]
     spread_mean_bps: Mapped[float | None] = mapped_column(nullable=True)
     spread_max_bps: Mapped[float | None] = mapped_column(nullable=True)
+    scheduled_open_seconds: Mapped[int | None] = mapped_column(nullable=True)
+    trading_schedule: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
 
 
 class StrategyRow(Base):
