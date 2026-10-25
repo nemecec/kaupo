@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from kaupo.api.deps import Principal
@@ -119,7 +120,7 @@ def test_cli_schedule_requires_one_explicit_pair(tmp_path, pairs):
     path.write_text(WEEKDAYS.model_dump_json())
     result = CliRunner().invoke(app, ["ingest", "orderflow-rollup", "--trading-schedule", str(path), *pairs])
     assert result.exit_code == 2
-    assert "requires exactly one --pair" in result.output
+    assert "requires exactly one --pair" in Text.from_ansi(result.output).plain
 
 
 def test_cli_passes_schedule_and_empty_pair_to_rollup(tmp_path, monkeypatch):
