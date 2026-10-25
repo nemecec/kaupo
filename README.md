@@ -174,6 +174,8 @@ The context also gives order flow: `ctx.ticks(n)` and `ctx.book(n)` on a single 
 
 Order-flow data has two depth layers. Raw ticks and book snapshots keep a rolling window of 30 days. Daily aggregates are permanent: the daily rollup (`kaupo ingest orderflow-rollup`, run by the refresh cron) stores one row per pair and UTC day. A row holds the trade count, the buy and sell counts and volumes, the largest trade, the book-snapshot count, and the spread mean and max in basis points. `ctx.tick_flow_daily(n)` and `ctx.tick_flow_daily(pair, n)` return the newest `n` rows of fully closed days at or before `clock.now()`, oldest first. The open day never leaks. The aggregates start on 2026-08-28 and grow forward; older days stay absent. The series is empty when no aggregates exist, and a strategy must tolerate that.
 
+Daily rows also expose `session_state`, `scheduled_open_seconds`, and the recorded `trading_schedule`. The rollup accepts an explicit schedule for one pair. Without one, new rows remain unknown. See [daily orderflow sessions](docs/trading-schedules.md#daily-orderflow-sessions).
+
 `kaupo/sdk/portfolio.py` has a rebalance helper. Give it target weights (fractions of equity, sum at most 1) and the context. It returns a plan with `sells` and `buys`. Buys use only the free cash at plan time, never the proceeds of same-plan sells. Emit the sells on one step and the buys on the next step. `examples/strategies/momentum_rotation.py` shows this pattern.
 
 The determinism linter (`kaupo lint-strategies`) checks both kinds. The API accepts a portfolio backtest through `POST /api/v1/backtests` with `pairs` instead of `pair`. Its metrics add `universe` and a `per_pair` attribution (realized PnL, fees, round trips, win rate per pair).

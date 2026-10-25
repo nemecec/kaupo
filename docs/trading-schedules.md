@@ -152,3 +152,52 @@ Without an explicit schedule, existing per-candle metrics stay unchanged.
 P&L, drawdown, CAGR, and trade statistics continue to use the original equity and fills.
 Schedules do not filter backtest candles or restrict simulated orders.
 Other report types retain their existing metric calculations.
+
+## Daily orderflow sessions
+
+Daily orderflow rows describe a UTC day, with optional schedule metadata:
+
+- `session_state`: `scheduled_open`, `scheduled_closed`, or `unknown`
+- `scheduled_open_seconds`: Actual session seconds within the UTC day, or null without a recorded schedule
+- `trading_schedule`: The explicit schedule used for that row, or null
+
+A scheduled-open day contains at least one open interval.
+A scheduled-closed day contains none.
+Holiday overrides, early closes, and daylight-saving offsets determine the duration.
+The duration uses actual session overlap, without rounding to candle intervals.
+A session can cross a UTC boundary even when its local date stays unchanged.
+
+These fields describe expected hours, not collection completeness.
+Zero collected trades on a scheduled-open day do not establish zero market volume.
+Observed trades and book snapshots remain in the row, including observations outside configured hours.
+The schedule never removes observations or changes their totals.
+Legacy rows and new rows without a schedule have an unknown session state.
+
+To record a schedule, pass one pair explicitly:
+
+```sh
+kaupo ingest orderflow-rollup --exchange kraken --pair TEST/USD \
+  --day 2026-10-24 --trading-schedule schedule.json
+```
+
+`TEST/USD` is a placeholder for the actual pair.
+The JSON file contains the schedule itself, as in the backtest option.
+The command writes a row even when that pair has no raw observations.
+It requires exactly one `--pair` with `--trading-schedule`.
+For scheduled collection, run this command daily for each pair with its applicable schedule.
+The existing refresh command supplies no schedule and leaves new rows unknown.
+
+An ordinary rerun retains the recorded schedule for that exchange, pair, and day.
+An explicit schedule replaces that day's schedule and recomputes its open seconds.
+The rollup does not infer schedules from assignments, symbols, other pairs, or adjacent days.
+Direct aggregate imports without schedule metadata also retain an existing session basis.
+Omitting metadata does not clear it.
+
+As before, a rerun replaces aggregates with the raw observations still in storage.
+Rerunning an old day after raw-data retention can erase its historical totals.
+The schedule option does not make that operation a metadata-only update.
+
+The data API and both forms of `ctx.tick_flow_daily` expose these fields.
+Providers return a row only after its UTC day ends, including scheduled-closed rows.
+Closed rows count toward the requested number of rows.
+The fields reflect the latest stored rollup, not a versioned history of schedule changes.

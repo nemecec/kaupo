@@ -157,6 +157,9 @@ class OrderflowDailyOut(BaseModel):
     book_snapshots: int
     spread_mean_bps: float | None
     spread_max_bps: float | None
+    scheduled_open_seconds: int | None = None
+    trading_schedule: TradingSchedule | None = None
+    session_state: Literal["unknown", "scheduled_open", "scheduled_closed"] = "unknown"
 
 
 class BacktestIn(BaseModel):

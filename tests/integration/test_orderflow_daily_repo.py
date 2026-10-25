@@ -202,3 +202,88 @@ async def test_rollup_rerun_is_idempotent(session: AsyncSession) -> None:
     loaded = await get_orderflow_daily(session, "kraken", "BTC/EUR", DAY, DAY + timedelta(days=1))
     assert loaded == [row]  # one row, exact aggregates
     assert await get_latest_orderflow_day(session, "kraken", "BTC/EUR") == DAY
+
+
+async def test_session_basis_persists_and_survives_unscheduled_reruns(session: AsyncSession) -> None:
+    from dataclasses import replace
+
+    from kaupo.market_calendar import TradingSchedule
+
+    schedule = TradingSchedule.model_validate({"timezone": "UTC", "week": {0: [{"start": 0, "end": 1440}]}})
+    # Thursday is closed, but an unexpected observation must stay in the row.
+    await upsert_trade_ticks(session, [tick(1, "buy", 2.0)])
+    row = await rollup_orderflow_daily(session, "kraken", "BTC/EUR", DAY, schedule)
+    assert row.session_state == "scheduled_closed"
+    assert row.trade_count == 1
+    await upsert_orderflow_daily(session, [row])
+    await session.commit()
+    assert await get_orderflow_daily(session, "kraken", "BTC/EUR", DAY, DAY + timedelta(days=1)) == [row]
+
+    # A normal cron rerun uses this day's recorded calendar.
+    rerun = await rollup_orderflow_daily(session, "kraken", "BTC/EUR", DAY)
+    assert rerun == row
+    # A direct import without metadata preserves the recorded basis too.
+    await upsert_orderflow_daily(
+        session, [replace(row, trade_count=2, trading_schedule=None, scheduled_open_seconds=None)]
+    )
+    await session.commit()
+    loaded = await get_orderflow_daily(session, "kraken", "BTC/EUR", DAY, DAY + timedelta(days=1))
+    assert loaded == [replace(row, trade_count=2)]
+
+    # An explicit replacement can change the interpretation without changing trades.
+    replacement = TradingSchedule.model_validate(
+        {"timezone": "UTC", "week": {3: [{"start": 540, "end": 600}]}}
+    )
+    changed = await rollup_orderflow_daily(session, "kraken", "BTC/EUR", DAY, replacement)
+    await upsert_orderflow_daily(session, [changed])
+    await session.commit()
+    loaded = await get_orderflow_daily(session, "kraken", "BTC/EUR", DAY, DAY + timedelta(days=1))
+    assert loaded == [changed]
+    assert loaded[0].session_state == "scheduled_open"
+    assert loaded[0].scheduled_open_seconds == 3600
+    assert loaded[0].trade_count == 1
+
+    # Neither other pairs/exchanges nor adjacent days inherit this schedule.
+    for exchange, pair, day in [
+        ("kraken", "ETH/EUR", DAY),
+        ("binance", "BTC/EUR", DAY),
+        ("kraken", "BTC/EUR", DAY + timedelta(days=1)),
+    ]:
+        unrelated = await rollup_orderflow_daily(session, exchange, pair, day)
+        assert unrelated.session_state == "unknown"
+
+
+async def test_legacy_insert_and_zero_observation_sessions(session: AsyncSession) -> None:
+    from kaupo.market_calendar import TradingSchedule
+
+    # A writer using the old column set remains valid after migration.
+    await session.execute(
+        text("""
+        INSERT INTO orderflow_daily
+        (exchange, pair, day, trade_count, buy_count, sell_count, buy_volume,
+         sell_volume, max_trade_size, book_snapshots)
+        VALUES ('kraken', 'BTC/EUR', '2026-01-01', 0, 0, 0, 0, 0, 0, 0)
+    """)
+    )
+    (legacy,) = await get_orderflow_daily(session, "kraken", "BTC/EUR", DAY, DAY + timedelta(days=1))
+    assert legacy.session_state == "unknown"
+    assert legacy.trading_schedule is None
+    schedule = TradingSchedule.model_validate(
+        {"timezone": "UTC", "week": {day: [{"start": 0, "end": 1440}] for day in range(5)}}
+    )
+    rows = [
+        await rollup_orderflow_daily(session, "kraken", "BTC/EUR", DAY + timedelta(days=i), schedule)
+        for i in range(4)
+    ]
+    await upsert_orderflow_daily(session, rows)
+    await session.commit()
+    loaded = await get_orderflow_daily(session, "kraken", "BTC/EUR", DAY, DAY + timedelta(days=4))
+    assert loaded == rows
+    assert [row.session_state for row in loaded] == [
+        "scheduled_open",
+        "scheduled_open",
+        "scheduled_closed",
+        "scheduled_closed",
+    ]
+    assert [row.scheduled_open_seconds for row in loaded] == [86400, 86400, 0, 0]
+    assert all(row.trade_count == row.book_snapshots == 0 for row in loaded)

@@ -2,12 +2,13 @@
 
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, select, union
+from sqlalchemy import case, func, select, union
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from kaupo.db.models import BookSnapshotRow, OrderflowDailyRow, TradeTickRow
 from kaupo.domain import OrderflowDaily
+from kaupo.market_calendar import TradingSchedule
 
 
 def _to_domain(row: OrderflowDailyRow) -> OrderflowDaily:
@@ -24,11 +25,15 @@ def _to_domain(row: OrderflowDailyRow) -> OrderflowDaily:
         book_snapshots=row.book_snapshots,
         spread_mean_bps=row.spread_mean_bps,
         spread_max_bps=row.spread_max_bps,
+        scheduled_open_seconds=row.scheduled_open_seconds,
+        trading_schedule=(
+            TradingSchedule.model_validate(row.trading_schedule) if row.trading_schedule is not None else None
+        ),
     )
 
 
 async def upsert_orderflow_daily(session: AsyncSession, rows: list[OrderflowDaily]) -> int:
-    """Idempotent insert; existing (exchange, pair, day) rows get the new aggregates."""
+    """Replace aggregates by key, retaining the session basis when omitted."""
     if not rows:
         return 0
     values = [
@@ -45,6 +50,8 @@ async def upsert_orderflow_daily(session: AsyncSession, rows: list[OrderflowDail
             "book_snapshots": r.book_snapshots,
             "spread_mean_bps": r.spread_mean_bps,
             "spread_max_bps": r.spread_max_bps,
+            "scheduled_open_seconds": r.scheduled_open_seconds,
+            "trading_schedule": r.trading_schedule.model_dump(mode="json") if r.trading_schedule else None,
         }
         for r in rows
     ]
@@ -61,6 +68,14 @@ async def upsert_orderflow_daily(session: AsyncSession, rows: list[OrderflowDail
             "book_snapshots": stmt.excluded.book_snapshots,
             "spread_mean_bps": stmt.excluded.spread_mean_bps,
             "spread_max_bps": stmt.excluded.spread_max_bps,
+            # Ordinary rollups/imports must not erase a recorded session basis.
+            "scheduled_open_seconds": func.coalesce(
+                stmt.excluded.scheduled_open_seconds, OrderflowDailyRow.scheduled_open_seconds
+            ),
+            "trading_schedule": case(
+                (stmt.excluded.scheduled_open_seconds.is_not(None), stmt.excluded.trading_schedule),
+                else_=OrderflowDailyRow.trading_schedule,
+            ),
         },
     )
     await session.execute(stmt)
@@ -121,7 +136,11 @@ async def list_orderflow_source_pairs(session: AsyncSession, exchange: str) -> l
 
 
 async def rollup_orderflow_daily(
-    session: AsyncSession, exchange: str, pair: str, day: date
+    session: AsyncSession,
+    exchange: str,
+    pair: str,
+    day: date,
+    trading_schedule: TradingSchedule | None = None,
 ) -> OrderflowDaily:
     """Aggregate the pair's raw order-flow rows of one UTC day.
 
@@ -134,6 +153,18 @@ async def rollup_orderflow_daily(
     """
     start = datetime(day.year, day.month, day.day, tzinfo=UTC)
     end = start + timedelta(days=1)
+    # Reuse this day's recorded basis on an ordinary rerun. Never infer one
+    # from a current assignment or another day's history.
+    if trading_schedule is None:
+        stored = await session.scalar(
+            select(OrderflowDailyRow.trading_schedule).where(
+                OrderflowDailyRow.exchange == exchange,
+                OrderflowDailyRow.pair == pair,
+                OrderflowDailyRow.day == day,
+            )
+        )
+        if stored is not None:
+            trading_schedule = TradingSchedule.model_validate(stored)
     is_buy = TradeTickRow.side == "buy"
     is_sell = TradeTickRow.side == "sell"
     trade_stmt = select(
@@ -180,4 +211,10 @@ async def rollup_orderflow_daily(
         book_snapshots=book_count,
         spread_mean_bps=None if book_count == 0 else float(spread_mean),
         spread_max_bps=None if book_count == 0 else float(spread_max),
+        scheduled_open_seconds=(
+            int(trading_schedule.open_elapsed(start, end).total_seconds())
+            if trading_schedule is not None
+            else None
+        ),
+        trading_schedule=trading_schedule,
     )
