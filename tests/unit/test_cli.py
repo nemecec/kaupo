@@ -1425,3 +1425,65 @@ def test_list_xstocks_markets(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.exit_code == 0, result.output
     assert "AAPLX/USD" in result.output
     assert "AAPLxUSD" in result.output
+
+
+@pytest.mark.parametrize("ok", [False, True])
+def test_xstocks_refresh_json_and_exit_status(monkeypatch, tmp_path, ok):
+    import json
+
+    import kaupo.data.xstocks as xstocks
+    import kaupo.data.xstocks_refresh as refresh
+    import kaupo.db.session as session_mod
+    from tests.unit.test_xstocks_refresh import FRIDAY, config, schedule
+
+    path = tmp_path / "refresh.json"
+    path.write_text(config().model_dump_json())
+    monkeypatch.setattr(xstocks, "XStocksClient", _FakeKrakenClient)
+    monkeypatch.setattr(session_mod, "get_sessionmaker", lambda: None)
+
+    async def fake_refresh(config, sessionmaker, client, *, now):
+        assert config.instruments[0].pair == "AAPLX/USD"
+        assert now.tzinfo is UTC
+        return [
+            refresh.RefreshResult(
+                pair="AAPLX/USD",
+                timeframe="1h",
+                start=FRIDAY,
+                end=FRIDAY,
+                trading_schedule=schedule(),
+                coverage=refresh.Coverage(
+                    status="scheduled_closed" if ok else "missing",
+                    expected=0 if ok else 1,
+                    observed=0,
+                    missing=0 if ok else 1,
+                    unexpected=0,
+                    first_observed=None,
+                    last_observed=None,
+                    missing_sample=[],
+                ),
+            )
+        ]
+
+    monkeypatch.setattr(refresh, "refresh_xstocks", fake_refresh)
+    result = runner.invoke(cli.app, ["ingest", "xstocks-refresh", "--config", str(path)])
+    assert result.exit_code == (0 if ok else 1), result.output
+    body = json.loads(result.stdout)
+    assert body["ok"] is ok
+    assert body["source"] == "kraken_xstocks_recent_ohlc"
+    assert body["results"][0]["trading_schedule"]["timezone"] == "UTC"
+
+
+def test_xstocks_refresh_invalid_config_does_not_open_client(monkeypatch, tmp_path):
+    import kaupo.data.xstocks as xstocks
+
+    def forbidden():
+        pytest.fail("invalid configuration opened an exchange client")
+
+    monkeypatch.setattr(xstocks, "XStocksClient", forbidden)
+    path = tmp_path / "refresh.json"
+    for content in ('{"instruments": []}', "not-json"):
+        path.write_text(content)
+        result = runner.invoke(cli.app, ["ingest", "xstocks-refresh", "--config", str(path)])
+        assert result.exit_code == 2
+    result = runner.invoke(cli.app, ["ingest", "xstocks-refresh", "--config", str(tmp_path / "absent")])
+    assert result.exit_code == 2

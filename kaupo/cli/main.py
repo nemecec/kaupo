@@ -228,6 +228,45 @@ def ingest_xstocks_candles(
     )
 
 
+@ingest_app.command(name="xstocks-refresh")
+def ingest_xstocks_refresh(
+    config: Annotated[
+        Path, typer.Option(help="JSON file with pairs, timeframes, and explicit trading schedules")
+    ],
+    verbose: VerboseOpt = False,
+) -> None:
+    """Refresh public xStocks candles and emit JSON coverage; gaps or errors exit 1."""
+    _setup_logging(verbose)
+    from kaupo.data.xstocks import XStocksClient
+    from kaupo.data.xstocks_refresh import RefreshConfig, RefreshResult, refresh_xstocks
+    from kaupo.db.session import get_sessionmaker
+
+    try:
+        manifest = RefreshConfig.model_validate_json(config.read_text())
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(f"Invalid refresh configuration: {exc}") from None
+    now = datetime.now(UTC)
+
+    async def _run() -> list[RefreshResult]:
+        async with XStocksClient() as client:
+            return await refresh_xstocks(manifest, get_sessionmaker(), client, now=now)
+
+    results = asyncio.run(_run())
+    ok = all(result.ok for result in results)
+    typer.echo(
+        json.dumps(
+            {
+                "checked_at": now.isoformat(),
+                "source": "kraken_xstocks_recent_ohlc",
+                "ok": ok,
+                "results": [result.model_dump(mode="json") for result in results],
+            }
+        )
+    )
+    if not ok:
+        raise typer.Exit(1)
+
+
 @ingest_app.command(name="funding")
 def ingest_funding(
     pair: PairOpt,

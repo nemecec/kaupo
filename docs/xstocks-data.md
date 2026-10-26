@@ -62,7 +62,8 @@ Kraken limits this endpoint to the newest 720 bars. An older `since` value does 
 The historical-trade mode has no OHLC bar limit. Both modes store candles under the `kraken` exchange and the normalized pair.
 The recent mode drops Kraken's zero-volume, zero-trade bars to preserve empty periods.
 
-The production refresh scripts still serve the crypto universe. Use these dedicated commands for xStocks imports.
+The existing production refresh scripts serve the crypto universe.
+The separate [scheduled xStocks refresh](xstocks-refresh.md) supports explicit calendars and candle coverage checks.
 Do not add xStocks to the shared Binance candle, funding, or open-interest loops.
 
 ## Backtest warm-up

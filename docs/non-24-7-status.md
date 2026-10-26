@@ -1,6 +1,6 @@
 # Non-24/7 support status
 
-This audit covers merged safeguards through PR #75 and the current shadow-routing implementation for [issue #43](https://github.com/nemecec/kaupo/issues/43).
+This audit covers merged safeguards through PR #76 and the current scheduled-refresh implementation for [issue #43](https://github.com/nemecec/kaupo/issues/43).
 The original calendar defects have targeted fixes. Supported xStocks live trading still requires the work listed after the table.
 A merged safeguard does not establish account eligibility or validate real orders.
 
@@ -58,9 +58,11 @@ This transition cannot reconstruct historical risk state that was never recorded
 ### Scheduled data operations
 
 The [production refresh script](../deploy/refresh-kraken.sh) uses a fixed crypto universe and crypto data sources.
-Dedicated xStocks imports remain separate from its Binance loops.
+The separate [xStocks refresh command](xstocks-refresh.md) uses explicit per-pair calendars and reports stored candle coverage.
+Its optional host wrapper supports a separate cron job and keeps xStocks outside the Binance loops.
 New orderflow rows from the default refresh command remain unknown unless an explicit schedule accompanies their rollup.
-Scheduled instruments need per-pair refresh commands, maintained calendars, and coverage checks for their actual data sources.
+Operators must maintain the calendars, schedule the refresh, and investigate missing observations.
+Raw-trade collection and scheduled orderflow refresh remain separate work.
 
 ### Account-specific validation
 
