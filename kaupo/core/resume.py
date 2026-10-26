@@ -19,15 +19,19 @@ empty — engine-ended runs keep their halt reason in the events audit log
 row with empty metrics resumes only when its recorded reason is "stopped
 externally" (or absent — a process can die between the row write and the
 audit write only on the shutdown path). A run halted by the risk rail,
-killed via control, or failed does NOT resume — deliberate stops stay
-stopped and the successor starts fresh at starting_cash.
+killed via control, or failed does not resume under the legacy rules.
+Modern risk checkpoints add a refusal guard before those rules: a damaged
+checkpoint or persisted risk halt cannot fall through to a fresh start.
 
-What carries: cash and open positions only, rebuilt by replaying the whole
+Cash and open positions carry, rebuilt by replaying the whole
 chain's recorded fills through a fresh Ledger — the same apply_fill that
 accepted them live, so the carried state is exactly the proven accounting,
-not a parallel computation. Pending orders, stop-loss/take-profit arms,
-cooldowns, and risk state do NOT carry: limit orders expire within one
-candle anyway, and protection re-arms from fresh candles on the successor.
+not a parallel computation. Pending orders and stop-loss/take-profit arms
+do not carry. Risk checkpoints carry the daily baseline,
+last floor, loss streak, and cooldown. Invalid or incomplete checkpoints and
+persisted risk halts refuse automatic restart for the same chain identity.
+Legacy rows without a checkpoint retain the old fresh-risk behavior and log
+a warning.
 
 Lineage: a resumed run's config gains "resumed_from" (the predecessor's run
 id) and "chain_started_at" (the chain root's start, ISO format). The
@@ -53,6 +57,7 @@ from kaupo.db.models import EventRow, FillRow, RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Fill, OrderId, Pair, Position, RunMode, RunStatus, Side
 from kaupo.ledger.ledger import InsufficientFunds, InsufficientPosition, Ledger
+from kaupo.risk.manager import RiskCheckpoint
 
 log = logging.getLogger(__name__)
 
@@ -181,6 +186,7 @@ class ResumeState:
     # from the nearest chain row that carries it; None on chains that predate
     # the baseline (adopted at the next resume) and on shadow chains
     quote_baseline: float | None = None
+    risk_checkpoint: dict[str, Any] | None = None
 
 
 async def _chain_rows(session: AsyncSession, tip: RunRow) -> list[RunRow] | None:
@@ -307,6 +313,27 @@ async def prepare_resume(
         if predecessor is None:
             return None
         new_hash = config_hash(strategy_id, pair, timeframe, params, pairs)
+        # A matching chain must not bypass a damaged or halted checkpoint by
+        # falling through to the legacy "start fresh" path.
+        if run_config_hash(predecessor) == new_hash and _same_strategy(
+            predecessor, strategy_version, behaviour_hash
+        ):
+            checkpoint = predecessor.risk_state
+            if checkpoint is None:
+                if (predecessor.config or {}).get("risk_checkpoint_version") is not None:
+                    raise ValueError(f"Run {predecessor.id} has no required risk checkpoint; resume refused")
+                log.warning("Legacy run %s has no risk checkpoint; risk history starts fresh", predecessor.id)
+            else:
+                try:
+                    saved = RiskCheckpoint.model_validate(checkpoint)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Run {predecessor.id} has an invalid or incomplete risk checkpoint; resume refused"
+                    ) from exc
+                if saved.halted:
+                    raise ValueError(
+                        f"Run {predecessor.id} has a persisted risk halt: {saved.halt_reason}; resume refused"
+                    )
         recorded_halt_reason: str | None = None
         metrics_reason = (predecessor.metrics or {}).get("halt_reason")
         if predecessor.status == RunStatus.HALTED.value and metrics_reason is None:
@@ -362,4 +389,5 @@ async def prepare_resume(
             positions=ledger.open_positions,
             starting_cash=float(starting_cash),
             quote_baseline=quote_baseline,
+            risk_checkpoint=predecessor.risk_state,
         )

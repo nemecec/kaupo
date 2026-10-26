@@ -9,7 +9,7 @@ A merged safeguard does not establish account eligibility or validate real order
 | Finding in #43 | Merged change | Current behavior and boundary |
 | --- | --- | --- |
 | Watchdog restarts during closures | [#69](https://github.com/nemecec/kaupo/pull/69) | An explicit assignment schedule changes the stale-candle calculation. Missing scheduled candles can still trigger a restart. |
-| Daily-loss baseline discards opening gaps | [#59](https://github.com/nemecec/kaupo/pull/59) | A running risk manager compares the new day's first observation with its previous equity floor. Restart persistence remains separate. |
+| Daily-loss baseline discards opening gaps | [#59](https://github.com/nemecec/kaupo/pull/59) | A running risk manager compares the new day's first observation with its previous equity floor. Compatible restarts also restore [risk checkpoints](risk-resume.md). |
 | Paper limits fill across stale candle gaps | [#58](https://github.com/nemecec/kaupo/pull/58) | Paper limits expire at their candle-based deadline. A late next candle cannot fill an expired order. |
 | Live limits rest until another candle arrives | [#62](https://github.com/nemecec/kaupo/pull/62) | Kraken receives an absolute GTD expiry. Recording fills still waits for a candle or startup reconciliation. |
 | Return intervals and annualization assume continuous candles | [#72](https://github.com/nemecec/kaupo/pull/72) | Scheduled backtests and rolling reports use UTC daily returns. Missing scheduled observations make ratios unavailable. |
@@ -33,7 +33,7 @@ Available history starts at the first available trade for each instrument.
 The importer cannot guarantee a one-year research window for every pair.
 It does not substitute stock-exchange or perpetual-futures history for tokenized spot history.
 
-## Remaining implementation and validation
+## Implementation boundaries and remaining validation
 
 ### xStocks routing in runners and the trading client
 
@@ -49,11 +49,10 @@ Public market discovery alone does not validate those operations.
 
 ### Risk state across process restarts
 
-[RiskManager](../kaupo/risk/manager.py) retains the previous equity floor in memory.
-A new manager establishes its baseline from its first observation.
-The runners restore ledger state but create a new risk manager.
-Thus, PR #59 covers a closure within a continuing manager, not loss continuity across a process restart.
-Persisting and restoring the daily baseline and other risk state remains separate work.
+Shadow and live runners now persist and restore [risk checkpoints](risk-resume.md) with compatible ledger resumes.
+Incomplete or invalid checkpoints and persisted risk halts refuse automatic restart for the same run identity.
+Legacy predecessors without checkpoints retain fresh-risk compatibility behavior with a warning.
+This transition cannot reconstruct historical risk state that was never recorded.
 
 ### Scheduled data operations
 

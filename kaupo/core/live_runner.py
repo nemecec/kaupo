@@ -113,6 +113,9 @@ class _ReconciledRecorder:
         if self._recovered:
             await self._inner.flush()
 
+    async def record_risk(self, state: dict[str, Any]) -> None:
+        await self._inner.record_risk(state)
+
     async def record_order(self, order: Order) -> None:
         await self._inner.record_order(order)
 
@@ -238,7 +241,11 @@ async def run_live(
                 request.pair,
             )
         config["quote_baseline"] = quote_baseline
-        _apply_recovered(ledger, reconciled.missed_fills)
+        risk = RiskManager.restored(
+            replace(request.risk, taker_fee_bps=request.taker_fee_bps, slippage_bps=request.slippage_bps),
+            resume.risk_checkpoint if resume is not None else None,
+        )
+        _apply_recovered(ledger, reconciled.missed_fills, risk)
         venue = KrakenVenue(
             request.pair,
             trading,
@@ -260,6 +267,7 @@ async def run_live(
             config=config,
             warmup_candles=warmup_candles,
             recovered=reconciled.missed,
+            risk=risk,
             funding_client=funding_client,
         )
     except ReconciliationRefused:
@@ -358,11 +366,13 @@ def _run_config(request: LiveRequest, settings: Settings) -> dict[str, Any]:
     return config
 
 
-def _apply_recovered(ledger: Ledger, fills: list[Fill]) -> None:
+def _apply_recovered(ledger: Ledger, fills: list[Fill], risk: RiskManager | None = None) -> None:
     """Fold reconciliation's recovered fills into the ledger the run starts with."""
     for fill in fills:
         try:
-            ledger.apply_fill(fill)
+            realized = ledger.apply_fill(fill)
+            if risk is not None and realized is not None:
+                risk.notify_trade_result(float(realized))
         except (InsufficientFunds, InsufficientPosition) as exc:
             raise ReconciliationRefused(
                 f"A recovered Kraken fill ({fill.side.value} {fill.size} {fill.pair}) does not fit "
@@ -382,6 +392,7 @@ async def _run_engine(
     config: dict[str, Any],
     warmup_candles: list[Candle],
     recovered: list[tuple[Order, Fill]],
+    risk: RiskManager,
     funding_client: BinanceClient | None,
 ) -> RunResult:
     recorder = _ReconciledRecorder(DbRecorder(sessionmaker), recovered)
@@ -393,13 +404,7 @@ async def _run_engine(
     engine = Engine(
         strategy=strategy,
         venue=venue,
-        risk=RiskManager(
-            replace(
-                request.risk,
-                taker_fee_bps=request.taker_fee_bps,
-                slippage_bps=request.slippage_bps,
-            )
-        ),
+        risk=risk,
         ledger=ledger,
         recorder=recorder,
         config=EngineConfig(

@@ -85,6 +85,7 @@ class RunRecorder(Protocol):
     run_id: RunId
 
     async def start(self, info: RunInfo) -> None: ...
+    async def record_risk(self, state: dict[str, Any]) -> None: ...
     async def record_order(self, order: Order) -> None: ...
     async def record_fill(self, fill: Fill) -> None: ...
     async def record_ledger(self, entries: list[LedgerEntry]) -> None: ...
@@ -119,6 +120,7 @@ class DbRecorder:
         self._fills: list[FillRow] = []
         self._ledger: list[LedgerEntryRow] = []
         self._equity: list[EquitySnapshotRow] = []
+        self._risk_state: dict[str, Any] | None = None
 
     async def start(self, info: RunInfo) -> None:
         async with self._sessionmaker() as session:
@@ -141,7 +143,17 @@ class DbRecorder:
                     strategy_version=info.strategy_version,
                     started_at=utc_now(),
                     status=RunStatus.RUNNING.value,
-                    config=info.config,
+                    config={
+                        **info.config,
+                        **(
+                            {"risk_checkpoint_version": 1}
+                            if info.mode in (RunMode.SHADOW, RunMode.LIVE)
+                            else {}
+                        ),
+                    },
+                    risk_state={"version": 1, "incomplete": True}
+                    if info.mode in (RunMode.SHADOW, RunMode.LIVE)
+                    else None,
                 )
             )
             if info.mode in (RunMode.SHADOW, RunMode.LIVE):
@@ -156,6 +168,10 @@ class DbRecorder:
                     assignment_id=info.config.get("assignment_id"),
                 )
             await session.commit()
+
+    async def record_risk(self, state: dict[str, Any]) -> None:
+        self._risk_state = state
+        await self.flush()
 
     async def record_order(self, order: Order) -> None:
         self._orders.append(
@@ -250,7 +266,7 @@ class DbRecorder:
             await self.flush()
 
     async def flush(self) -> None:
-        if not (self._orders or self._fills or self._ledger or self._equity):
+        if not (self._orders or self._fills or self._ledger or self._equity or self._risk_state is not None):
             return
         # snapshot buffers; clear only after a successful commit so a
         # transient failure doesn't silently lose the audit trail
@@ -287,7 +303,12 @@ class DbRecorder:
                         .on_conflict_do_nothing()
                     )
                     await session.execute(stmt)
+            if self._risk_state is not None:
+                await session.execute(
+                    update(RunRow).where(RunRow.id == self.run_id).values(risk_state=self._risk_state)
+                )
             await session.commit()
+        self._risk_state = None
         self._orders = []
         self._fills = []
         self._ledger = []
@@ -318,6 +339,10 @@ class CompositeRecorder:
     async def start(self, info: RunInfo) -> None:
         for child in self.children:
             await child.start(info)
+
+    async def record_risk(self, state: dict[str, Any]) -> None:
+        for child in self.children:
+            await child.record_risk(state)
 
     async def record_order(self, order: Order) -> None:
         for child in self.children:
@@ -358,11 +383,15 @@ class InMemoryRecorder:
     fills: list[Fill] = field(default_factory=list)
     ledger: list[LedgerEntry] = field(default_factory=list)
     equity: list[tuple[datetime, Decimal, Decimal, Decimal]] = field(default_factory=list)
+    risk_state: dict[str, Any] | None = None
     final_status: RunStatus | None = None
     metrics: dict[str, Any] | None = None
 
     async def start(self, info: RunInfo) -> None:
         self.info = info
+
+    async def record_risk(self, state: dict[str, Any]) -> None:
+        self.risk_state = state
 
     async def record_order(self, order: Order) -> None:
         self.orders.append(order)

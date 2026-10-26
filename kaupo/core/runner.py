@@ -275,12 +275,13 @@ async def run_shadow(
             # reads the same constant
             marketable_limit=LIVE_MIRROR_MARKETABLE_LIMIT,
         ),
-        risk=RiskManager(
+        risk=RiskManager.restored(
             replace(
                 request.risk,
                 taker_fee_bps=request.taker_fee_bps,
                 slippage_bps=request.slippage_bps,
-            )
+            ),
+            resume.risk_checkpoint if resume is not None else None,
         ),
         ledger=ledger,
         recorder=recorder,
@@ -618,12 +619,13 @@ async def run_portfolio_shadow(
             )
             for pair in request.pairs
         },
-        risk=RiskManager(
+        risk=RiskManager.restored(
             replace(
                 request.risk,
                 taker_fee_bps=request.taker_fee_bps,
                 slippage_bps=request.slippage_bps,
-            )
+            ),
+            resume.risk_checkpoint if resume is not None else None,
         ),
         ledger=ledger,
         recorder=recorder,
