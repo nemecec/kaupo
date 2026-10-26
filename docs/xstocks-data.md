@@ -188,3 +188,5 @@ AAPLx trade pagination advanced to a second historical page. Account-specific tr
 - [Kraken OHLC parameters and limits](https://docs.kraken.com/api-reference/market-data/get-ohlc-data)
 - [Kraken trade endpoint](https://docs.kraken.com/api-reference/market-data/get-recent-trades)
 - [Kraken historical-data guidance](https://support.kraken.com/articles/advanced-api-faq)
+
+For read-only account evidence, use the [balance inspection command](xstocks-balances.md).
