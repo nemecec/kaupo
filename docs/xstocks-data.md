@@ -1,7 +1,8 @@
 # Kraken xStocks data
 
 Kaupo can import public xStocks candles without account credentials. This is the data-access part of [issue #43](https://github.com/nemecec/kaupo/issues/43).
-Market calendars, live orders, risk controls, and currency-aware reports remain separate work. This importer does not enable xStocks trading.
+The [support status](non-24-7-status.md) separates completed calendar safeguards from remaining routing and account validation.
+This importer does not enable xStocks trading.
 
 ## List markets
 
@@ -83,23 +84,20 @@ The refresh makes one candle request per pair. It does not retrieve history beyo
 If the refresh fails, the runner logs a warning and uses stored history.
 Sparse source history can still leave indicators short of their requested warm-up.
 
-This change does not add xStocks API routing to the live runners or recognize scheduled closures.
-The watchdog, poller, and stale-tail warnings still require calendar support.
+The runners support explicit [trading schedules](trading-schedules.md) for closure diagnostics.
+They still use the ordinary crypto market-data adapter. The dedicated importer does not add xStocks routing to shadow or live runners.
 
-## Remaining work in #43
+## Trading readiness
 
-Daily reports and notifications separate amounts by currency. See [daily report currencies](daily-reports.md) for the API fields and compatibility rules.
-Account-equity curves support [currency filtering](account-equity.md).
+The [support status](non-24-7-status.md) maps each original finding in #43 to its merged fix.
+Completed work includes closure-aware watchdogs and reports, limit expiry, and opening-gap risk checks.
+It also includes daily return sampling, observation-based warm-up, stable rebalance cadence, and orderflow sessions.
 
-The following items remain prerequisites for supported xStocks trading:
+Daily reports separate amounts by currency, and account-equity curves support currency filtering.
+Assignments support maker and taker fees, including rebates.
+These safeguards do not establish supported xStocks live trading.
 
-- Market calendars for the watchdog, poller, and activity reports.
-- Calendar-aware execution beyond the paper gap guard and [live limit expiry](live-order-expiry.md).
-- Risk checks that include losses across a market closure.
-- Session-aware return statistics, indicator warm-up, and rebalance timing.
-- Instrument-specific setup and the remaining execution/calendar safeguards.
-
-The assignment API supports [fee schedules](assignment-fees.md), including maker rebates.
+Remaining work includes runner and trading-client routing, risk-state persistence across restarts, dedicated data operations, and account-specific validation.
 
 ## References and validation
 

@@ -47,7 +47,7 @@ Prerequisites: uv, Docker, and Node 22 or later.
    ```bash
    uv run kaupo ingest candles --exchange binance --pair BTC/EUR --timeframe 1h --days 2400
    ```
-   For xStocks, use the dedicated [data importer](docs/xstocks-data.md) for market discovery and historical candles. Live trading support remains tracked in [#43](https://github.com/nemecec/kaupo/issues/43).
+   For xStocks, use the dedicated [data importer](docs/xstocks-data.md) for market discovery and historical candles. See the [support status](docs/non-24-7-status.md) for completed safeguards and remaining live-trading work.
 5. Download historical funding rates (optional, used as a filter signal):
    ```bash
    uv run kaupo ingest funding --pair BTC/EUR --days 365

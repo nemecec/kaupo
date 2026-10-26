@@ -30,6 +30,7 @@ Market orders have no GTD expiry. They keep their existing immediate-placement b
 
 This implements the live-limit expiry safeguard in [#43](https://github.com/nemecec/kaupo/issues/43).
 It also bounds order lifetime during candle outages on crypto markets.
-It does not enable xStocks live trading. Calendar-aware watchdogs, risk-history persistence, and the other instrument prerequisites remain separate work.
+It does not enable xStocks live trading. Explicit [trading schedules](trading-schedules.md) now support calendar-aware watchdogs.
+Risk-state persistence and xStocks routing remain separate work. See the [support status](non-24-7-status.md).
 
 Validation uses fake exchange calls and the installed ccxt parameter builder. No authenticated order was submitted to validate this change.

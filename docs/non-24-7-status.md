@@ -1,0 +1,84 @@
+# Non-24/7 support status
+
+This audit covers merged work through PR #73 for [issue #43](https://github.com/nemecec/kaupo/issues/43).
+The original calendar defects have targeted fixes. Supported xStocks live trading still requires the work listed after the table.
+A merged safeguard does not establish account eligibility or validate real orders.
+
+## Completed work
+
+| Finding in #43 | Merged change | Current behavior and boundary |
+| --- | --- | --- |
+| Watchdog restarts during closures | [#69](https://github.com/nemecec/kaupo/pull/69) | An explicit assignment schedule changes the stale-candle calculation. Missing scheduled candles can still trigger a restart. |
+| Daily-loss baseline discards opening gaps | [#59](https://github.com/nemecec/kaupo/pull/59) | A running risk manager compares the new day's first observation with its previous equity floor. Restart persistence remains separate. |
+| Paper limits fill across stale candle gaps | [#58](https://github.com/nemecec/kaupo/pull/58) | Paper limits expire at their candle-based deadline. A late next candle cannot fill an expired order. |
+| Live limits rest until another candle arrives | [#62](https://github.com/nemecec/kaupo/pull/62) | Kraken receives an absolute GTD expiry. Recording fills still waits for a candle or startup reconciliation. |
+| Return intervals and annualization assume continuous candles | [#72](https://github.com/nemecec/kaupo/pull/72) | Scheduled backtests and rolling reports use UTC daily returns. Missing scheduled observations make ratios unavailable. |
+| Warm-up counts elapsed time instead of observations | [#63](https://github.com/nemecec/kaupo/pull/63), [#65](https://github.com/nemecec/kaupo/pull/65) | Backtests select stored observations. Shadow/live startup refreshes recent closed candles before selecting history. Source depth still limits coverage. |
+| Weekend gaps change momentum rebalance cadence | [#64](https://github.com/nemecec/kaupo/pull/64) | The default interval uses the declared timeframe. Closures can extend elapsed time between rebalances. |
+| Polling and startup warnings misclassify closures | [#71](https://github.com/nemecec/kaupo/pull/71) | Explicit schedules control owed-candle and stale-tail diagnostics. Fetch errors remain visible. |
+| Daily reports label closed runs inactive | [#70](https://github.com/nemecec/kaupo/pull/70) | Reports distinguish observed activity, supported closure, and inactivity. Current assignment evidence has historical limits. |
+| Daily orderflow cannot identify a scheduled closure | [#73](https://github.com/nemecec/kaupo/pull/73) | Explicit rollup schedules produce scheduled-open or scheduled-closed states. Rows without schedule evidence remain unknown. |
+| Limit prices ignore the market tick | [#45](https://github.com/nemecec/kaupo/pull/45) | Live limits use market tick metadata. This does not add xStocks market discovery to the trading client. |
+| Assignments cannot select fees | [#68](https://github.com/nemecec/kaupo/pull/68) | Assignments carry maker and taker rates, including rebates, into supervised runs and rolling replays. |
+| Reports combine currencies | [#66](https://github.com/nemecec/kaupo/pull/66), [#67](https://github.com/nemecec/kaupo/pull/67) | Daily totals separate currencies. Account-equity curves stay within one quote currency. |
+
+## Data access and history
+
+[PR #57](https://github.com/nemecec/kaupo/pull/57) added a dedicated public xStocks importer.
+It supports market discovery, recent OHLC, and candle reconstruction from historical trades.
+The [importer guide](xstocks-data.md) records the October 23, 2026 public API checks and their scope.
+Those checks address public data access, not authenticated trading permission.
+
+Available history starts at the first available trade for each instrument.
+The importer cannot guarantee a one-year research window for every pair.
+It does not substitute stock-exchange or perpetual-futures history for tokenized spot history.
+
+## Remaining implementation and validation
+
+### xStocks routing in runners and the trading client
+
+The dedicated importer uses `XStocksClient` in [xstocks.py](../kaupo/data/xstocks.py).
+Shadow and live runners still receive the ordinary [KrakenClient](../kaupo/data/kraken.py).
+The [trading client](../kaupo/venues/kraken_client.py) still loads markets through its standard ccxt adapter.
+A trading schedule changes diagnostics and metrics. It does not select an asset class or change endpoint routing.
+
+The next routing change needs explicit instrument configuration shared by discovery, startup refresh, polling, and market metadata.
+It must preserve crypto behavior and reject unsupported combinations before trading starts.
+Authenticated symbol handling, order submission, reconciliation, and expiry need separate validation for the tokenized-asset path.
+Public market discovery alone does not validate those operations.
+
+### Risk state across process restarts
+
+[RiskManager](../kaupo/risk/manager.py) retains the previous equity floor in memory.
+A new manager establishes its baseline from its first observation.
+The runners restore ledger state but create a new risk manager.
+Thus, PR #59 covers a closure within a continuing manager, not loss continuity across a process restart.
+Persisting and restoring the daily baseline and other risk state remains separate work.
+
+### Scheduled data operations
+
+The [production refresh script](../deploy/refresh-kraken.sh) uses a fixed crypto universe and crypto data sources.
+Dedicated xStocks imports remain separate from its Binance loops.
+New orderflow rows from the default refresh command remain unknown unless an explicit schedule accompanies their rollup.
+Scheduled instruments need per-pair refresh commands, maintained calendars, and coverage checks for their actual data sources.
+
+### Account-specific validation
+
+The repository does not establish permission to trade xStocks on a particular account.
+Account eligibility, instrument availability, and authenticated order behavior remain unverified by the public importer checks.
+No authenticated order was submitted as part of this audit.
+
+## Configuration and evidence
+
+Schedules are explicit. Kaupo does not infer venue hours or holidays from a symbol.
+Assignment schedules govern watchdogs, diagnostics, activity reports, and rolling metrics.
+Backtest requests and orderflow rollups accept their own explicit schedules.
+These inputs must describe the intended instrument and period.
+
+The regression suite covers synthetic gaps, schedule boundaries, missing observations, and persisted data contracts.
+It includes [gap-risk](../tests/behaviour/test_gap_risk.py), [gap-limit](../tests/behaviour/test_gap_limits.py),
+[daily-return](../tests/unit/test_daily_return_sampling.py), and [orderflow-session](../tests/unit/test_orderflow_sessions.py) tests.
+Those tests establish software behavior within their scope, not end-to-end xStocks trading readiness.
+
+Related guides: [trading schedules](trading-schedules.md), [live expiry](live-order-expiry.md),
+[assignment fees](assignment-fees.md), [daily reports](daily-reports.md), and [account equity](account-equity.md).
