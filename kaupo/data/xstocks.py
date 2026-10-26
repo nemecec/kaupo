@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kaupo.data.candles import upsert_candles
 from kaupo.data.ccxt_client import CLOSE_GRACE, CcxtExchangeClient
-from kaupo.domain import Candle, Pair, Timeframe
+from kaupo.domain import Candle, Pair, Timeframe, TradeTick
 
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -49,6 +49,7 @@ class XStockTrade:
     ts: Decimal
     price: Decimal
     size: Decimal
+    side: str
 
     @property
     def key(self) -> tuple[Decimal, int]:
@@ -193,9 +194,15 @@ class XStocksClient:
             raise ValueError("Kraken trades response has no valid pagination cursor")
         trades = []
         for row in self._rows(result):
-            if len(row) < 7 or not isinstance(row[6], int) or row[6] < 0 or row[3] not in ("b", "s"):
+            if len(row) < 7 or type(row[6]) is not int or row[6] < 0 or row[3] not in ("b", "s"):
                 raise ValueError("Invalid xStocks trade identity")
-            trade = XStockTrade(row[6], Decimal(str(row[2])), Decimal(row[0]), Decimal(row[1]))
+            trade = XStockTrade(
+                row[6],
+                Decimal(str(row[2])),
+                Decimal(row[0]),
+                Decimal(row[1]),
+                "buy" if row[3] == "b" else "sell",
+            )
             if any(not v.is_finite() or v <= 0 for v in (trade.ts, trade.price, trade.size)):
                 raise ValueError("Invalid xStocks trade price, size, or timestamp")
             trades.append(trade)
@@ -224,10 +231,6 @@ class XStocksClient:
         stop = math.floor(min(end_s, epoch_seconds(self._now() - CLOSE_GRACE)) / seconds) * seconds
         if first >= stop:
             return
-        # Include boundary trades even if Kraken treats "since" as exclusive.
-        cursor = str(first * 1_000_000_000 - 1)
-        last_key: tuple[Decimal, int] | None = None
-        previous: dict[int, XStockTrade] = {}
         bucket: int | None = None
         prices: list[Decimal] = []  # open, high, low, close, volume
 
@@ -240,6 +243,38 @@ class XStocksClient:
                 pair, timeframe, EPOCH + timedelta(seconds=bucket), o, h, low, c, volume, exchange="kraken"
             )
 
+        async for trade in self._trades_between(pair, Decimal(first), Decimal(stop)):
+            trade_bucket = int(trade.ts // seconds) * seconds
+            if bucket != trade_bucket:
+                if bucket is not None:
+                    yield candle()
+                bucket = trade_bucket
+                prices = [trade.price, trade.price, trade.price, trade.price, trade.size]
+            else:
+                prices[1] = max(prices[1], trade.price)
+                prices[2] = min(prices[2], trade.price)
+                prices[3] = trade.price
+                prices[4] += trade.size
+        if bucket is not None:
+            yield candle()
+
+    async def historical_trades(
+        self, pair: Pair, start: datetime, end: datetime
+    ) -> AsyncIterator[XStockTrade]:
+        """Unique public trades in [start, end), with exact source timestamps."""
+        first, stop = epoch_seconds(start), epoch_seconds(end)
+        if first >= stop:
+            raise ValueError("The start must be before the end")
+        stop = min(stop, epoch_seconds(self._now()))
+        if first < stop:
+            async for trade in self._trades_between(pair, first, stop):
+                yield trade
+
+    async def _trades_between(self, pair: Pair, first: Decimal, stop: Decimal) -> AsyncIterator[XStockTrade]:
+        # Include boundary trades even when "since" is exclusive.
+        cursor = str(int(first * 1_000_000_000) - 1)
+        last_key: tuple[Decimal, int] | None = None
+        previous: dict[int, XStockTrade] = {}
         while True:
             page, next_cursor = await self.trade_page(pair, cursor)
             unique: dict[int, XStockTrade] = {}
@@ -252,33 +287,49 @@ class XStocksClient:
                 if last_key is not None and trade.key <= last_key:
                     raise ValueError("Kraken returned older trades outside the page overlap")
                 unique[trade.id] = trade
-            reached_end = False
             for trade in unique.values():
                 last_key = trade.key
                 if trade.ts >= stop:
-                    reached_end = True
-                    break
-                if trade.ts < first:
-                    continue
-                trade_bucket = int(trade.ts // seconds) * seconds
-                if bucket != trade_bucket:
-                    if bucket is not None:
-                        yield candle()
-                    bucket = trade_bucket
-                    prices = [trade.price, trade.price, trade.price, trade.price, trade.size]
-                else:
-                    prices[1] = max(prices[1], trade.price)
-                    prices[2] = min(prices[2], trade.price)
-                    prices[3] = trade.price
-                    prices[4] += trade.size
-            if reached_end or not page or (not unique and next_cursor == cursor):
-                break
+                    return
+                if trade.ts >= first:
+                    yield trade
+            if not page or (not unique and next_cursor == cursor):
+                return
             if int(next_cursor) <= int(cursor):
-                raise ValueError("Kraken trade cursor did not advance; unfinished candle was not stored")
+                raise ValueError("Kraken trade cursor did not advance")
             previous = {trade.id: trade for trade in page}
             cursor = next_cursor
-        if bucket is not None:
-            yield candle()
+
+
+async def ingest_xstock_trades(
+    client: XStocksClient,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    pair: Pair,
+    start: datetime,
+    end: datetime,
+) -> int:
+    """Commit bounded batches of ID-preserving ticks; retries are idempotent."""
+    from kaupo.data.trades import upsert_trade_ticks
+
+    batch = []
+    total = 0
+    async for trade in client.historical_trades(pair, start, end):
+        price, size = float(trade.price), float(trade.size)
+        if not all(math.isfinite(value) and value > 0 for value in (price, size)):
+            raise ValueError("xStocks trade exceeds the supported numeric range")
+        # Floor to database microseconds; rounding can move a trade into the next bucket.
+        ts = EPOCH + timedelta(microseconds=int(trade.ts * 1_000_000))
+        batch.append(TradeTick("kraken", str(pair), ts, price, size, trade.side, str(trade.id)))
+        if len(batch) >= 100:
+            async with sessionmaker() as session:
+                total += await upsert_trade_ticks(session, batch)
+                await session.commit()
+            batch.clear()
+    if batch:
+        async with sessionmaker() as session:
+            total += await upsert_trade_ticks(session, batch)
+            await session.commit()
+    return total
 
 
 async def ingest_xstock_candles(

@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, LargeBinary, Numeric, String, Text
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, LargeBinary, Numeric, String, Text, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -114,14 +114,7 @@ class FuturesMetricsDailyRow(Base):
 
 
 class TradeTickRow(Base):
-    """Public trade prints (order flow), keyed by the full tick tuple.
-
-    Kraken serves no trade id for public trades, so identical trades at the
-    same ms with the same price and size collapse to one row. This dedupe
-    heuristic can drop true same-ms duplicates; that is accepted for
-    order-flow analytics (not audit-grade). Bounded by retention pruning
-    after each ingest run.
-    """
+    """Public prints with optional exchange IDs; legacy rows keep tuple identity."""
 
     __tablename__ = "trade_ticks"
 
@@ -131,6 +124,20 @@ class TradeTickRow(Base):
     price: Mapped[float] = mapped_column(primary_key=True)
     size: Mapped[float] = mapped_column(primary_key=True)
     side: Mapped[str] = mapped_column(String(4), primary_key=True)
+
+    trade_id: Mapped[str] = mapped_column(String(100), primary_key=True, default="", server_default="")
+
+    __table_args__ = (
+        Index(
+            "uq_trade_ticks_source_id",
+            "exchange",
+            "pair",
+            "trade_id",
+            unique=True,
+            postgresql_where=text("trade_id <> ''"),
+            sqlite_where=text("trade_id <> ''"),
+        ),
+    )
 
 
 class BookSnapshotRow(Base):

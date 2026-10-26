@@ -1487,3 +1487,48 @@ def test_xstocks_refresh_invalid_config_does_not_open_client(monkeypatch, tmp_pa
         assert result.exit_code == 2
     result = runner.invoke(cli.app, ["ingest", "xstocks-refresh", "--config", str(tmp_path / "absent")])
     assert result.exit_code == 2
+
+
+def test_ingest_xstocks_trades_routes_and_prunes(monkeypatch):
+    import kaupo.data.kraken as kraken
+    import kaupo.data.xstocks as xstocks
+
+    def forbidden():
+        pytest.fail("ordinary Kraken client constructed for xStocks")
+
+    monkeypatch.setattr(kraken, "KrakenClient", forbidden)
+    monkeypatch.setattr(xstocks, "XStocksClient", _FakeKrakenClient)
+    seen = {}
+
+    async def fake_ingest(client, sm, pair, start, end):
+        seen["imported_pair"] = str(pair)
+        assert end > start
+        return 3
+
+    monkeypatch.setattr(xstocks, "ingest_xstock_trades", fake_ingest)
+    _patch_trades_db(monkeypatch, None, None, 0, pruned=1, seen=seen)
+    result = runner.invoke(
+        cli.app,
+        ["ingest", "trades", "--pair", "AAPLx/USD", "--asset-class", "tokenized_asset", "--days", "1"],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen == {
+        "imported_pair": "AAPLX/USD",
+        "exchange": "kraken",
+        "pair": "AAPLX/USD",
+        "pruned_pair": "AAPLX/USD",
+    }
+    assert "Pruned 1" in result.output
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--asset-class", "stock"],
+        ["--asset-class", "tokenized_asset", "--exchange", "binance"],
+        ["--start", "2026-01-02", "--end", "2026-01-01"],
+    ],
+)
+def test_ingest_trades_rejects_invalid_routing_and_ranges(options):
+    result = runner.invoke(cli.app, ["ingest", "trades", "--pair", "AAPLX/USD", *options])
+    assert result.exit_code == 2

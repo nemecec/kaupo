@@ -20,14 +20,15 @@ def _to_domain(row: TradeTickRow) -> TradeTick:
         price=row.price,
         size=row.size,
         side=row.side,
+        trade_id=row.trade_id,
     )
 
 
 async def upsert_trade_ticks(session: AsyncSession, ticks: list[TradeTick]) -> int:
-    """Insert ticks; rows already in the table (same full key) are skipped.
+    """Insert immutable ticks; duplicate IDs or legacy full keys are skipped.
 
     Returns the number of ticks handed to the insert; ON CONFLICT DO NOTHING
-    drops duplicates (including same-ms identical ticks) silently, so the
+    drops duplicates (including identical legacy ticks) silently, so the
     inserted count can be lower.
     """
     if not ticks:
@@ -40,6 +41,7 @@ async def upsert_trade_ticks(session: AsyncSession, ticks: list[TradeTick]) -> i
             "price": t.price,
             "size": t.size,
             "side": t.side,
+            "trade_id": t.trade_id,
         }
         for t in ticks
     ]
@@ -68,11 +70,16 @@ async def get_trade_ticks(
         TradeTickRow.ts < end,
     )
     if limit is not None:
-        stmt = select(TradeTickRow).where(*where).order_by(TradeTickRow.ts.desc()).limit(limit)
+        stmt = (
+            select(TradeTickRow)
+            .where(*where)
+            .order_by(TradeTickRow.ts.desc(), TradeTickRow.trade_id.desc())
+            .limit(limit)
+        )
         rows = list((await session.execute(stmt)).scalars())
         rows.reverse()
     else:
-        stmt = select(TradeTickRow).where(*where).order_by(TradeTickRow.ts)
+        stmt = select(TradeTickRow).where(*where).order_by(TradeTickRow.ts, TradeTickRow.trade_id)
         rows = list((await session.execute(stmt)).scalars())
     return [_to_domain(row) for row in rows]
 
@@ -99,11 +106,16 @@ async def get_recent_trade_ticks(
     if start is not None:
         where.append(TradeTickRow.ts >= start)
     if limit is not None:
-        stmt = select(TradeTickRow).where(*where).order_by(TradeTickRow.ts.desc()).limit(limit)
+        stmt = (
+            select(TradeTickRow)
+            .where(*where)
+            .order_by(TradeTickRow.ts.desc(), TradeTickRow.trade_id.desc())
+            .limit(limit)
+        )
         rows = list((await session.execute(stmt)).scalars())
         rows.reverse()
     else:
-        stmt = select(TradeTickRow).where(*where).order_by(TradeTickRow.ts)
+        stmt = select(TradeTickRow).where(*where).order_by(TradeTickRow.ts, TradeTickRow.trade_id)
         rows = list((await session.execute(stmt)).scalars())
     return [_to_domain(row) for row in rows]
 
@@ -115,7 +127,7 @@ async def get_latest_trade_ts(session: AsyncSession, exchange: str, pair: str) -
             TradeTickRow.exchange == exchange,
             TradeTickRow.pair == pair,
         )
-        .order_by(TradeTickRow.ts.desc())
+        .order_by(TradeTickRow.ts.desc(), TradeTickRow.trade_id.desc())
         .limit(1)
     )
     result = await session.execute(stmt)

@@ -126,17 +126,17 @@ class OpenInterest:
 class TradeTick:
     """One public trade print (tick) from an exchange.
 
-    Order-flow data: who traded how much in which direction. Kraken serves
-    no trade id for public trades, so identity is the full
-    (exchange, pair, ts, price, size, side) tuple.
+    Order-flow data: who traded how much in which direction. Adapters can
+    preserve exchange trade IDs. Legacy adapters retain full-tuple deduplication.
     """
 
     exchange: str
     pair: str  # unified pair string, e.g. "BTC/EUR"
-    ts: datetime  # trade time, UTC (ms precision — ccxt truncates)
+    ts: datetime  # trade time, UTC; precision depends on the source adapter
     price: float
     size: float  # in base currency
     side: str  # "buy" | "sell" (taker side)
+    trade_id: str = ""  # empty for legacy adapters without a preserved exchange ID
 
 
 @dataclass(frozen=True)

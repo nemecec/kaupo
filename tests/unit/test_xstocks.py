@@ -272,3 +272,50 @@ async def test_unknown_market_stops_shadow_before_database_access(portfolio):
             else:
                 await run_shadow(ShadowRequest(pair=Pair.parse("BTC/USD"), **kwargs), None, client)
     assert len(requests) == 1
+
+
+async def test_raw_trade_stream_keeps_sides_ids_and_half_open_bounds():
+    first = trade(1, seconds=0.1)
+    second = trade(2, seconds=0.1)
+    second[3] = "s"
+    before = trade(0, seconds=0)
+    end = trade(3, hours=1)
+    client, requests = make_client(
+        [
+            {"AAPLxUSD": [before, first], "last": "1767384000100000000"},
+            {"AAPLxUSD": [first, second, end], "last": "1767387600000000000"},
+        ]
+    )
+    async with client:
+        trades = [
+            t
+            async for t in client.historical_trades(
+                PAIR, START + timedelta(microseconds=100000), START + timedelta(hours=1)
+            )
+        ]
+    assert [t.id for t in trades] == [1, 2]
+    assert [t.side for t in trades] == ["buy", "sell"]
+    assert requests[1].url.params["since"] == "1767384000099999999"
+
+
+async def test_changed_side_across_overlap_is_rejected():
+    first = trade(1)
+    changed = trade(1)
+    changed[3] = "s"
+    client, _ = make_client(
+        [
+            {"AAPLxUSD": [first], "last": "1767384000000000001"},
+            {"AAPLxUSD": [changed], "last": "1767384000000000001"},
+        ]
+    )
+    async with client:
+        with pytest.raises(ValueError, match="changed a trade"):
+            _ = [t async for t in client.historical_trades(PAIR, START, NOW)]
+
+
+async def test_raw_trade_empty_range_fails_before_fetch():
+    client, requests = make_client([])
+    async with client:
+        with pytest.raises(ValueError, match="start must be before"):
+            _ = [t async for t in client.historical_trades(PAIR, START, START)]
+    assert not requests

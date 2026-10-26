@@ -120,3 +120,30 @@ async def test_prune_deletes_old_rows_and_keeps_the_window(session: AsyncSession
 
     # pruning again is a no-op
     assert await prune_trade_ticks(session, "kraken", "BTC/EUR", cutoff) == 0
+
+
+async def test_source_ids_preserve_distinct_prints_and_ignore_repeated_ids(session):
+    from dataclasses import replace
+
+    a = replace(make_tick(BASE), trade_id="1")
+    b = replace(a, trade_id="2")
+    await upsert_trade_ticks(session, [a, b, a])
+    # Retained source IDs are immutable even if a retry changes the tuple.
+    await upsert_trade_ticks(session, [replace(a, price=200)])
+    assert await get_trade_ticks(session, "kraken", "BTC/EUR", BASE, BASE + timedelta(seconds=1)) == [a, b]
+    await upsert_trade_ticks(session, [replace(a, pair="ETH/EUR"), replace(a, exchange="binance")])
+    assert (await get_trade_range(session, "kraken", "ETH/EUR"))[2] == 1
+    assert (await get_trade_range(session, "binance", "BTC/EUR"))[2] == 1
+
+
+async def test_legacy_sql_insert_uses_empty_trade_id(session):
+    await session.execute(
+        text(
+            "INSERT INTO trade_ticks(exchange, pair, ts, price, size, side) "
+            "VALUES ('kraken', 'BTC/EUR', :ts, 100, 0.1, 'buy')"
+        ),
+        {"ts": BASE},
+    )
+    ticks = await get_trade_ticks(session, "kraken", "BTC/EUR", BASE, BASE + timedelta(seconds=1))
+    assert len(ticks) == 1
+    assert ticks[0].trade_id == ""
