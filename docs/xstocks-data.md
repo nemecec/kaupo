@@ -97,7 +97,8 @@ Daily reports separate amounts by currency, and account-equity curves support cu
 Assignments support maker and taker fees, including rebates.
 These safeguards do not establish supported xStocks live trading.
 
-Remaining work includes runner and trading-client routing, risk-state persistence across restarts, dedicated data operations, and account-specific validation.
+Compatible restarts restore [risk checkpoints](risk-resume.md), with an explicit limitation for legacy runs.
+Remaining work includes runner and trading-client routing, dedicated data operations, and account-specific validation.
 
 ## References and validation
 

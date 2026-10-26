@@ -11,7 +11,10 @@ the taker fee + slippage so approved orders are always affordable.
 import enum
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from kaupo.config import default_taker_bps
 from kaupo.domain import OrderIntent, Pair, Position, Side
@@ -85,6 +88,30 @@ def _floor_equity(state: RiskState) -> float:
     return total
 
 
+class RiskCheckpoint(BaseModel):
+    """Versioned internal state; execution config always comes from the new request."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    version: Literal[1]
+    day: str | None
+    day_start_floor: float
+    last_floor: float | None
+    consecutive_losses: int = Field(ge=0)
+    cooldown_remaining: int = Field(ge=0)
+    halted: bool
+    halt_reason: str
+
+    @model_validator(mode="after")
+    def consistent(self) -> "RiskCheckpoint":
+        if self.day is not None:
+            date.fromisoformat(self.day)
+        if (self.day is None) != (self.last_floor is None):
+            raise ValueError("risk day and last floor must both be present or absent")
+        if self.halted and not self.halt_reason:
+            raise ValueError("halted checkpoint requires a reason")
+        return self
+
+
 @dataclass
 class RiskManager:
     config: RiskConfig
@@ -96,6 +123,34 @@ class RiskManager:
     _consecutive_losses: int = 0
     _cooldown_remaining: int = 0
     rejections: deque[str] = field(default_factory=lambda: deque(maxlen=1000))
+
+    def checkpoint(self) -> dict[str, Any]:
+        return RiskCheckpoint(
+            version=1,
+            day=date(*self._day).isoformat() if self._day else None,
+            day_start_floor=self._day_start_floor,
+            last_floor=self._last_floor,
+            consecutive_losses=self._consecutive_losses,
+            cooldown_remaining=self._cooldown_remaining,
+            halted=self.halted,
+            halt_reason=self.halt_reason,
+        ).model_dump(mode="json")
+
+    @classmethod
+    def restored(cls, config: RiskConfig, checkpoint: dict[str, Any] | None = None) -> "RiskManager":
+        manager = cls(config)
+        if checkpoint is None:
+            return manager
+        saved = RiskCheckpoint.model_validate(checkpoint)
+        day = date.fromisoformat(saved.day) if saved.day else None
+        manager._day = (day.year, day.month, day.day) if day else None
+        manager._day_start_floor = saved.day_start_floor
+        manager._last_floor = saved.last_floor
+        manager._consecutive_losses = saved.consecutive_losses
+        manager._cooldown_remaining = saved.cooldown_remaining
+        manager.halted = saved.halted
+        manager.halt_reason = saved.halt_reason
+        return manager
 
     def on_candle(self, state: RiskState) -> bool:
         """Advance tracking, including losses since the previous observed close.

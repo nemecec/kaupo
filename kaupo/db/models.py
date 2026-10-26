@@ -199,6 +199,7 @@ class RunRow(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(10))
     config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    risk_state: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     metrics: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     __table_args__ = (Index("ix_runs_mode_started", "mode", "started_at"),)

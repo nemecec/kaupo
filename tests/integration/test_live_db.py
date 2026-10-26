@@ -21,7 +21,7 @@ from kaupo.data.candles import upsert_candles
 from kaupo.db.models import EquitySnapshotRow, EventRow, FillRow, OrderRow, RunRow
 from kaupo.db.session import get_sessionmaker
 from kaupo.domain import Candle, Pair, Side, Timeframe, new_id, utc_now
-from kaupo.risk.manager import RiskConfig
+from kaupo.risk.manager import RiskConfig, RiskManager, RiskState
 from kaupo.sdk.loader import load_strategies
 from kaupo.venues.kraken_client import AsyncBridge
 from tests.fake_kraken import FakeKrakenClient
@@ -434,10 +434,14 @@ class TestReconciliationOnStart:
         now, history = await _seed_history(session)
         request = _request(tmp_path, strategy_id="hold")
         chain_start = utc_now() - timedelta(hours=6)
+        saved_risk = RiskManager(request.risk)
+        saved_risk.on_candle(RiskState(now, 1000.0, {}, {}, 1000.0))
+        saved_risk.notify_trade_result(-1)
         # a predecessor of the same config, superseded by a restart
         session.add(
             RunRow(
                 id="predecessor",
+                risk_state=saved_risk.checkpoint(),
                 mode="live",
                 strategy_id="hold",
                 strategy_version=request.strategy.version,
@@ -483,6 +487,9 @@ class TestReconciliationOnStart:
         # account's balance as the chain's quote reference point
         new_run = (await session.execute(select(RunRow).where(RunRow.id != "predecessor"))).scalars().one()
         assert new_run.config["quote_baseline"] == 799.68
+        assert new_run.risk_state["day_start_floor"] == 1000.0
+        assert new_run.risk_state["consecutive_losses"] == 1
+        assert new_run.risk_state["last_floor"] == pytest.approx(999.68)
 
     async def test_a_ledger_that_disagrees_with_the_account_refuses_to_start(
         self, session: AsyncSession, tmp_path: Path, bridge: AsyncBridge

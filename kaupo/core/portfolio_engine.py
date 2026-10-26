@@ -267,6 +267,8 @@ class PortfolioEngine:
         """Run the loop. The first ``warmup`` steps only populate history and
         last-known prices — no orders, no snapshots."""
         await self.recorder.start(self.run_info)
+        if self.run_info.mode in (RunMode.SHADOW, RunMode.LIVE):
+            await self.recorder.record_risk(self.risk.checkpoint())
         status = RunStatus.COMPLETED
         last_step: dict[Pair, Candle] | None = None
         seen = 0
@@ -283,7 +285,11 @@ class PortfolioEngine:
                 if seen < warmup:
                     self._append_history(candles)
                 else:
+                    if self.run_info.mode in (RunMode.SHADOW, RunMode.LIVE):
+                        await self.recorder.record_risk({"version": 1, "incomplete": True})
                     await self._process_step(ts, candles)
+                    if self.run_info.mode in (RunMode.SHADOW, RunMode.LIVE):
+                        await self.recorder.record_risk(self.risk.checkpoint())
                 seen += 1
                 if self._killed:
                     status = RunStatus.HALTED
@@ -449,6 +455,8 @@ class PortfolioEngine:
 
     async def _wind_down(self, status: RunStatus, last_step: dict[Pair, Candle] | None) -> Decimal:
         if status is RunStatus.COMPLETED and self.config.liquidate_end and last_step is not None:
+            if self.run_info.mode in (RunMode.SHADOW, RunMode.LIVE):
+                await self.recorder.record_risk({"version": 1, "incomplete": True})
             for pair in sorted(self.config.pairs, key=str):
                 pos = self.ledger.position(pair)
                 candle = self._last_candle.get(pair)

@@ -233,6 +233,8 @@ class Engine:
         """Run the loop. The first ``warmup`` candles only populate history —
         no orders, no snapshots — so a live run starts with full context."""
         await self.recorder.start(self.run_info)
+        if self.run_info.mode in (RunMode.SHADOW, RunMode.LIVE):
+            await self.recorder.record_risk(self.risk.checkpoint())
         status = RunStatus.COMPLETED
         last_candle: Candle | None = None
         seen = 0
@@ -251,7 +253,11 @@ class Engine:
                 else:
                     try:
                         async with asyncio.timeout(self._candle_timeout):
+                            if self.run_info.mode in (RunMode.SHADOW, RunMode.LIVE):
+                                await self.recorder.record_risk({"version": 1, "incomplete": True})
                             await self._process_candle(candle)
+                            if self.run_info.mode in (RunMode.SHADOW, RunMode.LIVE):
+                                await self.recorder.record_risk(self.risk.checkpoint())
                     except TimeoutError:
                         log.error(
                             "Candle body watchdog fired after %.0fs at %s", self._candle_timeout, candle.ts
@@ -469,6 +475,8 @@ class Engine:
 
     async def _wind_down(self, status: RunStatus, last_candle: Candle | None) -> Decimal:
         if status is RunStatus.COMPLETED and self.config.liquidate_end and last_candle is not None:
+            if self.run_info.mode in (RunMode.SHADOW, RunMode.LIVE):
+                await self.recorder.record_risk({"version": 1, "incomplete": True})
             pos = self.ledger.position(self.config.pair)
             if pos.size != 0:  # a perp run can end short: cover it too
                 fill = self.venue.liquidate(self.config.pair, pos.size, last_candle)
@@ -485,6 +493,9 @@ class Engine:
                     equity = self.ledger.equity({self.config.pair: last_candle.close})
                     await self.recorder.record_equity(last_candle.ts, equity, self.ledger.cash, Decimal(0))
                     self._last_snapshot_ts = last_candle.ts
+
+            if self.run_info.mode in (RunMode.SHADOW, RunMode.LIVE):
+                await self.recorder.record_risk(self.risk.checkpoint())
 
         for order in self.venue.cancel_all():
             if order.status is OrderStatus.CANCELLED:

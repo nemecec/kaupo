@@ -257,6 +257,13 @@ async def test_superseded_run_resumes_ledger_state_and_chain(session: AsyncSessi
     assert run1.status == "halted"
     assert run1.metrics["halt_reason"] == SUPERSEDED_HALT_REASON
     assert run2.config["resumed_from"] == run1.id
+    assert run1.risk_state is not None
+    expected_floor = (
+        run1.risk_state["day_start_floor"]
+        if run1.risk_state["day"] == run2.risk_state["day"]
+        else run1.risk_state["last_floor"]
+    )
+    assert run2.risk_state["day_start_floor"] == expected_floor
     assert run2.config["chain_started_at"] == run1.started_at.isoformat()
     snaps2 = await _snapshots(session, run2.id)
     assert len(snaps2) == 1
@@ -306,6 +313,13 @@ async def test_gracefully_stopped_run_resumes(session: AsyncSession, tmp_path: P
     run1, run2 = await _runs(session)
     assert run1.status == "completed"  # untouched: the slot was free
     assert run2.config["resumed_from"] == run1.id
+    assert run1.risk_state is not None
+    expected_floor = (
+        run1.risk_state["day_start_floor"]
+        if run1.risk_state["day"] == run2.risk_state["day"]
+        else run1.risk_state["last_floor"]
+    )
+    assert run2.risk_state["day_start_floor"] == expected_floor
     assert run2.config["chain_started_at"] == run1.started_at.isoformat()
     snaps2 = await _snapshots(session, run2.id)
     assert len(snaps2) == 1
@@ -391,6 +405,13 @@ async def test_portfolio_superseded_run_resumes_ledger_state(session: AsyncSessi
     run1, run2 = await _runs(session)
     assert run1.metrics["halt_reason"] == SUPERSEDED_HALT_REASON
     assert run2.config["resumed_from"] == run1.id
+    assert run1.risk_state is not None
+    expected_floor = (
+        run1.risk_state["day_start_floor"]
+        if run1.risk_state["day"] == run2.risk_state["day"]
+        else run1.risk_state["last_floor"]
+    )
+    assert run2.risk_state["day_start_floor"] == expected_floor
     assert run2.config["chain_started_at"] == run1.started_at.isoformat()
     assert run2.config["pair"] == "BTC/EUR,SOL/EUR"
     snaps2 = await _snapshots(session, run2.id)
@@ -429,6 +450,13 @@ async def test_shutdown_halted_run_resumes(session: AsyncSession, tmp_path: Path
     run1, run2 = await _runs(session)
     assert run1.status == "halted"  # untouched: the slot was free
     assert run2.config["resumed_from"] == run1.id
+    assert run1.risk_state is not None
+    expected_floor = (
+        run1.risk_state["day_start_floor"]
+        if run1.risk_state["day"] == run2.risk_state["day"]
+        else run1.risk_state["last_floor"]
+    )
+    assert run2.risk_state["day_start_floor"] == expected_floor
     assert run2.config["chain_started_at"] == run1.started_at.isoformat()
     snaps2 = await _snapshots(session, run2.id)
     assert len(snaps2) == 1
@@ -439,7 +467,7 @@ async def test_shutdown_halted_run_resumes(session: AsyncSession, tmp_path: Path
 
 async def test_rail_halted_run_does_not_resume(session: AsyncSession, tmp_path: Path) -> None:
     """A genuine risk-rail halt (halted, empty metrics, accusing reason in
-    the audit log) is a deliberate stop: the successor starts fresh."""
+    the audit log) is a deliberate stop: an automatic successor is refused."""
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     # the rail trips only while c3's close stays on c1's clock day (the
     # engine clock ticks at candle close, so c3 closes at now+2h): anchor
@@ -467,17 +495,14 @@ async def test_rail_halted_run_does_not_resume(session: AsyncSession, tmp_path: 
     assert run1.metrics is None
     assert [r.startswith("max daily loss hit") for r in await _halt_reasons(session, run1.id)] == [True]
 
-    # run 2, same config: NOT resumed — the rail halt was a deliberate stop
-    result2 = await _run_shadow(
-        tmp_path, ScriptedClient([*history, c1, c2, c3], [[c4], [c5]], asyncio.Event()), risk=tiny_loss_cap
-    )
-    assert result2.num_fills == 1  # a flat book: the strategy enters again
-    _, run2 = await _runs(session)
-    assert "resumed_from" not in run2.config
-    assert "chain_started_at" not in run2.config
-    snaps2 = await _snapshots(session, run2.id)
-    assert snaps2[0].cash == 10_000.0  # fresh ledger at starting_cash
-    assert snaps2[0].unrealized_pnl == 0.0
+    # A persisted risk halt must not restart with a fresh baseline/book.
+    with pytest.raises(ValueError, match="persisted risk halt"):
+        await _run_shadow(
+            tmp_path,
+            ScriptedClient([*history, c1, c2, c3], [[c4], [c5]], asyncio.Event()),
+            risk=tiny_loss_cap,
+        )
+    assert len(await _runs(session)) == 1
 
 
 async def test_control_killed_run_does_not_resume(session: AsyncSession, tmp_path: Path) -> None:
