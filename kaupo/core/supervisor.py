@@ -16,8 +16,8 @@ import asyncio
 import enum
 import logging
 import traceback
-from collections.abc import Mapping
-from contextlib import suppress
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
@@ -34,6 +34,8 @@ from kaupo.core.runner import PortfolioShadowRequest, ShadowRequest, run_portfol
 from kaupo.data.assignments import Assignment, effective_fees, list_assignments
 from kaupo.data.binance import BinanceClient
 from kaupo.data.kraken import KrakenClient
+from kaupo.data.market_data import AssetClass, CandleClient
+from kaupo.data.xstocks import XStocksClient
 from kaupo.db.models import EquitySnapshotRow, EventRow, RunRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Pair, RunMode, RunStatus, Timeframe, utc_now
@@ -258,6 +260,8 @@ def live_start_error(assignment: Assignment, settings: Settings) -> str | None:
     """
     if assignment.mode != RunMode.LIVE.value:
         return None
+    if assignment.asset_class == "tokenized_asset":
+        return "xStocks live trading is not supported; use shadow mode"
     if assignment.pairs is not None:
         return "live runs are single-pair only; this assignment declares a portfolio universe"
     try:
@@ -270,9 +274,28 @@ def live_start_error(assignment: Assignment, settings: Settings) -> str | None:
 def assignment_config_hash(assignment: Assignment) -> str:
     """Restart when effective fees change without changing ledger resume identity."""
     identity = config_hash(
-        assignment.strategy_id, assignment.pair, assignment.timeframe, assignment.params, assignment.pairs
+        assignment.strategy_id,
+        assignment.pair,
+        assignment.timeframe,
+        assignment.params,
+        assignment.pairs,
+        assignment.asset_class,
     )
     return f"{assignment.mode}:{identity}:{effective_fees(assignment)}"
+
+
+@asynccontextmanager
+async def _shadow_clients(
+    asset_class: AssetClass,
+) -> AsyncIterator[tuple[CandleClient, BinanceClient | None]]:
+    if asset_class == "tokenized_asset":
+        async with XStocksClient() as client:
+            yield client, None
+    elif asset_class == "currency":
+        async with KrakenClient() as crypto, BinanceClient() as funding:
+            yield crypto, funding
+    else:
+        raise ValueError(f"Unsupported asset class: {asset_class}")
 
 
 async def _run_assignment(
@@ -294,6 +317,8 @@ async def _run_assignment(
     if schedule_provider is None:
         schedule_provider = initial_schedule
     if assignment.mode == RunMode.LIVE.value:
+        if assignment.asset_class != "currency":
+            raise LiveTradingUnavailable("xStocks live trading is not supported; use shadow mode")
         # the live venue owns the authenticated client; this one stays public
         # market data, and the funding client feeds the same advisory series
         # a shadow run gets, exactly as in a shadow run
@@ -314,9 +339,10 @@ async def _run_assignment(
             return await run_live(live_request, sessionmaker, client, stop, funding_client=funding_client)
     # One Kraken client per run: each run gets its own exchange rate-limit
     # bucket. A shared client may be wanted later, when runs multiply.
-    async with KrakenClient() as client, BinanceClient() as funding_client:
+    async with _shadow_clients(assignment.asset_class) as (shadow_client, shadow_funding):
         if assignment.pairs is not None:
             portfolio_request = PortfolioShadowRequest(
+                asset_class=assignment.asset_class,
                 strategy=strategy,
                 params=assignment.params,
                 pairs=[Pair.parse(p) for p in assignment.pairs],
@@ -330,9 +356,10 @@ async def _run_assignment(
                 funding_refresh_seconds=funding_refresh_seconds,
             )
             return await run_portfolio_shadow(
-                portfolio_request, sessionmaker, client, stop, funding_client=funding_client
+                portfolio_request, sessionmaker, shadow_client, stop, funding_client=shadow_funding
             )
         request = ShadowRequest(
+            asset_class=assignment.asset_class,
             strategy=strategy,
             params=assignment.params,
             pair=Pair.parse(assignment.pair),
@@ -345,7 +372,7 @@ async def _run_assignment(
             schedule_provider=schedule_provider,
             funding_refresh_seconds=funding_refresh_seconds,
         )
-        return await run_shadow(request, sessionmaker, client, stop, funding_client=funding_client)
+        return await run_shadow(request, sessionmaker, shadow_client, stop, funding_client=shadow_funding)
 
 
 def _log_task_stack(aid: str, task: asyncio.Task[RunResult]) -> None:

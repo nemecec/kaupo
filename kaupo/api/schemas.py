@@ -252,6 +252,7 @@ class EventOut(BaseModel):
 
 
 class AssignmentIn(BaseModel):
+    asset_class: Literal["currency", "tokenized_asset"] = "currency"
     trading_schedule: TradingSchedule | None = None
     id: str | None = Field(default=None, min_length=1, max_length=100)  # generated when absent
     strategy_id: str
@@ -276,6 +277,7 @@ class AssignmentIn(BaseModel):
 
 
 class AssignmentUpdate(BaseModel):
+    asset_class: Literal["currency", "tokenized_asset"] | None = None
     trading_schedule: TradingSchedule | None = None
     strategy_id: str | None = None
     pair: str | None = None
@@ -298,6 +300,7 @@ class AssignmentUpdate(BaseModel):
 
 
 class AssignmentOut(BaseModel):
+    asset_class: Literal["currency", "tokenized_asset"] = "currency"
     trading_schedule: TradingSchedule | None = None
     id: str
     strategy_id: str

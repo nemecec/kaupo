@@ -30,7 +30,8 @@ from kaupo.data.binance import BinanceClient
 from kaupo.data.candles import get_latest_candles, upsert_candles
 from kaupo.data.funding import upsert_funding_rates
 from kaupo.data.ingest import LiveCandlePoller, refresh_recent_candles
-from kaupo.data.kraken import KrakenClient
+from kaupo.data.market_data import AssetClass, CandleClient
+from kaupo.data.xstocks import XStocksClient
 from kaupo.db.models import EventRow
 from kaupo.db.session import sm_scope
 from kaupo.domain import Candle, Pair, RunMode, Timeframe
@@ -73,6 +74,7 @@ class ShadowRequest:
     schedule_provider: ScheduleProvider | None = None
     # seconds between funding-rate refreshes (Binance perp of the base asset)
     funding_refresh_seconds: float = 1800.0
+    asset_class: AssetClass = "currency"
 
 
 # funding refresh covers the recent past; older history comes from
@@ -174,13 +176,32 @@ class DbControlProbe:
         return self._command
 
 
+async def _validate_shadow_source(
+    asset_class: AssetClass,
+    client: CandleClient,
+    pairs: list[Pair],
+    funding_client: BinanceClient | None,
+) -> None:
+    if asset_class not in ("currency", "tokenized_asset"):
+        raise ValueError(f"Unsupported asset class: {asset_class}")
+    if asset_class != getattr(client, "asset_class", "currency"):
+        raise ValueError("Shadow request asset class does not match the market-data client")
+    if asset_class == "tokenized_asset":
+        if funding_client is not None:
+            raise ValueError("xStocks shadow runs do not support Binance funding refresh")
+        if not isinstance(client, XStocksClient):
+            raise ValueError("xStocks shadow runs require XStocksClient")
+        await client.validate_pairs(pairs)
+
+
 async def run_shadow(
     request: ShadowRequest,
     sessionmaker: async_sessionmaker[AsyncSession],
-    client: KrakenClient,
+    client: CandleClient,
     stop: asyncio.Event | None = None,
     funding_client: BinanceClient | None = None,
 ) -> RunResult:
+    await _validate_shadow_source(request.asset_class, client, [request.pair], funding_client)
     stop = stop or asyncio.Event()
     warmup = request.warmup if request.warmup is not None else request.lookback
 
@@ -218,6 +239,7 @@ async def run_shadow(
         # documentation edit no longer orphans this chain (kaupo#46)
         "behaviour_hash": request.strategy.behaviour_hash,
         "engine_version": engine_version(),
+        "asset_class": request.asset_class,
         "starting_cash": request.starting_cash,
         "fees": {
             "taker_bps": request.taker_fee_bps,
@@ -245,6 +267,7 @@ async def run_shadow(
         quote_asset=request.pair.quote,
         assignment_id=request.assignment_id,
         behaviour_hash=request.strategy.behaviour_hash,
+        asset_class=request.asset_class,
     )
     if resume is not None:
         config["resumed_from"] = resume.predecessor_run_id
@@ -486,6 +509,7 @@ class PortfolioShadowRequest:
     # how long the joiner waits for a pair's candle before emitting a
     # partial universe step (the pair skips that tick)
     join_grace_seconds: float = 45.0
+    asset_class: AssetClass = "currency"
 
     def __post_init__(self) -> None:
         if len(self.pairs) < 2:
@@ -506,7 +530,7 @@ class PortfolioShadowRequest:
 async def run_portfolio_shadow(
     request: PortfolioShadowRequest,
     sessionmaker: async_sessionmaker[AsyncSession],
-    client: KrakenClient,
+    client: CandleClient,
     stop: asyncio.Event | None = None,
     funding_client: BinanceClient | None = None,
 ) -> RunResult:
@@ -517,6 +541,7 @@ async def run_portfolio_shadow(
     venue per pair, one ledger on the shared quote), and polled candles
     persisted to keep the store fresh.
     """
+    await _validate_shadow_source(request.asset_class, client, request.pairs, funding_client)
     stop = stop or asyncio.Event()
     warmup = request.warmup if request.warmup is not None else request.lookback
 
@@ -562,6 +587,7 @@ async def run_portfolio_shadow(
         # see the single-pair runner: the resume identity ignores docstrings
         "behaviour_hash": request.strategy.behaviour_hash,
         "engine_version": engine_version(),
+        "asset_class": request.asset_class,
         "starting_cash": request.starting_cash,
         "fees": {
             "taker_bps": request.taker_fee_bps,
@@ -589,6 +615,7 @@ async def run_portfolio_shadow(
         quote_asset=request.pairs[0].quote,
         assignment_id=request.assignment_id,
         behaviour_hash=request.strategy.behaviour_hash,
+        asset_class=request.asset_class,
     )
     if resume is not None:
         config["resumed_from"] = resume.predecessor_run_id

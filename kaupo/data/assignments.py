@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from kaupo.config import default_maker_bps, default_taker_bps
+from kaupo.data.market_data import AssetClass
 from kaupo.db.models import RunAssignmentRow
 from kaupo.domain import Pair, RunMode, utc_now
 from kaupo.market_calendar import TradingSchedule
@@ -57,6 +58,7 @@ class Assignment:
     trading_schedule: TradingSchedule | None = None
     taker_fee_bps: float | None = None
     maker_fee_bps: float | None = None
+    asset_class: AssetClass = "currency"
 
 
 def effective_fees(assignment: Assignment) -> tuple[float, float]:
@@ -69,6 +71,7 @@ def effective_fees(assignment: Assignment) -> tuple[float, float]:
 
 def _to_assignment(row: RunAssignmentRow) -> Assignment:
     return Assignment(
+        asset_class=row.asset_class,
         id=row.id,
         strategy_id=row.strategy_id,
         pair=row.pair,
@@ -117,6 +120,7 @@ async def create_assignment(
     trading_schedule: TradingSchedule | None = None,
     taker_fee_bps: float | None = None,
     maker_fee_bps: float | None = None,
+    asset_class: AssetClass = "currency",
 ) -> Assignment:
     if pairs is not None:
         # portfolio assignment: pair stores the joined canonical universe
@@ -124,6 +128,7 @@ async def create_assignment(
         pair = ",".join(pairs)
     now = utc_now()
     row = RunAssignmentRow(
+        asset_class=asset_class,
         id=id,
         strategy_id=strategy_id,
         pair=pair,

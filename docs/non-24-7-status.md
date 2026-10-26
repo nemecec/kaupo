@@ -1,6 +1,6 @@
 # Non-24/7 support status
 
-This audit covers merged work through PR #73 for [issue #43](https://github.com/nemecec/kaupo/issues/43).
+This audit covers merged safeguards through PR #75 and the current shadow-routing implementation for [issue #43](https://github.com/nemecec/kaupo/issues/43).
 The original calendar defects have targeted fixes. Supported xStocks live trading still requires the work listed after the table.
 A merged safeguard does not establish account eligibility or validate real orders.
 
@@ -38,12 +38,13 @@ It does not substitute stock-exchange or perpetual-futures history for tokenized
 ### xStocks routing in runners and the trading client
 
 The dedicated importer uses `XStocksClient` in [xstocks.py](../kaupo/data/xstocks.py).
-Shadow and live runners still receive the ordinary [KrakenClient](../kaupo/data/kraken.py).
+Supervised shadow assignments with `asset_class=tokenized_asset` use this client for discovery, warm-up, and polling.
+Existing assignments default to `currency`. xStocks assignments do not start Binance funding refreshes.
+The API and supervisor reject xStocks live mode. The standalone shadow CLI retains crypto routing.
 The [trading client](../kaupo/venues/kraken_client.py) still loads markets through its standard ccxt adapter.
 A trading schedule changes diagnostics and metrics. It does not select an asset class or change endpoint routing.
 
-The next routing change needs explicit instrument configuration shared by discovery, startup refresh, polling, and market metadata.
-It must preserve crypto behavior and reject unsupported combinations before trading starts.
+The [xStocks guide](xstocks-data.md) describes assignment configuration and public OHLC history limits.
 Authenticated symbol handling, order submission, reconciliation, and expiry need separate validation for the tokenized-asset path.
 Public market discovery alone does not validate those operations.
 
