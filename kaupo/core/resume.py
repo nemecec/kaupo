@@ -68,15 +68,17 @@ def config_hash(
     timeframe: str,
     params: dict[str, Any],
     pairs: list[str] | None = None,
+    asset_class: str = "currency",
 ) -> str:
     """Stable hash of the run-defining fields of an assignment.
 
-    A change in strategy, pair, universe (``pairs``), timeframe, or params
+    A change in asset class, strategy, pair, universe (``pairs``), timeframe, or params
     changes ledger identity. The supervisor separately tracks mode and fee
     changes to restart execution without changing this identity.
     """
     canonical = json.dumps(
         {
+            **({"asset_class": asset_class} if asset_class != "currency" else {}),
             "strategy": strategy_id,
             "pair": pair,
             "pairs": pairs,
@@ -98,6 +100,7 @@ def run_config_hash(row: RunRow) -> str:
         str(config.get("timeframe", "")),
         config.get("params") or {},
         config.get("pairs"),
+        str(config.get("asset_class", "currency")),
     )
 
 
@@ -279,6 +282,7 @@ async def prepare_resume(
     assignment_id: str | None = None,
     behaviour_hash: str | None = None,
     mode: RunMode = RunMode.SHADOW,
+    asset_class: str = "currency",
 ) -> ResumeState | None:
     """The carried state for a new shadow or live run; None for a fresh start.
 
@@ -312,7 +316,7 @@ async def prepare_resume(
         predecessor = (await session.execute(stmt)).scalars().first()
         if predecessor is None:
             return None
-        new_hash = config_hash(strategy_id, pair, timeframe, params, pairs)
+        new_hash = config_hash(strategy_id, pair, timeframe, params, pairs, asset_class)
         # A matching chain must not bypass a damaged or halted checkpoint by
         # falling through to the legacy "start fresh" path.
         if run_config_hash(predecessor) == new_hash and _same_strategy(

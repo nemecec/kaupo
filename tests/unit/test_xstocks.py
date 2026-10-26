@@ -228,3 +228,47 @@ async def test_invalid_or_empty_ranges_do_not_fetch():
             await collect(client, end=START)
         assert await collect(client, end=START + timedelta(minutes=30)) == []
     assert requests == []
+
+
+async def test_polling_adapter_filters_since_and_limit_without_filling_closures():
+    ts = int(START.timestamp())
+    rows = [[ts + h * 3600, "100", "103", "99", "102", "101", "2", 3] for h in (0, 1, 64)]
+    client, requests = make_client([{"AAPLxUSD": rows, "last": ts}] * 2, endpoint="OHLC")
+    async with client:
+        candles = await client.fetch_candles(PAIR, Timeframe.H1, since=START + timedelta(hours=1))
+        latest = await client.fetch_candles(PAIR, Timeframe.H1, limit=1)
+    assert [c.ts for c in candles] == [START + timedelta(hours=h) for h in (1, 64)]
+    assert latest == candles[-1:]
+    assert all(r.url.params["asset_class"] == "tokenized_asset" for r in requests[1:])
+
+
+async def test_shadow_preflight_validates_entire_universe_and_client():
+    from kaupo.core.runner import _validate_shadow_source
+
+    client, requests = make_client([])
+    async with client:
+        await _validate_shadow_source("tokenized_asset", client, [PAIR], None)
+        with pytest.raises(ValueError, match="not in Kraken"):
+            await _validate_shadow_source("tokenized_asset", client, [PAIR, Pair.parse("BTC/USD")], None)
+        with pytest.raises(ValueError, match="does not match"):
+            await _validate_shadow_source("currency", client, [PAIR], None)
+        with pytest.raises(ValueError, match="funding"):
+            await _validate_shadow_source("tokenized_asset", client, [PAIR], object())
+    assert len(requests) == 1  # discovery cached; no OHLC or funding requests
+
+
+@pytest.mark.parametrize("portfolio", [False, True])
+async def test_unknown_market_stops_shadow_before_database_access(portfolio):
+    from kaupo.core.runner import PortfolioShadowRequest, ShadowRequest, run_portfolio_shadow, run_shadow
+
+    client, requests = make_client([])
+    kwargs = dict(strategy=object(), params={}, timeframe=Timeframe.H1, asset_class="tokenized_asset")
+    async with client:
+        with pytest.raises(ValueError, match="not in Kraken"):
+            if portfolio:
+                await run_portfolio_shadow(
+                    PortfolioShadowRequest(pairs=[PAIR, Pair.parse("BTC/USD")], **kwargs), None, client
+                )
+            else:
+                await run_shadow(ShadowRequest(pair=Pair.parse("BTC/USD"), **kwargs), None, client)
+    assert len(requests) == 1

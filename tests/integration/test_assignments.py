@@ -1384,3 +1384,29 @@ async def test_schedule_changes_reach_running_pollers_without_restart(session, m
     finally:
         stop.set()
         await asyncio.wait_for(task, timeout=10)
+
+
+async def test_asset_class_persists_and_rejects_live_updates(client):
+    payload = {"id": "xstocks", "strategy_id": "regime-switch", "pair": "AAPLX/USD", "timeframe": "1h"}
+    response = await client.post("/api/v1/assignments", json={**payload, "asset_class": "tokenized_asset"})
+    assert response.status_code == 201
+    assert response.json()["asset_class"] == "tokenized_asset"
+    response = await client.put("/api/v1/assignments/xstocks", json={"enabled": False, "asset_class": None})
+    assert response.status_code == 200
+    assert response.json()["asset_class"] == "tokenized_asset"
+    async with sm_scope(get_sessionmaker()) as s:
+        assert (await assignments_repo.get_assignment(s, "xstocks")).asset_class == "tokenized_asset"
+    response = await client.put("/api/v1/assignments/xstocks", json={"asset_class": "currency"})
+    assert response.json()["asset_class"] == "currency"
+    response = await client.post("/api/v1/assignments", json={**payload, "id": "live", "mode": "live"})
+    assert response.status_code == 201
+    assert response.json()["asset_class"] == "currency"
+    response = await client.put("/api/v1/assignments/live", json={"asset_class": "tokenized_asset"})
+    assert response.status_code == 422
+    response = await client.post(
+        "/api/v1/assignments",
+        json={**payload, "id": "bad-live", "mode": "live", "asset_class": "tokenized_asset"},
+    )
+    assert response.status_code == 422
+    response = await client.put("/api/v1/assignments/xstocks", json={"asset_class": "stock"})
+    assert response.status_code == 422

@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, LargeBinary, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -296,6 +296,9 @@ class SettingRow(Base):
 
 class RunAssignmentRow(Base):
     __tablename__ = "run_assignments"
+    asset_class: Mapped[Literal["currency", "tokenized_asset"]] = mapped_column(
+        String(20), default="currency", server_default="currency"
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     strategy_id: Mapped[str] = mapped_column(Text)

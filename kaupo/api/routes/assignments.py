@@ -114,6 +114,7 @@ def _assignment_out(assignment: Assignment, run_id: str | None) -> AssignmentOut
         params=assignment.params,
         enabled=assignment.enabled,
         starting_cash=assignment.starting_cash,
+        asset_class=assignment.asset_class,
         trading_schedule=assignment.trading_schedule,
         taker_fee_bps=assignment.taker_fee_bps,
         maker_fee_bps=assignment.maker_fee_bps,
@@ -185,13 +186,15 @@ def _validate_mode(mode: str) -> str:
         raise HTTPException(status_code=422, detail=f"unknown mode {mode!r}; valid: {valid}") from None
 
 
-def _validate_live(mode: str, portfolio: bool) -> None:
+def _validate_live(mode: str, portfolio: bool, asset_class: str = "currency") -> None:
     """Live runs are single-pair. A portfolio universe has no live path yet.
 
     Rejecting here keeps the desired-state table honest: the supervisor
     would otherwise hold the row down in backoff forever, with the reason
     visible only in its logs.
     """
+    if mode == RunMode.LIVE.value and asset_class == "tokenized_asset":
+        raise HTTPException(status_code=422, detail="xStocks live trading is not supported; use shadow mode")
     if mode == RunMode.LIVE.value and portfolio:
         raise HTTPException(
             status_code=422,
@@ -242,7 +245,7 @@ async def create_assignment(
     pair = _validate_pair(body.pair) if body.pair is not None else ""
     pairs = _validate_pairs(body.pairs) if body.pairs is not None else None
     mode = _validate_mode(body.mode)
-    _validate_live(mode, portfolio=pairs is not None)
+    _validate_live(mode, portfolio=pairs is not None, asset_class=body.asset_class)
     assignment = await assignments_repo.create_assignment(
         session,
         id=assignment_id,
@@ -253,6 +256,7 @@ async def create_assignment(
         params=body.params,
         enabled=body.enabled,
         starting_cash=body.starting_cash,
+        asset_class=body.asset_class,
         trading_schedule=body.trading_schedule,
         taker_fee_bps=body.taker_fee_bps,
         maker_fee_bps=body.maker_fee_bps,
@@ -273,9 +277,16 @@ async def update_assignment(
     if current is None:
         raise HTTPException(status_code=404, detail=f"assignment {assignment_id!r} not found")
     _authorize_mode(principal, current.mode)
+    _validate_live(
+        current.mode,
+        portfolio=(body.pairs is not None or (body.pair is None and current.pairs is not None)),
+        asset_class=body.asset_class or current.asset_class,
+    )
     if not principal.admin and body.enabled and not current.enabled:
         await check_research_capacity(session, backtest=False)
     changes: dict[str, Any] = {}
+    if body.asset_class is not None:
+        changes["asset_class"] = body.asset_class
     if body.strategy_id is not None:
         _validate_strategy(body.strategy_id, settings)
         changes["strategy_id"] = body.strategy_id
@@ -299,8 +310,6 @@ async def update_assignment(
         changes["trading_schedule"] = body.trading_schedule
     if not changes:
         raise HTTPException(status_code=422, detail="at least one field is required")
-    if "pairs" in changes or "pair" in changes:
-        _validate_live(current.mode, portfolio=changes.get("pairs") is not None)
     if "strategy_id" in changes or "pairs" in changes or "pair" in changes:
         strategy_id = str(changes.get("strategy_id", current.strategy_id))
         _validate_strategy_kind(

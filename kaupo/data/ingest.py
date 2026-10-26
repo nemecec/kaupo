@@ -12,7 +12,7 @@ from kaupo.data.binance import BinanceClient
 from kaupo.data.candles import upsert_candles
 from kaupo.data.ccxt_client import CcxtExchangeClient
 from kaupo.data.funding import upsert_funding_rates
-from kaupo.data.kraken import KrakenClient
+from kaupo.data.market_data import CandleClient
 from kaupo.data.open_interest import upsert_open_interest
 from kaupo.data.trades import upsert_trade_ticks
 from kaupo.domain import Candle, Pair, Timeframe
@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 
 async def refresh_recent_candles(
-    client: KrakenClient,
+    client: CandleClient,
     sessionmaker: async_sessionmaker[AsyncSession],
     pair: Pair,
     timeframe: Timeframe,
@@ -242,7 +242,7 @@ class LiveCandlePoller:
 
     def __init__(
         self,
-        client: KrakenClient,
+        client: CandleClient,
         pair: Pair,
         timeframe: Timeframe,
         poll_interval_seconds: float = 20.0,

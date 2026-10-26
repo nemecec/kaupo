@@ -1064,3 +1064,32 @@ async def test_scheduled_report_uses_daily_metrics(
         assert entry["shadow"]["return_sampling"]["num_returns"] == 6
         assert entry["comparison"]["return_sampling"]["method"] == "utc_daily_v1"
         assert entry["verdict"] == "tracks"
+
+
+async def test_asset_class_change_prevents_replaying_old_chain(sessionmaker, strategies_dir, monkeypatch):
+    start = NOW - timedelta(days=10)
+    async with sm_scope(sessionmaker) as session:
+        await create_assignment(
+            session,
+            id="asset",
+            strategy_id="holder",
+            pair="AAPLX/USD",
+            timeframe="1h",
+            asset_class="tokenized_asset",
+        )
+        await _seed(
+            session,
+            _run_row("old", "asset", start),
+            _snapshot("old", start, 10000),
+            _snapshot("old", NOW - timedelta(hours=1), 10001),
+        )
+    seen = []
+    monkeypatch.setattr(rolling, "run_backtest", _fake_run_backtest(seen))
+    body = await rolling.build_rolling_origin_report(
+        sessionmaker, days=7, now=NOW, persist=False, strategies_dir=strategies_dir
+    )
+    (entry,) = body["assignments"]
+    assert seen == []
+    assert entry["asset_class"] == "tokenized_asset"
+    assert entry["verdict"] == "unknown"
+    assert entry["verdict_reason"] == "asset_class_mismatch"

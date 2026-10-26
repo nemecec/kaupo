@@ -587,6 +587,7 @@ async def _assignment_entry(
     taker_bps, maker_bps = effective_fees(assignment)
     entry: dict[str, Any] = {
         "id": assignment.id,
+        "asset_class": assignment.asset_class,
         "strategy_id": assignment.strategy_id,
         "pair": assignment.pair,
         "pairs": assignment.pairs,
@@ -628,6 +629,13 @@ async def _assignment_entry(
         trading_schedule=assignment.trading_schedule,
     )
     entry["shadow"] = shadow
+    if any((row.config or {}).get("asset_class", "currency") != assignment.asset_class for row in chain):
+        shadow["reason_code"] = "asset_class_mismatch"
+        shadow["note"] = "recorded chain asset class differs from the assignment"
+        entry["backtest"] = None
+        entry["verdict"] = VERDICT_UNKNOWN
+        entry["verdict_reason"] = "asset_class_mismatch"
+        return entry
     lineage = entry["lineage"]
     if lineage["status"] in ("missing_chain_ancestor", "chain_cycle", "missing_origin_equity"):
         # Structural gaps take precedence over a short window: waiting for

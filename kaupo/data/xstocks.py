@@ -58,6 +58,8 @@ class XStockTrade:
 class XStocksClient:
     """Rate-limited, unauthenticated access to Kraken's tokenized-asset class."""
 
+    asset_class = "tokenized_asset"
+
     def __init__(
         self,
         *,
@@ -126,6 +128,28 @@ class XStocksClient:
         if market is None:
             raise ValueError(f"{pair} is not in Kraken's xStocks market list")
         return market.api_pair
+
+    async def validate_pairs(self, pairs: list[Pair]) -> None:
+        """Resolve the whole universe before a shadow run can start."""
+        for pair in pairs:
+            await self._symbol(pair)
+
+    async def fetch_candles(
+        self,
+        pair: Pair,
+        timeframe: Timeframe,
+        since: datetime | None = None,
+        limit: int | None = None,
+    ) -> list[Candle]:
+        """Latest complete page for startup/polling; no deep-history guarantee."""
+        if since is not None and since.utcoffset() is None:
+            raise ValueError("since must include a timezone")
+        if limit is not None and limit <= 0:
+            return []
+        candles = sorted(await self.recent_candles(pair, timeframe), key=lambda candle: candle.ts)
+        if since is not None:
+            candles = [candle for candle in candles if candle.ts >= since]
+        return candles[-limit:] if limit is not None else candles
 
     async def recent_candles(self, pair: Pair, timeframe: Timeframe) -> list[Candle]:
         symbol = await self._symbol(pair)

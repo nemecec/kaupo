@@ -85,7 +85,35 @@ If the refresh fails, the runner logs a warning and uses stored history.
 Sparse source history can still leave indicators short of their requested warm-up.
 
 The runners support explicit [trading schedules](trading-schedules.md) for closure diagnostics.
-They still use the ordinary crypto market-data adapter. The dedicated importer does not add xStocks routing to shadow or live runners.
+Supervised shadow assignments select the dedicated xStocks client when `asset_class` is `tokenized_asset`.
+Create an assignment through `POST /api/v1/assignments`, for example:
+
+```json
+{
+  "id": "xstocks-shadow",
+  "strategy_id": "sma-cross",
+  "pair": "AAPLX/USD",
+  "timeframe": "1h",
+  "mode": "shadow",
+  "asset_class": "tokenized_asset",
+  "enabled": false
+}
+```
+
+Set the intended parameters, fees, and trading schedule before enabling the assignment.
+The example is disabled for configuration; it does not define an exchange calendar.
+For a portfolio strategy, supply `pairs` instead of `pair`. Every pair must belong to the xStocks market list.
+Discovery validates the entire universe before warm-up or run creation. Discovery failures stop startup.
+Startup and polling use the dedicated public OHLC endpoint. Neither path starts a Binance funding client.
+Polling uses the newest OHLC page; import history separately after an outage that exceeds its 720-bar limit.
+
+Existing assignments default to `currency`. A schedule or symbol suffix does not select xStocks routing.
+Changing `asset_class` restarts the assignment with a new ledger and risk identity.
+An omitted or null `asset_class` in an update preserves the stored class.
+The run configuration records the class. Rolling reports reject comparisons against a chain with a different class.
+
+This routing applies to supervised shadow assignments. The standalone `kaupo run shadow` command retains crypto routing.
+The assignment API and supervisor reject xStocks live mode. Authenticated xStocks orders remain unsupported.
 
 ## Trading readiness
 
@@ -98,7 +126,7 @@ Assignments support maker and taker fees, including rebates.
 These safeguards do not establish supported xStocks live trading.
 
 Compatible restarts restore [risk checkpoints](risk-resume.md), with an explicit limitation for legacy runs.
-Remaining work includes runner and trading-client routing, dedicated data operations, and account-specific validation.
+Remaining work includes authenticated trading-client routing, dedicated data operations, and account-specific validation.
 
 ## References and validation
 
