@@ -41,6 +41,11 @@ class XStockMarket:
     api_pair: str
     status: str
     tick_size: str
+    order_min: str | None = None
+    cost_min: str | None = None
+    lot_decimals: int | None = None
+    lot_multiplier: int | None = None
+    lot: str | None = None
 
 
 @dataclass(frozen=True)
@@ -113,7 +118,17 @@ class XStocksClient:
             ):
                 continue
             pair = Pair.parse(row["wsname"])
-            market = XStockMarket(pair, row["altname"], row["status"], row["tick_size"])
+            market = XStockMarket(
+                pair,
+                row["altname"],
+                row["status"],
+                row["tick_size"],
+                row.get("ordermin"),
+                row.get("costmin"),
+                row.get("lot_decimals"),
+                row.get("lot_multiplier"),
+                row.get("lot"),
+            )
             if pair in markets and markets[pair] != market:
                 raise ValueError(f"Conflicting Kraken metadata for {pair}")
             markets[pair] = market  # Kraken can return legacy and display aliases

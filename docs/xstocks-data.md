@@ -173,6 +173,7 @@ It also includes daily return sampling, observation-based warm-up, stable rebala
 
 Daily reports separate amounts by currency, and account-equity curves support currency filtering.
 Assignments support maker and taker fees, including rebates.
+The [order-check command](xstocks-order-check.md) checks public rules and can request authenticated validation.
 These safeguards do not establish supported xStocks live trading.
 
 Compatible restarts restore [risk checkpoints](risk-resume.md), with an explicit limitation for legacy runs.

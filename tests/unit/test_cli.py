@@ -1532,3 +1532,131 @@ def test_ingest_xstocks_trades_routes_and_prunes(monkeypatch):
 def test_ingest_trades_rejects_invalid_routing_and_ranges(options):
     result = runner.invoke(cli.app, ["ingest", "trades", "--pair", "AAPLX/USD", *options])
     assert result.exit_code == 2
+
+
+@pytest.mark.parametrize("authenticate", [False, True])
+def test_xstocks_order_check_distinguishes_public_and_authenticated(monkeypatch, authenticate):
+    import json
+    from types import SimpleNamespace
+
+    import kaupo.data.xstocks as xstocks
+    import kaupo.venues.xstocks_validation as validation
+    from tests.unit.test_xstocks_validation import MARKET
+
+    class Client(_FakeKrakenClient):
+        async def markets(self):
+            return [MARKET]
+
+    async def validate(*args, **kwargs):
+        assert authenticate
+        return {"description": "validated limit order"}
+
+    monkeypatch.setattr(xstocks, "XStocksClient", Client)
+    monkeypatch.setattr(validation, "validate_with_kraken", validate)
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(kraken_api_key="key", kraken_api_secret="secret"),  # noqa: S106
+    )
+    options = ["--authenticate"] if authenticate else []
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "xstocks-order-check",
+            "--pair",
+            "AAPLX/USD",
+            "--side",
+            "buy",
+            "--size",
+            "1.2349",
+            "--price",
+            "100.079",
+            *options,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    body = json.loads(result.stdout)
+    assert body["status"] == ("exchange_validated" if authenticate else "public_rules_checked")
+    assert body["request"]["validate"] is True
+    assert body["request"]["price"] == "100.05"
+    assert "secret" not in result.output
+
+
+@pytest.mark.parametrize(
+    "side,size,price", [("short", "1", "100"), ("buy", "NaN", "100"), ("buy", "1", "-1")]
+)
+def test_xstocks_order_check_rejects_invalid_inputs(side, size, price):
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "xstocks-order-check",
+            "--pair",
+            "AAPLX/USD",
+            "--side",
+            side,
+            "--size",
+            size,
+            "--price",
+            price,
+        ],
+    )
+    assert result.exit_code == 2
+
+
+def test_xstocks_order_check_requires_credentials_before_network(monkeypatch):
+    from types import SimpleNamespace
+
+    import kaupo.data.xstocks as xstocks
+
+    def forbidden():
+        pytest.fail("network client constructed without required credentials")
+
+    monkeypatch.setattr(xstocks, "XStocksClient", forbidden)
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(kraken_api_key="", kraken_api_secret=""))
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "xstocks-order-check",
+            "--pair",
+            "AAPLX/USD",
+            "--side",
+            "buy",
+            "--size",
+            "1",
+            "--price",
+            "100",
+            "--authenticate",
+        ],
+    )
+    assert result.exit_code == 2
+
+
+def test_xstocks_order_check_rule_failure_does_not_claim_success(monkeypatch):
+    import kaupo.data.xstocks as xstocks
+    from tests.unit.test_xstocks_validation import MARKET
+
+    class Client(_FakeKrakenClient):
+        async def markets(self):
+            return [MARKET]
+
+    monkeypatch.setattr(xstocks, "XStocksClient", Client)
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "xstocks-order-check",
+            "--pair",
+            "AAPLX/USD",
+            "--side",
+            "buy",
+            "--size",
+            "0.001",
+            "--price",
+            "100",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "below the minimum" in result.output
