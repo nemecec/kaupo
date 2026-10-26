@@ -319,3 +319,23 @@ async def test_raw_trade_empty_range_fails_before_fetch():
         with pytest.raises(ValueError, match="start must be before"):
             _ = [t async for t in client.historical_trades(PAIR, START, START)]
     assert not requests
+
+
+async def test_discovery_retains_order_rules_without_inventing_missing_values():
+    rows = markets()
+    for row in rows.values():
+        row.update(ordermin="0.01", costmin="0.5", lot_decimals=8, lot_multiplier=1, lot="unit")
+    client, _ = make_client([], market_rows=rows)
+    async with client:
+        (market,) = await client.markets()
+    assert (market.order_min, market.cost_min, market.lot_decimals, market.lot_multiplier, market.lot) == (
+        "0.01",
+        "0.5",
+        8,
+        1,
+        "unit",
+    )
+    client, _ = make_client([])
+    async with client:
+        (market,) = await client.markets()
+    assert market.order_min is None and market.lot_decimals is None

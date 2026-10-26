@@ -180,6 +180,73 @@ def ingest_xstocks_markets(
     console.print(table)
 
 
+@run_app.command(name="xstocks-order-check")
+def xstocks_order_check(
+    pair: PairOpt,
+    side: Annotated[str, typer.Option(help="buy or sell")],
+    size: Annotated[str, typer.Option(help="Base-asset quantity as a decimal")],
+    price: Annotated[str, typer.Option(help="Limit price as a decimal")],
+    expires_in: Annotated[int, typer.Option(min=30, max=2419200, help="GTD lifetime in seconds")] = 3600,
+    authenticate: Annotated[
+        bool, typer.Option(help="Ask Kraken to validate only; never place an order")
+    ] = False,
+) -> None:
+    """Check public xStocks rules; optionally send an authenticated validation-only order."""
+    from decimal import Decimal, InvalidOperation
+
+    from kaupo.data.xstocks import XStocksClient
+    from kaupo.domain import Side
+    from kaupo.venues.xstocks_validation import validate_with_kraken, validation_order
+
+    try:
+        parsed_pair, parsed_side = Pair.parse(pair), Side(side)
+        quantity, limit = Decimal(size), Decimal(price)
+        if not quantity.is_finite() or quantity <= 0 or not limit.is_finite() or limit <= 0:
+            raise ValueError("size and price must be positive finite decimals")
+    except (ValueError, InvalidOperation) as exc:
+        raise typer.BadParameter(f"Invalid order input: {exc}") from None
+    settings = get_settings()
+    if authenticate and (not settings.kraken_api_key or not settings.kraken_api_secret):
+        raise typer.BadParameter("Kraken API credentials are missing")
+
+    async def _run() -> dict[str, Any]:
+        async with XStocksClient() as public:
+            markets = await public.markets()
+        market = next((market for market in markets if market.pair == parsed_pair), None)
+        if market is None:
+            raise ValueError(f"{parsed_pair} is not in Kraken's xStocks market list")
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(seconds=expires_in)
+        payload = validation_order(market, parsed_side, quantity, limit, expires_at, now=now)
+        result: dict[str, Any] = {
+            "checked_at": now.isoformat(),
+            "pair": str(parsed_pair),
+            "status": "public_rules_checked",
+            "request": payload,
+        }
+        if authenticate:
+            validated = await validate_with_kraken(
+                settings.kraken_api_key,
+                settings.kraken_api_secret,
+                market,
+                parsed_side,
+                quantity,
+                limit,
+                expires_at,
+                now=now,
+            )
+            result.update(validated)
+            result["status"] = "exchange_validated"
+        return result
+
+    try:
+        result = asyncio.run(_run())
+    except ValueError as exc:
+        err_console.print(f"Order check failed: {exc}", markup=False)
+        raise typer.Exit(1) from None
+    typer.echo(json.dumps(result))
+
+
 @ingest_app.command(name="xstocks-candles")
 def ingest_xstocks_candles(
     pair: PairOpt,
