@@ -66,6 +66,55 @@ The existing production refresh scripts serve the crypto universe.
 The separate [scheduled xStocks refresh](xstocks-refresh.md) supports explicit calendars and candle coverage checks.
 Do not add xStocks to the shared Binance candle, funding, or open-interest loops.
 
+## Import raw trades for orderflow
+
+Run the trade importer with an explicit asset class:
+
+```sh
+uv run kaupo ingest trades --exchange kraken --asset-class tokenized_asset \
+  --pair AAPLx/USD --days 3
+```
+
+This path uses public xStocks discovery and trade pagination. It preserves exchange trade IDs and taker sides.
+The default `currency` path retains the existing crypto adapters. The command rejects xStocks with `--exchange binance`.
+
+Distinct trade IDs remain distinct rows even when their timestamps, prices, sizes, and sides match.
+Repeated imports skip retained IDs. Stored IDs are immutable: another payload with the same exchange, pair, and ID does not replace the row.
+The importer rejects changed trades within overlapping API pages.
+
+Source timestamps retain decimal precision during pagination and range filtering.
+Storage floors timestamps to microseconds, so sub-microsecond trades do not round into the next candle bucket.
+Prices and sizes use the existing floating-point tick representation. This store is an analytics input, not an exact exchange audit archive.
+
+The importer commits batches of 100 ticks. A failed import retains committed batches and returns an error.
+An incomplete batch stays in memory. A repeated import safely recovers those ticks.
+The displayed import count includes ticks submitted again, while the database count reflects retained rows.
+
+The requested range is half-open: `[start, end)`. The command permits at most 31 days per run.
+After a successful import, the command prunes this pair's ticks using `KAUPO_TRADES_RETENTION_DAYS`, which defaults to 30 days.
+Retention uses the current time, not the requested range end. Old historical tick imports can therefore be pruned immediately.
+Candle reconstruction uses its separate historical importer and does not depend on retained raw ticks.
+
+After a successful trade import, run the daily rollup with the instrument's explicit calendar:
+
+```sh
+uv run kaupo ingest orderflow-rollup --exchange kraken --pair AAPLX/USD \
+  --trading-schedule /etc/kaupo/aaplx-schedule.json
+```
+
+This schedule file contains a single `TradingSchedule` object, not the refresh manifest.
+The default rollup date is yesterday in UTC. An explicit `--day YYYY-MM-DD` selects another date.
+The existing orderflow readers include these ticks in buy/sell counts and volumes.
+The [candle refresh command](xstocks-refresh.md) does not start trade collection or orderflow rollups. Operators schedule these commands separately.
+
+### Tick-store migration
+
+Migration `0026` adds the optional trade ID and rebuilds the tick table's primary key.
+This operation locks the table and rebuilds its index. Its duration depends on the retained table size.
+Existing rows receive an empty ID and retain their previous tuple-based deduplication behavior.
+The migration cannot recover trades that the old adapters already collapsed.
+A downgrade refuses to remove IDs when distinct trades share a legacy key.
+
 ## Backtest warm-up
 
 Backtests load up to `lookback` stored candles strictly before the evaluation start.

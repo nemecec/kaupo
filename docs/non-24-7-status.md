@@ -1,6 +1,6 @@
 # Non-24/7 support status
 
-This audit covers merged safeguards through PR #76 and the current scheduled-refresh implementation for [issue #43](https://github.com/nemecec/kaupo/issues/43).
+This audit covers merged safeguards through PR #77 and the current raw-trade import implementation for [issue #43](https://github.com/nemecec/kaupo/issues/43).
 The original calendar defects have targeted fixes. Supported xStocks live trading still requires the work listed after the table.
 A merged safeguard does not establish account eligibility or validate real orders.
 
@@ -62,7 +62,8 @@ The separate [xStocks refresh command](xstocks-refresh.md) uses explicit per-pai
 Its optional host wrapper supports a separate cron job and keeps xStocks outside the Binance loops.
 New orderflow rows from the default refresh command remain unknown unless an explicit schedule accompanies their rollup.
 Operators must maintain the calendars, schedule the refresh, and investigate missing observations.
-Raw-trade collection and scheduled orderflow refresh remain separate work.
+The [raw-trade importer](xstocks-data.md#import-raw-trades-for-orderflow) preserves xStocks trade IDs for existing orderflow readers.
+Operators schedule trade imports and calendar-aware daily rollups separately from candle refreshes.
 
 ### Account-specific validation
 

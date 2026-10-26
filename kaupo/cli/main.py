@@ -534,6 +534,9 @@ def ingest_trades(
     start: StartOpt = None,
     end: EndOpt = None,
     exchange: ExchangeOpt = "kraken",
+    asset_class: Annotated[
+        str, typer.Option(help="currency or tokenized_asset (Kraken xStocks)")
+    ] = "currency",
     verbose: VerboseOpt = False,
 ) -> None:
     """Download recent public trade prints (order flow) for the pair into Postgres.
@@ -547,13 +550,21 @@ def ingest_trades(
     from kaupo.data.ingest import backfill_trades
     from kaupo.data.kraken import KrakenClient
     from kaupo.data.trades import get_trade_range, prune_trade_ticks
+    from kaupo.data.xstocks import XStocksClient, ingest_xstock_trades
     from kaupo.db.session import get_sessionmaker
 
     clients = {"kraken": KrakenClient, "binance": BinanceClient}
     if exchange not in clients:
         raise typer.BadParameter(f"--exchange must be one of: {', '.join(sorted(clients))}")
 
+    if asset_class not in ("currency", "tokenized_asset"):
+        raise typer.BadParameter("--asset-class must be currency or tokenized_asset")
+    if asset_class == "tokenized_asset" and exchange != "kraken":
+        raise typer.BadParameter("xStocks trades require --exchange kraken")
+
     start_dt, end_dt = _range(days, start, end)
+    if start_dt >= end_dt:
+        raise typer.BadParameter("--start must be before --end")
     if end_dt - start_dt > timedelta(days=TRADE_INGEST_MAX_DAYS):
         raise typer.BadParameter(f"trade ingest is capped at {TRADE_INGEST_MAX_DAYS} days per run")
     p = Pair.parse(pair)
@@ -561,8 +572,12 @@ def ingest_trades(
 
     async def _run() -> tuple[int, int, datetime | None, datetime | None, int]:
         sm = get_sessionmaker()
-        async with clients[exchange]() as client:
-            total = await backfill_trades(client, sm, p, start_dt, end_dt)
+        if asset_class == "tokenized_asset":
+            async with XStocksClient() as xstocks:
+                total = await ingest_xstock_trades(xstocks, sm, p, start_dt, end_dt)
+        else:
+            async with clients[exchange]() as client:
+                total = await backfill_trades(client, sm, p, start_dt, end_dt)
         cutoff = datetime.now(UTC) - timedelta(days=retention_days)
         async with sm() as session:
             pruned = await prune_trade_ticks(session, exchange, str(p), cutoff)
