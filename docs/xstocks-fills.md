@@ -37,3 +37,28 @@ Treat saved output as private account data.
 The command does not place or cancel orders, write database records, or start a runner.
 xStocks live assignments remain disabled. Asset mapping, fee-currency reconciliation, and corporate-action handling remain separate work.
 Tests exercise signing, cursor pagination, and failures with mocked transport. No authenticated account request was made during implementation.
+
+## Read the referenced ledger entries
+
+Add `--include-ledgers` to fetch the ledger entries referenced by the returned fills:
+
+```sh
+kaupo run xstocks-fills --units rebased --start 1792886400 --end 1792972800 --include-ledgers
+```
+
+This option also requires Kraken permission to query ledger entries.
+Kaupo queries unique ledger IDs in batches of 20, with the same unit setting as the fill request.
+See the [Kraken Query Ledgers API](https://docs.kraken.com/api-reference/account-data/query-ledgers).
+
+Successful output has status `fills_and_ledgers_read` and a `ledgers` object keyed by ledger ID.
+Entries preserve exchange asset IDs, reference IDs, signed amounts, signed fees, and balance strings.
+The original fill references remain available for inspection. Kaupo does not infer fee currency from the trading pair.
+It does not sum entries, translate asset aliases, or check that ledger amounts reconcile with fill amounts.
+
+Every nonempty fill collection must provide nonempty lists of valid ledger references.
+Missing or unexpected response IDs, invalid core entry fields, and failed batches cause a nonzero exit with no success JSON.
+An empty fill collection returns empty ledgers without a ledger request.
+Kaupo permits at most 2,000 unique ledger IDs per invocation. If this limit is exceeded, use a smaller fill window.
+
+This option leaves the existing read-only boundary in place. The fill and ledger requests do not form an atomic snapshot.
+Tests use mocked transport; no authenticated ledger request was made during implementation.

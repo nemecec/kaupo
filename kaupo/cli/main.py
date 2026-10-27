@@ -253,6 +253,7 @@ def xstocks_fills(
     units: Annotated[str, typer.Option(help="Required xStocks units: rebased or base")],
     start: Annotated[int, typer.Option(help="Exclusive start as Unix seconds")],
     end: Annotated[int, typer.Option(help="Inclusive end as Unix seconds (maximum window: 31 days)")],
+    include_ledgers: Annotated[bool, typer.Option(help="Fetch all referenced ledger entries")] = False,
 ) -> None:
     """Read default-wallet fill history with explicit xStocks units and original symbols."""
     from kaupo.venues.xstocks_fills import check_fill_window, read_fills
@@ -267,17 +268,29 @@ def xstocks_fills(
     if not settings.kraken_api_key or not settings.kraken_api_secret:
         raise typer.BadParameter("Kraken API credentials are missing")
     started_at = datetime.now(UTC)
-    try:
-        fills = asyncio.run(
-            read_fills(settings.kraken_api_key, settings.kraken_api_secret, units=units, start=start, end=end)
+
+    async def _read() -> tuple[dict[str, Any], dict[str, Any] | None]:
+        from kaupo.venues.xstocks_ledgers import read_fill_ledgers
+
+        fills = await read_fills(
+            settings.kraken_api_key, settings.kraken_api_secret, units=units, start=start, end=end
         )
+        ledgers = None
+        if include_ledgers:
+            ledgers = await read_fill_ledgers(
+                settings.kraken_api_key, settings.kraken_api_secret, units=units, fills=fills
+            )
+        return fills, ledgers
+
+    try:
+        fills, ledgers = asyncio.run(_read())
     except ValueError as exc:
         err_console.print(f"Fill read failed: {exc}", markup=False)
         raise typer.Exit(1) from None
     typer.echo(
         json.dumps(
             {
-                "status": "fills_read",
+                "status": "fills_and_ledgers_read" if include_ledgers else "fills_read",
                 "wallet": "default",
                 "started_at": started_at.isoformat(),
                 "completed_at": datetime.now(UTC).isoformat(),
@@ -286,6 +299,7 @@ def xstocks_fills(
                 "end_inclusive": end,
                 "consolidate_taker": False,
                 "fills": fills,
+                **({"ledgers": ledgers} if include_ledgers else {}),
             }
         )
     )
