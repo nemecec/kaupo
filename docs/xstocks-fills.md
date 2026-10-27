@@ -62,3 +62,31 @@ Kaupo permits at most 2,000 unique ledger IDs per invocation. If this limit is e
 
 This option leaves the existing read-only boundary in place. The fill and ledger requests do not form an atomic snapshot.
 Tests use mocked transport; no authenticated ledger request was made during implementation.
+
+## Map pair and asset identifiers
+
+Add `--map-assets` to annotate exact identifiers with current public xStocks metadata:
+
+```sh
+kaupo run xstocks-fills --units rebased --start 1792886400 --end 1792972800 --include-ledgers --map-assets
+```
+
+This adds an `identities` object without changing the original fills or ledger entries.
+`fill_pairs` maps fill transaction IDs to Kaupo pairs. `ledger_assets` maps ledger IDs to Kaupo asset symbols.
+`unmapped_pairs` and `unmapped_assets` list identifiers absent from the metadata.
+Without `--include-ledgers`, the ledger mapping is empty.
+
+Mappings use exact response keys, alternate names, WebSocket names, and base/quote asset IDs from the international xStocks market list.
+Kaupo symbols use the uppercase names from each pair's WebSocket name.
+The reader does not remove suffixes, change input case, or infer aliases from concatenated symbols.
+Conflicting mappings or missing identity fields cause a nonzero exit with no success JSON.
+See the [Kraken AssetPairs API](https://docs.kraken.com/api-reference/market-data/get-tradable-asset-pairs).
+
+Unknown identifiers remain visible; they do not establish that an asset is invalid or absent from the account.
+Crypto pairs, removed markets, and historical aliases can remain unmapped.
+Current metadata does not establish historical identity, trading eligibility, unit equivalence, or a corporate-action conversion.
+Mapping does not reconcile ledger amounts or fees.
+
+A public API check on October 27, 2026 produced 531 pair aliases and 178 asset IDs.
+For `AAPLX/USD`, it returned pair aliases `AAPLSPVUSD`, `AAPLxUSD`, and `AAPLx/USD`, with base asset ID `AAPLx`.
+No authenticated request was made for this check.
