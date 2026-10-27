@@ -248,6 +248,49 @@ def xstocks_open_orders(
     )
 
 
+@run_app.command(name="xstocks-fills")
+def xstocks_fills(
+    units: Annotated[str, typer.Option(help="Required xStocks units: rebased or base")],
+    start: Annotated[int, typer.Option(help="Exclusive start as Unix seconds")],
+    end: Annotated[int, typer.Option(help="Inclusive end as Unix seconds (maximum window: 31 days)")],
+) -> None:
+    """Read default-wallet fill history with explicit xStocks units and original symbols."""
+    from kaupo.venues.xstocks_fills import check_fill_window, read_fills
+
+    if units not in ("rebased", "base"):
+        raise typer.BadParameter("--units must be rebased or base")
+    try:
+        check_fill_window(start, end)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    settings = get_settings()
+    if not settings.kraken_api_key or not settings.kraken_api_secret:
+        raise typer.BadParameter("Kraken API credentials are missing")
+    started_at = datetime.now(UTC)
+    try:
+        fills = asyncio.run(
+            read_fills(settings.kraken_api_key, settings.kraken_api_secret, units=units, start=start, end=end)
+        )
+    except ValueError as exc:
+        err_console.print(f"Fill read failed: {exc}", markup=False)
+        raise typer.Exit(1) from None
+    typer.echo(
+        json.dumps(
+            {
+                "status": "fills_read",
+                "wallet": "default",
+                "started_at": started_at.isoformat(),
+                "completed_at": datetime.now(UTC).isoformat(),
+                "rebase_multiplier": units,
+                "start_exclusive": start,
+                "end_inclusive": end,
+                "consolidate_taker": False,
+                "fills": fills,
+            }
+        )
+    )
+
+
 @run_app.command(name="xstocks-order-check")
 def xstocks_order_check(
     pair: PairOpt,
