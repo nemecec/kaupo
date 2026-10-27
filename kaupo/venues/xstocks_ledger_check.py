@@ -52,6 +52,7 @@ def _check_fill(
         raise ValueError("shared_ledger_reference")
     amounts = {pair.base: Decimal(0), pair.quote: Decimal(0)}
     fees = {pair.base: Decimal(0), pair.quote: Decimal(0)}
+    other_fees: dict[str, Decimal] = {}
     seen: set[str] = set()
     for ref in references:
         entry = ledgers.get(ref)
@@ -62,11 +63,18 @@ def _check_fill(
         if entry.get("type") != "trade" or entry.get("subtype", "") != "":
             raise ValueError("unsupported_ledger_type")
         asset = identities["ledger_assets"].get(ref)
+        amount, fee = _decimal(entry.get("amount")), _decimal(entry.get("fee"))
         if asset not in amounts:
-            raise ValueError("unmapped_or_third_asset")
+            if amount != 0:
+                raise ValueError("unmapped_or_third_asset")
+            asset_id = entry.get("asset")
+            if not isinstance(asset_id, str) or not asset_id or any(c.isspace() for c in asset_id):
+                raise ValueError("invalid_fee_asset_id")
+            other_fees[asset_id] = other_fees.get(asset_id, Decimal(0)) + fee
+            continue
         seen.add(asset)
-        amounts[asset] += _decimal(entry.get("amount"))
-        fees[asset] += _decimal(entry.get("fee"))
+        amounts[asset] += amount
+        fees[asset] += fee
     if seen != set(amounts):
         raise ValueError("missing_base_or_quote_entry")
     sign = Decimal(1) if fill["type"] == "buy" else Decimal(-1)
@@ -78,6 +86,8 @@ def _check_fill(
         "ledger_amounts": {asset: str(value) for asset, value in amounts.items()},
         "fees_by_asset": {asset: str(value) for asset, value in fees.items()},
         "net_movements": {asset: str(amounts[asset] - fees[asset]) for asset in amounts},
+        "other_fees_by_asset_id": {asset: str(fee) for asset, fee in sorted(other_fees.items())},
+        "other_net_movements_by_asset_id": {asset: str(-fee) for asset, fee in sorted(other_fees.items())},
     }
 
 

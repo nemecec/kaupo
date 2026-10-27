@@ -176,3 +176,74 @@ def test_cli_check_implies_reads_and_mapping_and_sets_exit(monkeypatch, volume, 
     assert report["ledger_check"]["status"] == status
     assert "ledgers" in report and "identities" in report
     read_ledgers.assert_awaited_once()
+
+
+@pytest.mark.parametrize("fee,net", [("2.5", "-2.5"), ("-2.5", "2.5"), ("0", "0")])
+def test_third_asset_fee_only_entries_preserve_actual_currency(fee, net):
+    fill = {**FILL, "ledgers": [*FILL["ledgers"], "credit"]}
+    entries = {
+        **LEDGERS,
+        "credit": {"refid": "trade", "type": "trade", "asset": "KFEE", "amount": "0", "fee": fee},
+    }
+    report = check(fill, entries)
+    assert report["status"] == "amounts_match"
+    row = report["fills"]["trade"]
+    assert row["other_fees_by_asset_id"] == {"KFEE": fee}
+    assert row["other_net_movements_by_asset_id"] == {"KFEE": net}
+    assert "KFEE" not in row["fees_by_asset"]
+    assert row["ledger_amounts"] == {"AAPLX": "1.25", "USD": "-125"}
+
+
+def test_other_fee_entries_sum_by_exact_id_without_alias_merging():
+    entries = deepcopy(LEDGERS)
+    for ref, asset, fee in [
+        ("a", "KFEE", "1.00000000000000000001"),
+        ("b", "KFEE", "-0.00000000000000000001"),
+        ("c", "kfee", "2"),
+        ("d", "USD.F", "3"),
+    ]:
+        entries[ref] = {"refid": "trade", "type": "trade", "asset": asset, "amount": "0", "fee": fee}
+    fill = {**FILL, "ledgers": list(entries)}
+    row = check(fill, entries)["fills"]["trade"]
+    assert row["other_fees_by_asset_id"] == {"KFEE": "1.00000000000000000000", "kfee": "2", "USD.F": "3"}
+    assert row["fees_by_asset"] == {"AAPLX": "0", "USD": "-0.025"}
+
+
+@pytest.mark.parametrize(
+    "field,value,reason",
+    [
+        ("amount", "1", "unmapped_or_third_asset"),
+        ("amount", "-1", "unmapped_or_third_asset"),
+        ("refid", "other", "ledger_reference_mismatch"),
+        ("type", "transfer", "unsupported_ledger_type"),
+        ("fee", "NaN", "non_finite_decimal"),
+        ("asset", "", "invalid_fee_asset_id"),
+        ("asset", "KFEE bad", "invalid_fee_asset_id"),
+    ],
+)
+def test_invalid_other_fee_entries_remain_unresolved(field, value, reason):
+    entry = {"refid": "trade", "type": "trade", "asset": "KFEE", "amount": "0", "fee": "1"}
+    entry[field] = value
+    report = check({**FILL, "ledgers": [*FILL["ledgers"], "credit"]}, {**LEDGERS, "credit": entry})
+    assert report["status"] == "needs_review"
+    assert report["fills"]["trade"]["reason"] == reason
+
+
+def test_fee_only_entry_cannot_replace_missing_principal_side():
+    fill = {**FILL, "ledgers": ["base", "credit"]}
+    entries = {
+        "base": LEDGERS["base"],
+        "credit": {"refid": "trade", "type": "trade", "asset": "KFEE", "amount": "0", "fee": "1"},
+    }
+    assert check(fill, entries)["fills"]["trade"]["reason"] == "missing_base_or_quote_entry"
+
+
+def test_mapped_third_asset_still_keeps_exchange_id():
+    fill = {**FILL, "ledgers": [*FILL["ledgers"], "other"]}
+    entries = {
+        **LEDGERS,
+        "other": {"refid": "trade", "type": "trade", "asset": "ZEUR", "amount": "0", "fee": "1"},
+    }
+    identities = deepcopy(IDENTITIES)
+    identities["ledger_assets"]["other"] = "EUR"
+    assert check(fill, entries, identities)["fills"]["trade"]["other_fees_by_asset_id"] == {"ZEUR": "1"}

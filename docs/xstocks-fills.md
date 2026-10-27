@@ -110,6 +110,7 @@ Each ledger reference must belong to that fill, appear once, and have type `trad
 Both base and quote entries must be present. The fill must report zero margin.
 
 Each resolved row shows expected amounts, ledger amounts, `fees_by_asset`, and `net_movements`.
+These fields contain the mapped base and quote assets.
 Net movement is ledger amount minus ledger fee in that asset. Negative fees increase the net movement.
 The checker does not compare ledger fees to the trade-history fee estimate.
 Kraken distinguishes the quote-currency fee estimate from the fee actually deducted in its
@@ -117,7 +118,7 @@ Kraken distinguishes the quote-currency fee estimate from the fee actually deduc
 Its [ledger field guide](https://support.kraken.com/articles/360001169383-how-to-interpret-ledger-history-fields) defines the asset-specific amounts and fees.
 
 A row has status `amounts_match`, `amounts_mismatch`, or `unresolved`.
-Missing entries, reference mismatches, shared references, unsupported ledger types, and unknown or third assets make the row unresolved.
+Missing entries, reference mismatches, shared references, unsupported ledger types, and unmapped or third-asset principal movements make the row unresolved.
 Invalid decimal values also remain unresolved. Arithmetic supports at most 64 significant digits and decimal exponents from -30 through 30.
 These bounds keep supported arithmetic exact within the local decimal precision.
 
@@ -130,3 +131,21 @@ An exact principal match does not establish account readiness or verify account 
 The checker does not reconstruct balance continuity, resolve historical aliases, convert corporate-action units, or handle margin trades.
 Small rounding differences remain visible as mismatches. Investigate them before applying a tolerance.
 Live xStocks trading remains disabled. No authenticated account request was made during this implementation.
+
+### Fees charged in other assets
+
+A referenced trade entry can charge a fee in an asset outside the mapped base and quote pair.
+If that entry has zero principal amount, the checker records its fee separately.
+The entry must still reference the same fill and pass the existing type, decimal, and ownership checks.
+Both mapped principal sides must remain present and match their expected amounts.
+
+`other_fees_by_asset_id` reports these fees under exact Kraken asset IDs.
+`other_net_movements_by_asset_id` reports their negated values because their principal amount is zero.
+Repeated entries for the same asset ID are summed. Case differences and suffixes remain distinct.
+Positive fees are debits; negative fees are rebates. No exchange rate or quote-currency valuation is applied.
+Both objects are empty when no such entries are present.
+
+For example, an entry with asset `KFEE`, amount `0`, and fee `2.5` produces a `KFEE` net movement of `-2.5`.
+This is a synthetic test example, not an authenticated observation of xStocks fee behavior.
+An unmapped asset with a nonzero amount remains unresolved, even when its fee is zero.
+A principal match does not establish that unknown asset IDs are historical aliases or that fee valuations agree with trade-history estimates.
