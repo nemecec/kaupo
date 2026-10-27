@@ -1,6 +1,6 @@
 # Non-24/7 support status
 
-This audit covers merged safeguards through PR #79 and the current balance-inspection implementation for [issue #43](https://github.com/nemecec/kaupo/issues/43).
+This audit covers merged safeguards through PR #80 and the current open-order inspection implementation for [issue #43](https://github.com/nemecec/kaupo/issues/43).
 The original calendar defects have targeted fixes. Supported xStocks live trading still requires the work listed after the table.
 A merged safeguard does not establish account eligibility or validate real orders.
 
@@ -73,7 +73,8 @@ Account eligibility, instrument availability, and authenticated order behavior r
 No authenticated order was submitted as part of this audit.
 The [balance command](xstocks-balances.md) reads account balances with explicit xStocks units.
 It preserves exchange asset IDs and does not feed live reconciliation.
-Authenticated open-order reads, paginated fill history, asset mapping, and corporate-action handling remain to be implemented.
+The [open-order command](xstocks-open-orders.md) reads cursor pages with explicit units and preserves exchange fields.
+Paginated fill history, asset mapping, and corporate-action handling remain to be implemented.
 
 ## Configuration and evidence
 
