@@ -1,5 +1,9 @@
 """Bounded ledger history for an explicit asset scope, including non-trade activity."""
 
+import base64
+import hashlib
+import hmac
+import json
 from decimal import Decimal
 from typing import Any
 
@@ -7,6 +11,38 @@ import ccxt.async_support as ccxt
 
 from kaupo.venues.xstocks_fills import check_fill_window
 from kaupo.venues.xstocks_ledgers import _check_ledger
+
+
+class _LedgerKraken(ccxt.kraken):  # type: ignore[misc]  # ccxt has no typed export
+    """Use JSON for structured Ledgers filters; retain ccxt transport and throttling."""
+
+    def sign(
+        self,
+        path: Any,
+        api: Any = "public",
+        method: str = "GET",
+        params: dict[str, Any] | None = None,
+        headers: Any = None,
+        body: Any = None,
+    ) -> Any:
+        if api != "private" or path != "Ledgers":
+            return super().sign(path, api, method, params or {}, headers, body)
+        self.check_required_credentials()
+        nonce = self.nonce()
+        body = json.dumps({**(params or {}), "nonce": nonce}, separators=(",", ":"))
+        uri = f"/{self.version}/private/Ledgers"
+        digest = hashlib.sha256((str(nonce) + body).encode()).digest()
+        signature = hmac.new(base64.b64decode(self.secret), uri.encode() + digest, hashlib.sha512)
+        return {
+            "url": self.urls["api"]["private"] + uri,
+            "method": method,
+            "body": body,
+            "headers": {
+                "API-Key": self.apiKey,
+                "API-Sign": base64.b64encode(signature.digest()).decode(),
+                "Content-Type": "application/json",
+            },
+        }
 
 
 def check_ledger_request(asset: str, asset_class: str, units: str, start: int, end: int) -> None:
@@ -35,14 +71,13 @@ async def read_ledger_history(
     check_ledger_request(asset, asset_class, units, start, end)
     if not api_key or not api_secret:
         raise ValueError("Kraken API credentials are missing")
-    exchange = ccxt.kraken({"apiKey": api_key, "secret": api_secret, "enableRateLimit": True})
+    exchange = _LedgerKraken({"apiKey": api_key, "secret": api_secret, "enableRateLimit": True})
     entries: dict[str, Any] = {}
     cursors: set[str] = set()
     params: dict[str, Any] = {
         "rebase_multiplier": units,
-        "with_cursor": "true",
-        "asset": asset,
-        "aclass": asset_class,
+        "with_cursor": True,
+        "asset": [{"asset": asset, "aclass": asset_class}],
         "type": "all",
         "start": start,
         "end": end,
