@@ -1,3 +1,7 @@
+import base64
+import hashlib
+import hmac
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs
@@ -25,33 +29,44 @@ def page(entries, cursor=None):
 
 
 @pytest.mark.parametrize("units", ["base", "rebased"])
-async def test_signed_pagination_includes_nontrade_activity(monkeypatch, units):
-    exchange = history.ccxt.kraken({"apiKey": "test-key", "secret": "c2VjcmV0", "enableRateLimit": False})
-    other = {**ENTRY, "time": 200, "type": "adjustment", "amount": "-1", "balance": "1"}
-    fetch = AsyncMock(side_effect=[page({"one": ENTRY}, "opaque/+="), page({"two": other})])
+@pytest.mark.parametrize("asset,asset_class", [("AAPLx", "tokenized_asset"), ("ZUSD", "currency")])
+async def test_signed_pagination_includes_nontrade_activity(monkeypatch, units, asset, asset_class):
+    entry = {**ENTRY, "asset": asset, "aclass": asset_class}
+    exchange = history._LedgerKraken({"apiKey": "test-key", "secret": "c2VjcmV0", "enableRateLimit": False})
+    other = {**entry, "time": 200, "type": "adjustment", "amount": "-1", "balance": "1"}
+    fetch = AsyncMock(side_effect=[page({"one": entry}, "opaque/+="), page({"two": other})])
     monkeypatch.setattr(exchange, "fetch", fetch)
-    monkeypatch.setattr(history.ccxt, "kraken", lambda config: exchange)
-    assert await history.read_ledger_history("key", "secret", **{**KW, "units": units}) == {
-        "one": ENTRY,
+    monkeypatch.setattr(history, "_LedgerKraken", lambda config: exchange)
+    assert await history.read_ledger_history(
+        "key", "secret", **{**KW, "units": units, "asset": asset, "asset_class": asset_class}
+    ) == {
+        "one": entry,
         "two": other,
     }
     for i, call in enumerate(fetch.call_args_list):
         url, method, headers, body = call.args
         assert url == "https://api.kraken.com/0/private/Ledgers"
         assert method == "POST" and headers["API-Sign"]
-        params = parse_qs(body)
-        assert params.pop("nonce")
+        params = json.loads(body)
+        nonce = params.pop("nonce")
+        assert isinstance(nonce, int)
+        digest = hashlib.sha256((str(nonce) + body).encode()).digest()
+        expected_sign = hmac.digest(b"secret", b"/0/private/Ledgers" + digest, "sha512")
+        assert headers == {
+            "API-Key": "test-key",
+            "API-Sign": base64.b64encode(expected_sign).decode(),
+            "Content-Type": "application/json",
+        }
         expected = {
-            "rebase_multiplier": [units],
-            "with_cursor": ["true"],
-            "asset": ["AAPLx"],
-            "aclass": ["tokenized_asset"],
-            "type": ["all"],
-            "start": ["100"],
-            "end": ["200"],
+            "rebase_multiplier": units,
+            "with_cursor": True,
+            "asset": [{"asset": asset, "aclass": asset_class}],
+            "type": "all",
+            "start": 100,
+            "end": 200,
         }
         if i:
-            expected["cursor"] = ["opaque/+="]
+            expected["cursor"] = "opaque/+="
         assert params == expected
     assert fetch.await_count == 2
 
@@ -59,7 +74,7 @@ async def test_signed_pagination_includes_nontrade_activity(monkeypatch, units):
 @pytest.fixture
 def client(monkeypatch):
     exchange = SimpleNamespace(private_post_ledgers=AsyncMock(), close=AsyncMock())
-    monkeypatch.setattr(history.ccxt, "kraken", lambda config: exchange)
+    monkeypatch.setattr(history, "_LedgerKraken", lambda config: exchange)
     return exchange
 
 
@@ -143,7 +158,7 @@ async def test_invalid_request_before_client(monkeypatch, changes):
     def unexpected(config):
         pytest.fail("Must reject before constructing client")
 
-    monkeypatch.setattr(history.ccxt, "kraken", unexpected)
+    monkeypatch.setattr(history, "_LedgerKraken", unexpected)
     with pytest.raises(ValueError):
         await history.read_ledger_history("key", "secret", **{**KW, **changes})
 
@@ -229,3 +244,16 @@ def test_cli_errors_never_emit_success(monkeypatch, asset, credentials, fail, co
     assert result.exit_code == code
     assert "ledger_history_read" not in result.output
     assert read.await_count == int(fail)
+
+
+async def test_other_endpoints_keep_ccxt_signing():
+    exchange = history._LedgerKraken({"apiKey": "test-key", "secret": "c2VjcmV0"})
+    try:
+        signed = exchange.sign("Balance", "private", "POST", {"rebase_multiplier": "base"})
+        assert signed["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+        assert parse_qs(signed["body"])["rebase_multiplier"] == ["base"]
+        public = exchange.sign("Time")
+        assert public["url"] == "https://api.kraken.com/0/public/Time"
+        assert public["headers"] is None
+    finally:
+        await exchange.close()

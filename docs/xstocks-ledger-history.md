@@ -17,10 +17,12 @@ Kraken returns up to 50 entries per page. The command requests `type=all` to ret
 Each page uses the same asset, class, units, and time bounds.
 See the [Kraken Ledgers API](https://docs.kraken.com/api-reference/account-data/get-ledgers-info).
 
-The signed request uses scalar `asset` and `aclass` fields.
-Kraken documents `aclass` as deprecated in favor of structured asset filters.
-This implementation uses the documented scalar form supported by the existing form-encoded transport.
-Authenticated acceptance of this request has not been tested. If Kraken rejects the filter, the command fails without partial success.
+The signed JSON request uses `asset: [{"asset": "AAPLx", "aclass": "tokenized_asset"}]` for this example.
+It omits the deprecated top-level `aclass` field.
+A dedicated Ledgers signer preserves the structured filter and signs the exact JSON body.
+Other endpoints retain ccxt signing. Transport, throttling, and response handling still use ccxt.
+See [Kraken REST authentication](https://docs.kraken.com/exchange/guides/rest/authentication).
+Authenticated acceptance has not been tested. A rejected request fails without partial success.
 
 Output includes the exact request scope, observation interval, and ledger entries keyed by ID.
 Amount, fee, and balance strings remain unchanged. Deposits, withdrawals, adjustments, and other returned types remain present.
