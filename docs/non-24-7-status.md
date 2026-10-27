@@ -1,6 +1,6 @@
 # Non-24/7 support status
 
-This audit covers merged safeguards through PR #84 and the current ledger-check implementation for [issue #43](https://github.com/nemecec/kaupo/issues/43).
+This audit covers merged safeguards through PR #85 and the current third-asset fee implementation for [issue #43](https://github.com/nemecec/kaupo/issues/43).
 The original calendar defects have targeted fixes. Supported xStocks live trading still requires the work listed after the table.
 A merged safeguard does not establish account eligibility or validate real orders.
 
@@ -78,7 +78,8 @@ The [fill-history command](xstocks-fills.md) reads bounded cursor pages and pres
 Its optional ledger lookup preserves the referenced asset IDs, signed amounts, and fees.
 Optional metadata mapping annotates exact pair and asset IDs and reports unknown identifiers.
 The optional ledger check compares spot principal movements and reports actual fees and net movements by mapped asset.
-Historical aliases, account balance continuity, third-asset fees, and corporate-action handling remain unsupported by this check.
+Fee-only entries in other assets retain their exact exchange IDs and remain separate from base and quote totals.
+Historical aliases, account balance continuity, third-asset principal movements, and corporate-action handling remain unsupported by this check.
 
 ## Configuration and evidence
 
