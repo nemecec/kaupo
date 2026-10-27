@@ -105,6 +105,15 @@ class XStocksClient:
             raise ValueError(f"Kraken {endpoint}: missing result")
         return result
 
+    async def identity_metadata(self) -> dict[str, Any]:
+        """Return internal pair and asset IDs for explicit account identity mapping."""
+        try:
+            return await self._get(
+                "AssetPairs", {"aclass_base": "tokenized_asset", "execution_venue": "international"}
+            )
+        except httpx.HTTPError as exc:
+            raise ValueError(f"Kraken identity metadata request failed ({type(exc).__name__})") from None
+
     async def markets(self, country_code: str | None = None) -> list[XStockMarket]:
         params: dict[str, str | int] = {"aclass_base": "tokenized_asset", "execution_venue": "international"}
         if country_code:

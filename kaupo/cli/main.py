@@ -254,6 +254,9 @@ def xstocks_fills(
     start: Annotated[int, typer.Option(help="Exclusive start as Unix seconds")],
     end: Annotated[int, typer.Option(help="Inclusive end as Unix seconds (maximum window: 31 days)")],
     include_ledgers: Annotated[bool, typer.Option(help="Fetch all referenced ledger entries")] = False,
+    map_assets: Annotated[
+        bool, typer.Option(help="Map exact pair and asset IDs with current public metadata")
+    ] = False,
 ) -> None:
     """Read default-wallet fill history with explicit xStocks units and original symbols."""
     from kaupo.venues.xstocks_fills import check_fill_window, read_fills
@@ -269,7 +272,7 @@ def xstocks_fills(
         raise typer.BadParameter("Kraken API credentials are missing")
     started_at = datetime.now(UTC)
 
-    async def _read() -> tuple[dict[str, Any], dict[str, Any] | None]:
+    async def _read() -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]:
         from kaupo.venues.xstocks_ledgers import read_fill_ledgers
 
         fills = await read_fills(
@@ -280,10 +283,18 @@ def xstocks_fills(
             ledgers = await read_fill_ledgers(
                 settings.kraken_api_key, settings.kraken_api_secret, units=units, fills=fills
             )
-        return fills, ledgers
+        identities = None
+        if map_assets:
+            from kaupo.data.xstocks import XStocksClient
+            from kaupo.data.xstocks_identity import map_account_identities
+
+            async with XStocksClient() as public:
+                metadata = await public.identity_metadata()
+            identities = map_account_identities(metadata, fills, ledgers)
+        return fills, ledgers, identities
 
     try:
-        fills, ledgers = asyncio.run(_read())
+        fills, ledgers, identities = asyncio.run(_read())
     except ValueError as exc:
         err_console.print(f"Fill read failed: {exc}", markup=False)
         raise typer.Exit(1) from None
@@ -300,6 +311,7 @@ def xstocks_fills(
                 "consolidate_taker": False,
                 "fills": fills,
                 **({"ledgers": ledgers} if include_ledgers else {}),
+                **({"identities": identities} if map_assets else {}),
             }
         )
     )
