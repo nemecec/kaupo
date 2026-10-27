@@ -343,6 +343,68 @@ def xstocks_fills(
         raise typer.Exit(1)
 
 
+@run_app.command(name="xstocks-ledgers")
+def xstocks_ledgers(
+    asset: Annotated[str, typer.Option(help="Exact Kraken asset ID")],
+    asset_class: Annotated[str, typer.Option(help="currency or tokenized_asset")],
+    units: Annotated[str, typer.Option(help="rebased or base")],
+    start: Annotated[int, typer.Option(help="Exclusive start as Unix seconds")],
+    end: Annotated[int, typer.Option(help="Inclusive end as Unix seconds; maximum window 31 days")],
+    check_balance_links: Annotated[
+        bool, typer.Option(help="Check balance links in the returned window")
+    ] = False,
+) -> None:
+    """Read all ledger types for one asset in the default wallet."""
+    from kaupo.venues.xstocks_balance_links import check_balance_links as check_links
+    from kaupo.venues.xstocks_ledger_history import check_ledger_request, read_ledger_history
+
+    try:
+        check_ledger_request(asset, asset_class, units, start, end)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    settings = get_settings()
+    if not settings.kraken_api_key or not settings.kraken_api_secret:
+        raise typer.BadParameter("Kraken API credentials are missing")
+    started_at = datetime.now(UTC)
+    try:
+        entries = asyncio.run(
+            read_ledger_history(
+                settings.kraken_api_key,
+                settings.kraken_api_secret,
+                units=units,
+                start=start,
+                end=end,
+                asset=asset,
+                asset_class=asset_class,
+            )
+        )
+    except ValueError as exc:
+        err_console.print(f"Ledger history read failed: {exc}", markup=False)
+        raise typer.Exit(1) from None
+    report = check_links(entries) if check_balance_links else None
+    if report is not None:
+        report["scope"] = "asset_window"
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ledger_history_read",
+                "wallet": "default",
+                "asset": asset,
+                "asset_class": asset_class,
+                "rebase_multiplier": units,
+                "start_exclusive": start,
+                "end_inclusive": end,
+                "started_at": started_at.isoformat(),
+                "completed_at": datetime.now(UTC).isoformat(),
+                "ledgers": entries,
+                **({"balance_links": report} if report is not None else {}),
+            }
+        )
+    )
+    if report is not None and report["status"] == "needs_review":
+        raise typer.Exit(1)
+
+
 @run_app.command(name="xstocks-order-check")
 def xstocks_order_check(
     pair: PairOpt,

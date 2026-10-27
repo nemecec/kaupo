@@ -185,3 +185,5 @@ A gap can therefore indicate omitted activity instead of an exchange error.
 Matching links do not prove complete history, current account balance, or correct treatment of corporate actions.
 The check does not compare its final balance with the Balance endpoint or write database records.
 Live xStocks trading remains disabled. No authenticated account request was made during implementation.
+
+Use the [asset-window ledger reader](xstocks-ledger-history.md) to include activity that is not referenced by fills.
