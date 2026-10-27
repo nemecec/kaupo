@@ -30,4 +30,5 @@ Treat saved output as private account data.
 
 Tests verify signing and request encoding with a mocked transport. No authenticated account request was made during implementation.
 xStocks live assignments remain disabled. Use the [open-order command](xstocks-open-orders.md) to inspect resting orders.
-Fill pagination, symbol mapping, and corporate-action handling need further work.
+Use the [fill-history command](xstocks-fills.md) to inspect a bounded trade window.
+Symbol mapping, fee-currency reconciliation, and corporate-action handling need further work.

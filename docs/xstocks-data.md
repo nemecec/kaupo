@@ -192,3 +192,5 @@ AAPLx trade pagination advanced to a second historical page. Account-specific tr
 For read-only account evidence, use the [balance inspection command](xstocks-balances.md).
 
 Use [open-order inspection](xstocks-open-orders.md) to read resting orders with explicit xStocks units.
+
+Use [fill-history inspection](xstocks-fills.md) to read authenticated trades within an explicit time window.

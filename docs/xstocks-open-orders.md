@@ -32,5 +32,6 @@ The result is inspection evidence, not a reconciliation input or proof that an e
 Treat saved output as private account data.
 
 The command does not place or cancel orders, write database records, or start a runner.
-xStocks live assignments remain disabled. Fill pagination, symbol mapping, and corporate-action handling need further work.
+xStocks live assignments remain disabled. Use the [fill-history command](xstocks-fills.md) to inspect a bounded trade window.
+Symbol mapping, fee-currency reconciliation, and corporate-action handling need further work.
 Tests exercise signing and pagination with a mocked transport. No authenticated account request was made during implementation.
