@@ -260,6 +260,9 @@ def xstocks_fills(
     check_ledgers: Annotated[
         bool, typer.Option(help="Check principal movements; includes ledgers and mapping")
     ] = False,
+    check_balance_links: Annotated[
+        bool, typer.Option(help="Check selected ledger balance links; includes ledgers")
+    ] = False,
 ) -> None:
     """Read default-wallet fill history with explicit xStocks units and original symbols."""
     from kaupo.venues.xstocks_fills import check_fill_window, read_fills
@@ -273,7 +276,7 @@ def xstocks_fills(
     settings = get_settings()
     if not settings.kraken_api_key or not settings.kraken_api_secret:
         raise typer.BadParameter("Kraken API credentials are missing")
-    include_ledgers = include_ledgers or check_ledgers
+    include_ledgers = include_ledgers or check_ledgers or check_balance_links
     map_assets = map_assets or check_ledgers
     started_at = datetime.now(UTC)
 
@@ -309,6 +312,12 @@ def xstocks_fills(
 
         assert ledgers is not None and identities is not None
         ledger_check = check_fill_ledgers(fills, ledgers, identities)
+    balance_links = None
+    if check_balance_links:
+        from kaupo.venues.xstocks_balance_links import check_balance_links as check_links
+
+        assert ledgers is not None
+        balance_links = check_links(ledgers)
     typer.echo(
         json.dumps(
             {
@@ -324,10 +333,13 @@ def xstocks_fills(
                 **({"ledgers": ledgers} if include_ledgers else {}),
                 **({"identities": identities} if map_assets else {}),
                 **({"ledger_check": ledger_check} if check_ledgers else {}),
+                **({"balance_links": balance_links} if check_balance_links else {}),
             }
         )
     )
-    if ledger_check is not None and ledger_check["status"] == "needs_review":
+    if any(
+        report is not None and report["status"] == "needs_review" for report in (ledger_check, balance_links)
+    ):
         raise typer.Exit(1)
 
 

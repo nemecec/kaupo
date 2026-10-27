@@ -149,3 +149,39 @@ For example, an entry with asset `KFEE`, amount `0`, and fee `2.5` produces a `K
 This is a synthetic test example, not an authenticated observation of xStocks fee behavior.
 An unmapped asset with a nonzero amount remains unresolved, even when its fee is zero.
 A principal match does not establish that unknown asset IDs are historical aliases or that fee valuations agree with trade-history estimates.
+
+## Check balance links in selected ledgers
+
+Add `--check-balance-links` to check consecutive balances in the ledger entries referenced by the selected fills:
+
+```sh
+kaupo run xstocks-fills --units rebased --start 1792886400 --end 1792972800 --check-balance-links
+```
+
+This option enables ledger lookup and requires its permissions. It does not require public identity mapping.
+Combine it with `--check-ledgers` to include the separate principal checks.
+The JSON gains a `balance_links` report with scope `selected_ledgers`.
+
+The checker groups entries by exact asset class and asset ID, then orders each group by timestamp.
+It compares each subsequent balance with the preceding balance plus amount minus fee.
+A negative fee increases the expected balance. The report records expected balance, actual balance, and their signed difference for each link.
+The first balance is an unverified anchor. Its own opening balance is not checked.
+
+Each asset group reports one of these states:
+
+- `links_match`: Every available link agrees exactly
+- `gaps_detected`: At least one link has a nonzero difference
+- `insufficient_entries`: Only one entry is available
+- `unresolved`: Numeric values are unsupported or timestamps do not establish a unique order
+
+Equal timestamps make the entire asset group unresolved. Ledger IDs and balances are not used to guess their order.
+Numeric bounds match the principal checker. Timestamps retain transport precision; this is not an exact timestamp archive.
+An empty collection reports `no_ledgers`, which does not establish continuity.
+If a group needs review, the command returns exit code 1 with the JSON report. Other read errors retain their existing behavior.
+
+These entries are only the ledgers referenced by returned fills.
+Deposits, withdrawals, transfers, dividends, adjustments, and other activity can be absent from this selection.
+A gap can therefore indicate omitted activity instead of an exchange error.
+Matching links do not prove complete history, current account balance, or correct treatment of corporate actions.
+The check does not compare its final balance with the Balance endpoint or write database records.
+Live xStocks trading remains disabled. No authenticated account request was made during implementation.
