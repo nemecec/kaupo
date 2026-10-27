@@ -1,6 +1,6 @@
 # Non-24/7 support status
 
-This audit covers merged safeguards through PR #86 and the current selected-ledger balance-link implementation for [issue #43](https://github.com/nemecec/kaupo/issues/43).
+This audit covers merged safeguards through PR #87 and the current asset-window ledger-history implementation for [issue #43](https://github.com/nemecec/kaupo/issues/43).
 The original calendar defects have targeted fixes. Supported xStocks live trading still requires the work listed after the table.
 A merged safeguard does not establish account eligibility or validate real orders.
 
@@ -80,6 +80,7 @@ Optional metadata mapping annotates exact pair and asset IDs and reports unknown
 The optional ledger check compares spot principal movements and reports actual fees and net movements by mapped asset.
 Fee-only entries in other assets retain their exact exchange IDs and remain separate from base and quote totals.
 Optional balance-link checks detect arithmetic gaps between selected entries, with explicit limits for missing activity and tied timestamps.
+The [ledger-history command](xstocks-ledger-history.md) reads all returned activity types for one exact asset window and can check its balance links.
 Historical aliases, complete account balance continuity, third-asset principal movements, and corporate-action handling remain unsupported.
 
 ## Configuration and evidence

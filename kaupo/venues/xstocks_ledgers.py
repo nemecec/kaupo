@@ -26,10 +26,11 @@ def fill_ledger_ids(fills: dict[str, Any]) -> list[str]:
     return list(ids)
 
 
-def _check_ledger(entry: object) -> None:
+def _check_ledger(entry: object, *, require_refid: bool = True) -> None:
     if not isinstance(entry, dict):
         raise ValueError("Kraken returned an invalid ledger entry")
-    for field in ("refid", "type", "aclass", "asset"):
+    fields = ("refid", "type", "aclass", "asset") if require_refid else ("type", "aclass", "asset")
+    for field in fields:
         if not isinstance(entry.get(field), str) or not entry[field].strip():
             raise ValueError("Kraken returned an invalid ledger identifier or description")
     for field in ("amount", "fee", "balance", "time"):
