@@ -214,6 +214,40 @@ def xstocks_balances(
     )
 
 
+@run_app.command(name="xstocks-open-orders")
+def xstocks_open_orders(
+    units: Annotated[str, typer.Option(help="Required xStocks units: rebased or base")],
+) -> None:
+    """Read default-wallet open orders with explicit xStocks units and original symbols."""
+    from kaupo.venues.xstocks_account import read_open_orders
+
+    if units not in ("rebased", "base"):
+        raise typer.BadParameter("--units must be rebased or base")
+    settings = get_settings()
+    if not settings.kraken_api_key or not settings.kraken_api_secret:
+        raise typer.BadParameter("Kraken API credentials are missing")
+    started_at = datetime.now(UTC)
+    try:
+        open_orders = asyncio.run(
+            read_open_orders(settings.kraken_api_key, settings.kraken_api_secret, units=units)
+        )
+    except ValueError as exc:
+        err_console.print(f"Open-order read failed: {exc}", markup=False)
+        raise typer.Exit(1) from None
+    typer.echo(
+        json.dumps(
+            {
+                "status": "open_orders_read",
+                "wallet": "default",
+                "started_at": started_at.isoformat(),
+                "completed_at": datetime.now(UTC).isoformat(),
+                "rebase_multiplier": units,
+                "open_orders": open_orders,
+            }
+        )
+    )
+
+
 @run_app.command(name="xstocks-order-check")
 def xstocks_order_check(
     pair: PairOpt,

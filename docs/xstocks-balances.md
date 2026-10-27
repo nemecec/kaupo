@@ -29,4 +29,5 @@ Separate invocations are separate observations and can differ if the account cha
 Treat saved output as private account data.
 
 Tests verify signing and request encoding with a mocked transport. No authenticated account request was made during implementation.
-xStocks live assignments remain disabled. Open-order reads, fill pagination, symbol mapping, and corporate-action handling need further work.
+xStocks live assignments remain disabled. Use the [open-order command](xstocks-open-orders.md) to inspect resting orders.
+Fill pagination, symbol mapping, and corporate-action handling need further work.
