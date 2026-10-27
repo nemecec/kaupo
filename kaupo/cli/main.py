@@ -257,6 +257,9 @@ def xstocks_fills(
     map_assets: Annotated[
         bool, typer.Option(help="Map exact pair and asset IDs with current public metadata")
     ] = False,
+    check_ledgers: Annotated[
+        bool, typer.Option(help="Check principal movements; includes ledgers and mapping")
+    ] = False,
 ) -> None:
     """Read default-wallet fill history with explicit xStocks units and original symbols."""
     from kaupo.venues.xstocks_fills import check_fill_window, read_fills
@@ -270,6 +273,8 @@ def xstocks_fills(
     settings = get_settings()
     if not settings.kraken_api_key or not settings.kraken_api_secret:
         raise typer.BadParameter("Kraken API credentials are missing")
+    include_ledgers = include_ledgers or check_ledgers
+    map_assets = map_assets or check_ledgers
     started_at = datetime.now(UTC)
 
     async def _read() -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]:
@@ -298,6 +303,12 @@ def xstocks_fills(
     except ValueError as exc:
         err_console.print(f"Fill read failed: {exc}", markup=False)
         raise typer.Exit(1) from None
+    ledger_check = None
+    if check_ledgers:
+        from kaupo.venues.xstocks_ledger_check import check_fill_ledgers
+
+        assert ledgers is not None and identities is not None
+        ledger_check = check_fill_ledgers(fills, ledgers, identities)
     typer.echo(
         json.dumps(
             {
@@ -312,9 +323,12 @@ def xstocks_fills(
                 "fills": fills,
                 **({"ledgers": ledgers} if include_ledgers else {}),
                 **({"identities": identities} if map_assets else {}),
+                **({"ledger_check": ledger_check} if check_ledgers else {}),
             }
         )
     )
+    if ledger_check is not None and ledger_check["status"] == "needs_review":
+        raise typer.Exit(1)
 
 
 @run_app.command(name="xstocks-order-check")
