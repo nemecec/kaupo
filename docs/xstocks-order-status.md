@@ -30,3 +30,34 @@ Results do not form an atomic account snapshot. Active orders can change after t
 The command does not submit or cancel orders, update database records, or start a runner.
 Tests use mocked transport. No authenticated account request was made during implementation.
 Live xStocks trading remains disabled.
+
+## Compare an intended expiry
+
+For one limit order, supply the intended absolute expiry timestamp:
+
+```sh
+kaupo run xstocks-order-status --units base --order-id OEXAMPLE-ORDER1-ABCDEF --expected-expiry 1792972800
+```
+
+Use the deadline recorded when the order was submitted. The command labels this value as operator evidence.
+The option requires exactly one order ID and a positive integer Unix timestamp.
+The recorded `expiretm` must equal the supplied deadline. Market and conditional order types require separate interpretation.
+
+The `expiry_check` report preserves the executed volume, including partial fills.
+It reports `terminal_by_deadline` when an order closed or was canceled at or before the deadline, or expired exactly at it.
+This result means that the reported order was terminal by the deadline. It does not prove expiry caused the terminal state.
+An expired state before the intended deadline requires review.
+
+All other outcomes produce `needs_review` and exit code 1 after the JSON report:
+
+- `expiry_mismatch`: the recorded expiry differs from the intended deadline.
+- `terminal_after_deadline`: the reported terminal timestamp is later than the deadline.
+- `active_after_deadline`: the order remained active in a request that started after the deadline.
+- `observation_overlaps_deadline`: the request interval touches or spans the deadline while the order is active.
+- `deadline_not_reached`: the active order was observed before the deadline.
+
+Malformed evidence, unsupported order types, and inconsistent timestamps also require review.
+The checker applies no assumed grace period. Even a fractional late timestamp requires review.
+Observation times come from the local host; exchange timestamps come from Kraken. Clock differences can affect the result.
+A matching report does not establish trade execution times, complete fills, or correct account reconciliation.
+Without this option, the command retains its existing inspection output and exit behavior.
