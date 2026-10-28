@@ -69,3 +69,63 @@ def check_balance_links(ledgers: dict[str, Any]) -> dict[str, Any]:
     if any(row["status"] != "links_match" for row in assets):
         status = "needs_review"
     return {"status": status, "scope": "selected_ledgers", "counts": dict(counts), "assets": assets}
+
+
+def check_window_balances(
+    ledgers: dict[str, Any], *, asset: str, asset_class: str, opening: str, closing: str
+) -> dict[str, Any]:
+    """Check a single asset window against operator-supplied boundary balances."""
+    initial, final = _decimal(opening), _decimal(closing)
+    report: dict[str, Any] = {
+        "scope": "asset_window",
+        "anchor_source": "operator",
+        "opening_balance": opening,
+        "closing_balance": closing,
+        "entry_count": len(ledgers),
+    }
+    try:
+        for entry in ledgers.values():
+            if (
+                not isinstance(entry, dict)
+                or entry.get("asset") != asset
+                or entry.get("aclass") != asset_class
+            ):
+                raise ValueError("asset_scope_mismatch")
+        links = _asset_links(list(ledgers.items())) if ledgers else None
+    except ValueError as exc:
+        return {**report, "status": "needs_review", "reason": str(exc)}
+    with localcontext() as context:
+        context.prec = 128
+        if links is None:
+            checks = [
+                {"boundary": "empty_window", "expected_balance": str(initial), "actual_balance": str(final)}
+            ]
+        else:
+            first = ledgers[links["anchor_id"]]
+            last = ledgers[links["last_id"]]
+            checks = [
+                {
+                    "boundary": "opening",
+                    "ledger_id": links["anchor_id"],
+                    "expected_balance": str(initial + _decimal(first["amount"]) - _decimal(first["fee"])),
+                    "actual_balance": first["balance"],
+                },
+                {
+                    "boundary": "closing",
+                    "ledger_id": links["last_id"],
+                    "expected_balance": last["balance"],
+                    "actual_balance": str(final),
+                },
+            ]
+        for check in checks:
+            difference = Decimal(check["actual_balance"]) - Decimal(check["expected_balance"])
+            check.update(difference=str(difference), status="match" if difference == 0 else "gap")
+    matches = all(check["status"] == "match" for check in checks)
+    if links is not None and links["status"] == "gaps_detected":
+        matches = False
+    return {
+        **report,
+        "status": "balances_match" if matches else "needs_review",
+        "boundaries": checks,
+        "links": links["links"] if links is not None else [],
+    }

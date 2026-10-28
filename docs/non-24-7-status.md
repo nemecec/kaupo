@@ -1,6 +1,6 @@
 # Non-24/7 support status
 
-This audit covers merged safeguards through PR #88 and the current structured ledger-filter implementation for [issue #43](https://github.com/nemecec/kaupo/issues/43).
+This audit covers merged safeguards through PR #89 and the current ledger boundary-balance checks for [issue #43](https://github.com/nemecec/kaupo/issues/43).
 The original calendar defects have targeted fixes. Supported xStocks live trading still requires the work listed after the table.
 A merged safeguard does not establish account eligibility or validate real orders.
 
@@ -81,6 +81,8 @@ The optional ledger check compares spot principal movements and reports actual f
 Fee-only entries in other assets retain their exact exchange IDs and remain separate from base and quote totals.
 Optional balance-link checks detect arithmetic gaps between selected entries, with explicit limits for missing activity and tied timestamps.
 The [ledger-history command](xstocks-ledger-history.md) reads all returned activity types for one exact asset window and can check its balance links.
+Optional opening and closing balance assertions check window boundaries against operator-supplied historical records.
+They do not establish the source or accuracy of those records.
 Historical aliases, complete account balance continuity, third-asset principal movements, and corporate-action handling remain unsupported.
 
 ## Configuration and evidence

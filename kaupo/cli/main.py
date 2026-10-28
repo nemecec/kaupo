@@ -353,13 +353,26 @@ def xstocks_ledgers(
     check_balance_links: Annotated[
         bool, typer.Option(help="Check balance links in the returned window")
     ] = False,
+    opening_balance: Annotated[
+        str | None, typer.Option(help="Balance at the exclusive start; requires closing balance")
+    ] = None,
+    closing_balance: Annotated[
+        str | None, typer.Option(help="Balance at the inclusive end; requires opening balance")
+    ] = None,
 ) -> None:
     """Read all ledger types for one asset in the default wallet."""
     from kaupo.venues.xstocks_balance_links import check_balance_links as check_links
+    from kaupo.venues.xstocks_balance_links import check_window_balances
+    from kaupo.venues.xstocks_ledger_check import _decimal
     from kaupo.venues.xstocks_ledger_history import check_ledger_request, read_ledger_history
 
     try:
         check_ledger_request(asset, asset_class, units, start, end)
+        if (opening_balance is None) != (closing_balance is None):
+            raise ValueError("Opening and closing balances must be supplied together")
+        if opening_balance is not None:
+            _decimal(opening_balance)
+            _decimal(closing_balance)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from None
     settings = get_settings()
@@ -384,6 +397,13 @@ def xstocks_ledgers(
     report = check_links(entries) if check_balance_links else None
     if report is not None:
         report["scope"] = "asset_window"
+    window_report = (
+        check_window_balances(
+            entries, asset=asset, asset_class=asset_class, opening=opening_balance, closing=closing_balance
+        )
+        if opening_balance is not None and closing_balance is not None
+        else None
+    )
     typer.echo(
         json.dumps(
             {
@@ -397,11 +417,12 @@ def xstocks_ledgers(
                 "started_at": started_at.isoformat(),
                 "completed_at": datetime.now(UTC).isoformat(),
                 "ledgers": entries,
+                **({"balance_window": window_report} if window_report is not None else {}),
                 **({"balance_links": report} if report is not None else {}),
             }
         )
     )
-    if report is not None and report["status"] == "needs_review":
+    if any(r is not None and r["status"] == "needs_review" for r in (report, window_report)):
         raise typer.Exit(1)
 
 
