@@ -248,6 +248,46 @@ def xstocks_open_orders(
     )
 
 
+@run_app.command(name="xstocks-order-status")
+def xstocks_order_status(
+    units: Annotated[str, typer.Option(help="Required xStocks units: rebased or base")],
+    order_id: Annotated[list[str], typer.Option(help="Exact Kraken order ID; repeat for up to 50 IDs")],
+) -> None:
+    """Read specific orders, including closed, canceled, and expired orders."""
+    from kaupo.venues.xstocks_order_status import check_order_request, read_order_status
+
+    try:
+        check_order_request(order_id, units)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    settings = get_settings()
+    if not settings.kraken_api_key or not settings.kraken_api_secret:
+        raise typer.BadParameter("Kraken API credentials are missing")
+    started_at = datetime.now(UTC)
+    try:
+        orders = asyncio.run(
+            read_order_status(
+                settings.kraken_api_key, settings.kraken_api_secret, units=units, order_ids=order_id
+            )
+        )
+    except ValueError as exc:
+        err_console.print(f"Order-status read failed: {exc}", markup=False)
+        raise typer.Exit(1) from None
+    typer.echo(
+        json.dumps(
+            {
+                "status": "order_status_read",
+                "wallet": "default",
+                "rebase_multiplier": units,
+                "started_at": started_at.isoformat(),
+                "completed_at": datetime.now(UTC).isoformat(),
+                "requested_order_ids": order_id,
+                "orders": orders,
+            }
+        )
+    )
+
+
 @run_app.command(name="xstocks-fills")
 def xstocks_fills(
     units: Annotated[str, typer.Option(help="Required xStocks units: rebased or base")],

@@ -33,5 +33,6 @@ Treat saved output as private account data.
 
 The command does not place or cancel orders, write database records, or start a runner.
 xStocks live assignments remain disabled. Use the [fill-history command](xstocks-fills.md) to inspect a bounded trade window.
+Use the [order-status command](xstocks-order-status.md) to look up exact IDs after orders leave the open-order list.
 Symbol mapping, fee-currency reconciliation, and corporate-action handling need further work.
 Tests exercise signing and pagination with a mocked transport. No authenticated account request was made during implementation.

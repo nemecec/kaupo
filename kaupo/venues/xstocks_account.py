@@ -42,18 +42,18 @@ async def read_balances(api_key: str, api_secret: str, *, units: str) -> dict[st
             raise ValueError("Could not close the Kraken balance client") from None
 
 
-def _check_open_order(order: object) -> None:
+def _check_order(order: object, *, statuses: tuple[str, ...] = ("pending", "open")) -> None:
     """Check inspection fields without translating symbols or interpreting order rules."""
     if not isinstance(order, dict):
-        raise ValueError("Kraken returned an invalid open order")
+        raise ValueError("Kraken returned an invalid order")
     description = order.get("descr")
     if not isinstance(description, dict) or any(
         not isinstance(description.get(field), str) or not description[field].strip()
         for field in ("pair", "type", "ordertype")
     ):
         raise ValueError("Kraken returned an invalid order description")
-    if order.get("status") not in ("pending", "open"):
-        raise ValueError("Kraken returned an unexpected open-order status")
+    if order.get("status") not in statuses:
+        raise ValueError("Kraken returned an unexpected order status")
     amounts = []
     for field in ("vol", "vol_exec", "expiretm"):
         value = order.get(field)
@@ -103,7 +103,7 @@ async def read_open_orders(api_key: str, api_secret: str, *, units: str) -> dict
             for order_id, order in page.items():
                 if not isinstance(order_id, str) or not order_id.strip():
                     raise ValueError("Kraken returned an invalid order ID")
-                _check_open_order(order)
+                _check_order(order)
                 if order_id in orders and orders[order_id] != order:
                     raise ValueError("An open order changed between pages; read again")
                 orders[order_id] = order
