@@ -162,7 +162,8 @@ Changing `asset_class` restarts the assignment with a new ledger and risk identi
 An omitted or null `asset_class` in an update preserves the stored class.
 The run configuration records the class. Rolling reports reject comparisons against a chain with a different class.
 
-This routing applies to supervised shadow assignments. The standalone `kaupo run shadow` command retains crypto routing.
+Supervised assignments use this routing through `asset_class`.
+For standalone runs, use the explicit options in [Start a standalone shadow run](#start-a-standalone-shadow-run).
 The assignment API and supervisor reject xStocks live mode. Authenticated xStocks orders remain unsupported.
 
 ## Trading readiness
