@@ -64,7 +64,7 @@ Without this option, the command retains its existing inspection output and exit
 
 ## Check referenced fills
 
-To fetch an order's reported trade references and compare executed volumes, add `--check-fills`:
+To fetch an order's trade references and check executed volumes and timestamps, add `--check-fills`:
 
 ```sh
 kaupo run xstocks-order-status --units base --order-id OEXAMPLE-ORDER1-ABCDEF --check-fills
@@ -78,13 +78,31 @@ Each trade must belong to its referencing order and have the same side.
 Missing or additional trade IDs, shared references, or failed batches cause an error without success JSON.
 An order with nonzero executed volume must have trade references. A zero-execution order can have none.
 
-Output adds raw `fills`, a `fill_check` report, and the completion time of the initial order request.
+Output adds raw `fills`, `fill_check` and `fill_time_check` reports, and the completion time of the initial order request.
 Each order's report compares the sum of referenced fill volumes with its reported `vol_exec`, using exact decimal arithmetic.
 Mismatches and unsupported precision produce `needs_review` and exit code 1 with the evidence.
 A successful report uses `volumes_match` and scope `referenced_order_fills`.
 Fees, costs, symbols, and returned ledger references remain unchanged. The check does not reconcile fees or infer symbol aliases.
 
 Order and fill requests are separate observations. Active orders can change between requests.
-A volume match does not prove complete account history, correct fill timing, or corporate-action treatment.
+A volume match does not prove complete account history or corporate-action treatment.
 The optional expiry check uses the initial order observation interval, excluding time spent fetching fills.
 If both checks are requested, either `needs_review` result causes exit code 1.
+
+### Check fill timestamps
+
+The `fill_time_check` report compares each referenced fill timestamp with its order's opening time.
+For closed, canceled, and expired orders, it also checks the closing time.
+If `--expected-expiry` is supplied, every referenced fill must be at or before that intended deadline.
+This check uses the supplied deadline even if the recorded expiry differs. The separate expiry report checks that difference.
+
+Boundary timestamps are inclusive. A fill exactly at opening, closing, or expiry is within the corresponding bound.
+The report preserves each timestamp and lists all applicable violations: `fill_before_open`, `fill_after_close`, and `fill_after_expected_expiry`.
+Malformed or unsupported timestamps are unresolved. Any violation or unresolved result produces `needs_review` and exit code 1.
+A volume match or a successful order-expiry check does not override a timing failure.
+
+The success status is `times_match`, scoped to the referenced fills. Empty references report `no_fills`, not timing evidence.
+Active orders have no closing bound. Without an explicit expected expiry, this report checks only their opening bound.
+It does not infer a deadline from the symbol or treat `expiretm=0` as an expiry.
+The report compares Kraken's returned timestamps without an assumed tolerance.
+A match does not prove timestamp accuracy, complete fill history, or correct fees.

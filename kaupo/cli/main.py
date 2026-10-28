@@ -256,7 +256,7 @@ def xstocks_order_status(
         int | None, typer.Option(help="Assert an absolute Unix expiry for one order")
     ] = None,
     check_fills: Annotated[
-        bool, typer.Option(help="Fetch referenced fills and compare executed volumes")
+        bool, typer.Option(help="Fetch referenced fills and check executed volumes and timestamps")
     ] = False,
 ) -> None:
     """Read specific orders, including closed, canceled, and expired orders."""
@@ -285,7 +285,9 @@ def xstocks_order_status(
     order_status_completed_at = datetime.now(UTC)
     fills: dict[str, Any] = {}
     fill_check = None
+    fill_time_check = None
     if check_fills:
+        from kaupo.venues.xstocks_fill_times import check_order_fill_times
         from kaupo.venues.xstocks_order_fills import check_order_fill_volumes, read_order_fills
 
         try:
@@ -295,6 +297,7 @@ def xstocks_order_status(
                 )
             )
             fill_check = check_order_fill_volumes(orders, fills)
+            fill_time_check = check_order_fill_times(orders, fills, expected_expiry=expected_expiry)
         except ValueError as exc:
             err_console.print(f"Order-fill read failed: {exc}", markup=False)
             raise typer.Exit(1) from None
@@ -323,6 +326,7 @@ def xstocks_order_status(
                     {
                         "fills": fills,
                         "fill_check": fill_check,
+                        "fill_time_check": fill_time_check,
                         "order_status_completed_at": order_status_completed_at.isoformat(),
                     }
                     if check_fills
@@ -334,7 +338,8 @@ def xstocks_order_status(
     )
 
     if any(
-        report is not None and report["status"] == "needs_review" for report in (expiry_check, fill_check)
+        report is not None and report["status"] == "needs_review"
+        for report in (expiry_check, fill_check, fill_time_check)
     ):
         raise typer.Exit(1)
 
