@@ -1,6 +1,6 @@
 # Non-24/7 support status
 
-This audit covers merged safeguards through PR #91 and the current order-expiry evidence checks for [issue #43](https://github.com/nemecec/kaupo/issues/43).
+This audit covers merged safeguards through PR #92 and the current referenced-order fill checks for [issue #43](https://github.com/nemecec/kaupo/issues/43).
 The original calendar defects have targeted fixes. Supported xStocks live trading still requires the work listed after the table.
 A merged safeguard does not establish account eligibility or validate real orders.
 
@@ -76,6 +76,8 @@ It preserves exchange asset IDs and does not feed live reconciliation.
 The [open-order command](xstocks-open-orders.md) reads cursor pages with explicit units and preserves exchange fields.
 The [order-status command](xstocks-order-status.md) reads exact order IDs, including terminal states, without treating missing orders as expiry evidence.
 Its optional expiry assertion compares one limit order with an operator-supplied deadline and reports ambiguous or late observations for review.
+Its optional fill check fetches exact trade references and compares their volume totals with reported executed volume.
+Order and fill reads remain separate observations.
 The [fill-history command](xstocks-fills.md) reads bounded cursor pages and preserves exchange transaction IDs and signed fees.
 Its optional ledger lookup preserves the referenced asset IDs, signed amounts, and fees.
 Optional metadata mapping annotates exact pair and asset IDs and reports unknown identifiers.

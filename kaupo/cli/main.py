@@ -255,6 +255,9 @@ def xstocks_order_status(
     expected_expiry: Annotated[
         int | None, typer.Option(help="Assert an absolute Unix expiry for one order")
     ] = None,
+    check_fills: Annotated[
+        bool, typer.Option(help="Fetch referenced fills and compare executed volumes")
+    ] = False,
 ) -> None:
     """Read specific orders, including closed, canceled, and expired orders."""
     from kaupo.venues.xstocks_expiry_check import check_expiry_request, check_order_expiry
@@ -279,13 +282,29 @@ def xstocks_order_status(
     except ValueError as exc:
         err_console.print(f"Order-status read failed: {exc}", markup=False)
         raise typer.Exit(1) from None
-    completed_at = datetime.now(UTC)
+    order_status_completed_at = datetime.now(UTC)
+    fills: dict[str, Any] = {}
+    fill_check = None
+    if check_fills:
+        from kaupo.venues.xstocks_order_fills import check_order_fill_volumes, read_order_fills
+
+        try:
+            fills = asyncio.run(
+                read_order_fills(
+                    settings.kraken_api_key, settings.kraken_api_secret, units=units, orders=orders
+                )
+            )
+            fill_check = check_order_fill_volumes(orders, fills)
+        except ValueError as exc:
+            err_console.print(f"Order-fill read failed: {exc}", markup=False)
+            raise typer.Exit(1) from None
+    completed_at = datetime.now(UTC) if check_fills else order_status_completed_at
     expiry_check = (
         check_order_expiry(
             orders[order_id[0]],
             expected_expiry=expected_expiry,
             started_at=started_at,
-            completed_at=completed_at,
+            completed_at=order_status_completed_at,
         )
         if expected_expiry is not None
         else None
@@ -300,12 +319,23 @@ def xstocks_order_status(
                 "completed_at": completed_at.isoformat(),
                 "requested_order_ids": order_id,
                 "orders": orders,
+                **(
+                    {
+                        "fills": fills,
+                        "fill_check": fill_check,
+                        "order_status_completed_at": order_status_completed_at.isoformat(),
+                    }
+                    if check_fills
+                    else {}
+                ),
                 **({"expiry_check": expiry_check} if expiry_check is not None else {}),
             }
         )
     )
 
-    if expiry_check is not None and expiry_check["status"] == "needs_review":
+    if any(
+        report is not None and report["status"] == "needs_review" for report in (expiry_check, fill_check)
+    ):
         raise typer.Exit(1)
 
 
