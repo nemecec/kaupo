@@ -35,7 +35,8 @@ Historical corrections and corporate actions can change later observations of th
 Treat saved output as private account data.
 
 The command does not place or cancel orders, write database records, or start a runner.
-xStocks live assignments remain disabled. Asset mapping, fee-currency reconciliation, and corporate-action handling remain separate work.
+xStocks live assignments remain disabled. Optional mapping and ledger checks are described below.
+Their evidence does not establish live reconciliation or corporate-action support.
 Tests exercise signing, cursor pagination, and failures with mocked transport. No authenticated account request was made during implementation.
 
 ## Read the referenced ledger entries

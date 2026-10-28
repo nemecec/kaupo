@@ -67,7 +67,8 @@ For repeated local times, sessions open at the first occurrence and close at the
 Missing local boundary times move forward by the daylight-saving gap.
 
 The schedule does not restrict order submission or change order expiry.
-Order submission and expiry remain separate work under issue #43.
+Live limit expiry uses the separate [GTD safeguard](live-order-expiry.md).
+A schedule does not enable xStocks live routing.
 
 ## Polling diagnostics
 

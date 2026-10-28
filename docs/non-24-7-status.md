@@ -3,6 +3,7 @@
 This audit covers merged safeguards through PR #97 and the current standalone xStocks shadow routing for [issue #43](https://github.com/nemecec/kaupo/issues/43).
 The original calendar defects have targeted fixes. Supported xStocks live trading still requires the work listed after the table.
 A merged safeguard does not establish account eligibility or validate real orders.
+The [acceptance checklist](xstocks-acceptance.md) records available evidence and the remaining account and live-integration prerequisites.
 
 ## Completed work
 
