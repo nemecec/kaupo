@@ -106,3 +106,31 @@ Active orders have no closing bound. Without an explicit expected expiry, this r
 It does not infer a deadline from the symbol or treat `expiretm=0` as an expiry.
 The report compares Kraken's returned timestamps without an assumed tolerance.
 A match does not prove timestamp accuracy, complete fill history, or correct fees.
+
+## Check principal movements and fees
+
+To inspect the ledger entries referenced by an order's fills, add `--check-ledgers`:
+
+```sh
+kaupo run xstocks-order-status --units base --order-id OEXAMPLE-ORDER1-ABCDEF --check-ledgers
+```
+
+This option includes `--check-fills`. It fetches referenced ledger entries in the same unit mode and default wallet.
+The key also needs permission to query ledger entries.
+Current public xStocks metadata supplies exact pair and asset mappings. Unknown aliases remain unresolved; the command does not guess them.
+
+Output adds raw `ledgers`, `identities`, and a `ledger_check` report keyed by trade ID.
+The check compares spot principal movements with each fill's volume and cost.
+It reports actual ledger fees and net movements by asset, including signed rebates.
+Fee-only entries in other assets retain their exact Kraken IDs. Third-asset principal movements remain unsupported.
+The fill's quote-currency fee estimate is preserved, but it does not replace ledger fee evidence.
+
+This command reuses the [fill-history ledger checks](xstocks-fills.md), including reference, margin, identity, and decimal-precision restrictions.
+Every referenced ledger entry must be returned. A failed lookup or metadata request produces an error without success JSON.
+A mismatch or unresolved ledger check produces `needs_review` and exit code 1 with the evidence.
+Volume, timestamp, and optional expiry checks retain their own reports. A review result from any check causes exit code 1.
+
+An order without executions produces empty fills and ledgers, with `no_fills` ledger status.
+That case does not need a public metadata request and does not establish reconciliation readiness.
+This command reads only entries referenced by the selected orders' fills. It does not establish complete account balance continuity.
+Order, fill, ledger, and metadata requests are separate observations. Corporate actions and historical aliases still require separate treatment.

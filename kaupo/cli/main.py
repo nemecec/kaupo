@@ -258,6 +258,9 @@ def xstocks_order_status(
     check_fills: Annotated[
         bool, typer.Option(help="Fetch referenced fills and check executed volumes and timestamps")
     ] = False,
+    check_ledgers: Annotated[
+        bool, typer.Option(help="Check fill principal and ledger fees; includes fill checks")
+    ] = False,
 ) -> None:
     """Read specific orders, including closed, canceled, and expired orders."""
     from kaupo.venues.xstocks_expiry_check import check_expiry_request, check_order_expiry
@@ -272,6 +275,7 @@ def xstocks_order_status(
     settings = get_settings()
     if not settings.kraken_api_key or not settings.kraken_api_secret:
         raise typer.BadParameter("Kraken API credentials are missing")
+    check_fills = check_fills or check_ledgers
     started_at = datetime.now(UTC)
     try:
         orders = asyncio.run(
@@ -300,6 +304,33 @@ def xstocks_order_status(
             fill_time_check = check_order_fill_times(orders, fills, expected_expiry=expected_expiry)
         except ValueError as exc:
             err_console.print(f"Order-fill read failed: {exc}", markup=False)
+            raise typer.Exit(1) from None
+    ledger_evidence = None
+    if check_ledgers:
+        from kaupo.data.xstocks import XStocksClient
+        from kaupo.data.xstocks_identity import map_account_identities
+        from kaupo.venues.xstocks_ledger_check import check_fill_ledgers
+        from kaupo.venues.xstocks_ledgers import read_fill_ledgers
+
+        async def _ledger_evidence() -> dict[str, Any]:
+            ledgers = await read_fill_ledgers(
+                settings.kraken_api_key, settings.kraken_api_secret, units=units, fills=fills
+            )
+            metadata = {}
+            if fills:
+                async with XStocksClient() as public:
+                    metadata = await public.identity_metadata()
+            identities = map_account_identities(metadata, fills, ledgers)
+            return {
+                "ledgers": ledgers,
+                "identities": identities,
+                "ledger_check": check_fill_ledgers(fills, ledgers, identities),
+            }
+
+        try:
+            ledger_evidence = asyncio.run(_ledger_evidence())
+        except ValueError as exc:
+            err_console.print(f"Order-ledger read failed: {exc}", markup=False)
             raise typer.Exit(1) from None
     completed_at = datetime.now(UTC) if check_fills else order_status_completed_at
     expiry_check = (
@@ -332,6 +363,7 @@ def xstocks_order_status(
                     if check_fills
                     else {}
                 ),
+                **(ledger_evidence or {}),
                 **({"expiry_check": expiry_check} if expiry_check is not None else {}),
             }
         )
@@ -339,7 +371,12 @@ def xstocks_order_status(
 
     if any(
         report is not None and report["status"] == "needs_review"
-        for report in (expiry_check, fill_check, fill_time_check)
+        for report in (
+            expiry_check,
+            fill_check,
+            fill_time_check,
+            ledger_evidence["ledger_check"] if ledger_evidence else None,
+        )
     ):
         raise typer.Exit(1)
 
