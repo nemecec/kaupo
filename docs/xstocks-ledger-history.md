@@ -35,6 +35,31 @@ The optional `--check-balance-links` applies the [balance-link checker](xstocks-
 The report uses scope `asset_window`. Gaps, tied timestamps, unsupported numbers, or insufficient entries produce exit code 1 with the report.
 The first balance remains an unverified anchor. Empty windows report `no_ledgers` and exit with code 0.
 
+## Assert opening and closing balances
+
+Supply both balances to check the window against independent records:
+
+```sh
+kaupo run xstocks-ledgers --asset AAPLx --asset-class tokenized_asset --units base --start 1792886400 --end 1792972800 --opening-balance 10 --closing-balance 11.1
+```
+
+The opening balance must describe the account immediately after the exclusive start timestamp.
+The closing balance must describe the account at the inclusive end timestamp, after all entries at that time.
+Both values must use the requested asset, asset class, default wallet, and unit mode.
+Use historical records for these times. A current Balance response does not establish a historical boundary.
+Both options are required together. Invalid or unsupported decimal values fail before the account request.
+
+The `balance_window` report labels its anchors as `operator` evidence and preserves both supplied values.
+It checks the first entry against `opening + amount - fee`, each internal link, and the last balance against the supplied closing balance.
+A single entry can pass both boundary checks. An empty window requires equal opening and closing balances.
+These checks use decimal arithmetic and include signed fees and rebates.
+Gaps, tied timestamps, or unsupported numbers produce `needs_review` and exit code 1.
+A successful report uses `balances_match`; it does not verify the source of the supplied anchors.
+Offsetting omitted activity can still pass arithmetic checks. Matching balances do not prove complete history.
+
+This option does not require `--check-balance-links`.
+If both checks are requested, each report retains its own meaning; either `needs_review` result causes exit code 1.
+
 This request covers the returned activity for one asset window, not all account history.
 Matching links do not prove current account balances, account eligibility, or correct corporate-action treatment.
 The command does not compare its last balance with the Balance endpoint or write database records.
