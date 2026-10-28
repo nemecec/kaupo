@@ -134,3 +134,8 @@ An order without executions produces empty fills and ledgers, with `no_fills` le
 That case does not need a public metadata request and does not establish reconciliation readiness.
 This command reads only entries referenced by the selected orders' fills. It does not establish complete account balance continuity.
 Order, fill, ledger, and metadata requests are separate observations. Corporate actions and historical aliases still require separate treatment.
+
+Ledger mapping requires both the exact asset ID and the asset class declared in public metadata.
+A known ID with a different or missing class stays unmapped and appears in `identities.ledger_class_mismatches`.
+Such an entry makes its fill unresolved, including when the entry contains only a fee.
+Missing quote-class metadata or conflicting classes for the same raw asset ID cause an error; no class is assumed.
