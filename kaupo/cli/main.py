@@ -311,6 +311,7 @@ def xstocks_order_status(
         from kaupo.data.xstocks_identity import map_account_identities
         from kaupo.venues.xstocks_ledger_check import check_fill_ledgers
         from kaupo.venues.xstocks_ledgers import read_fill_ledgers
+        from kaupo.venues.xstocks_order_identity import check_order_fill_identities
 
         async def _ledger_evidence() -> dict[str, Any]:
             ledgers = await read_fill_ledgers(
@@ -325,6 +326,7 @@ def xstocks_order_status(
                 "ledgers": ledgers,
                 "identities": identities,
                 "ledger_check": check_fill_ledgers(fills, ledgers, identities),
+                "order_identity_check": check_order_fill_identities(orders, fills, metadata),
             }
 
         try:
@@ -376,6 +378,7 @@ def xstocks_order_status(
             fill_check,
             fill_time_check,
             ledger_evidence["ledger_check"] if ledger_evidence else None,
+            ledger_evidence["order_identity_check"] if ledger_evidence else None,
         )
     ):
         raise typer.Exit(1)
