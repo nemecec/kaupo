@@ -13,6 +13,7 @@ from kaupo.venues import xstocks_fills, xstocks_ledgers
 
 ROW = {
     "aclass_base": "tokenized_asset",
+    "aclass_quote": "currency",
     "execution_venue": "international",
     "altname": "AAPLxUSD",
     "wsname": "AAPLx/USD",
@@ -23,9 +24,10 @@ ROWS = {"AAPLSPVUSD": ROW}
 
 
 def test_exact_aliases_and_assets_only():
-    pairs, assets = identity_maps({**ROWS, "AAPLx/USD": deepcopy(ROW)})
+    pairs, assets, classes = identity_maps({**ROWS, "AAPLx/USD": deepcopy(ROW)})
     assert pairs == {"AAPLSPVUSD": "AAPLX/USD", "AAPLxUSD": "AAPLX/USD", "AAPLx/USD": "AAPLX/USD"}
     assert assets == {"AAPLx": "AAPLX", "ZUSD": "USD"}
+    assert classes == {"AAPLx": "tokenized_asset", "ZUSD": "currency"}
     assert "AAPLXUSD" not in pairs
     assert "AAPL" not in assets
     assert "AAPL.T" not in assets
@@ -34,13 +36,18 @@ def test_exact_aliases_and_assets_only():
 
 def test_mapping_keeps_unknowns_and_input_unchanged():
     fills = {"a": {"pair": "AAPLSPVUSD"}, "b": {"pair": "XBTUSD"}, "c": {"pair": "AAPLXUSD"}}
-    ledgers = {"x": {"asset": "AAPLx"}, "y": {"asset": "ZUSD"}, "z": {"asset": "USD.F"}}
+    ledgers = {
+        "x": {"asset": "AAPLx", "aclass": "tokenized_asset"},
+        "y": {"asset": "ZUSD", "aclass": "currency"},
+        "z": {"asset": "USD.F"},
+    }
     before = deepcopy((fills, ledgers))
     assert map_account_identities(ROWS, fills, ledgers) == {
         "fill_pairs": {"a": "AAPLX/USD"},
         "ledger_assets": {"x": "AAPLX", "y": "USD"},
         "unmapped_pairs": ["AAPLXUSD", "XBTUSD"],
         "unmapped_assets": ["USD.F"],
+        "ledger_class_mismatches": {},
     }
     assert (fills, ledgers) == before
     assert map_account_identities({}, {}, None) == {
@@ -48,6 +55,7 @@ def test_mapping_keeps_unknowns_and_input_unchanged():
         "ledger_assets": {},
         "unmapped_pairs": [],
         "unmapped_assets": [],
+        "ledger_class_mismatches": {},
     }
 
 
@@ -85,9 +93,13 @@ def test_other_classes_and_venues_are_excluded():
     assert identity_maps(
         {
             "crypto": {"aclass_base": "currency"},
-            "other": {"aclass_base": "tokenized_asset", "execution_venue": "other"},
+            "other": {
+                "aclass_base": "tokenized_asset",
+                "aclass_quote": "currency",
+                "execution_venue": "other",
+            },
         }
-    ) == ({}, {})
+    ) == ({}, {}, {})
 
 
 async def test_public_metadata_request_preserves_internal_ids():
@@ -120,7 +132,7 @@ def test_cli_optional_mapping(monkeypatch, map_assets, include_ledgers, fail):
     import json
 
     fills = {"f": {"pair": "AAPLxUSD"}}
-    ledger_entries = {"l": {"asset": "AAPLx"}}
+    ledger_entries = {"l": {"asset": "AAPLx", "aclass": "tokenized_asset"}}
     monkeypatch.setattr(xstocks_fills, "read_fills", AsyncMock(return_value=fills))
     monkeypatch.setattr(xstocks_ledgers, "read_fill_ledgers", AsyncMock(return_value=ledger_entries))
     metadata = AsyncMock(return_value=ROWS, side_effect=ValueError("Bad metadata") if fail else None)
@@ -149,3 +161,31 @@ def test_cli_optional_mapping(monkeypatch, map_assets, include_ledgers, fail):
         else:
             assert "identities" not in body
     assert metadata.await_count == int(map_assets)
+
+
+@pytest.mark.parametrize(
+    "asset,aclass,expected",
+    [
+        ("AAPLx", "currency", "tokenized_asset"),
+        ("AAPLx", None, "tokenized_asset"),
+        ("ZUSD", "tokenized_asset", "currency"),
+    ],
+)
+def test_known_id_with_wrong_or_missing_class_stays_unmapped(asset, aclass, expected):
+    report = map_account_identities(ROWS, {}, {"l": {"asset": asset, "aclass": aclass}})
+    assert report["ledger_assets"] == {}
+    assert report["unmapped_assets"] == [asset]
+    assert report["ledger_class_mismatches"] == {
+        "l": {"asset": asset, "expected_class": expected, "actual_class": aclass}
+    }
+
+
+@pytest.mark.parametrize("value", [None, "", "bad class", 1])
+def test_missing_or_invalid_quote_class_is_not_assumed(value):
+    with pytest.raises(ValueError, match="Missing Kraken pair or asset identity"):
+        identity_maps({"key": {**ROW, "aclass_quote": value}})
+
+
+def test_same_raw_asset_with_conflicting_classes_rejects_metadata():
+    with pytest.raises(ValueError, match="Conflicting"):
+        identity_maps({**ROWS, "other": {**ROW, "aclass_quote": "tokenized_asset"}})

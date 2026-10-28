@@ -20,8 +20,22 @@ FILL = {
     "ledgers": ["base", "quote"],
 }
 LEDGERS = {
-    "base": {"refid": "trade", "type": "trade", "asset": "AAPLx", "amount": "1.25", "fee": "0"},
-    "quote": {"refid": "trade", "type": "trade", "asset": "ZUSD", "amount": "-125", "fee": "-0.025"},
+    "base": {
+        "refid": "trade",
+        "type": "trade",
+        "asset": "AAPLx",
+        "aclass": "tokenized_asset",
+        "amount": "1.25",
+        "fee": "0",
+    },
+    "quote": {
+        "refid": "trade",
+        "type": "trade",
+        "asset": "ZUSD",
+        "aclass": "currency",
+        "amount": "-125",
+        "fee": "-0.025",
+    },
 }
 IDENTITIES = {"fill_pairs": {"trade": "AAPLX/USD"}, "ledger_assets": {"base": "AAPLX", "quote": "USD"}}
 
@@ -154,6 +168,7 @@ def test_cli_check_implies_reads_and_mapping_and_sets_exit(monkeypatch, volume, 
             return_value={
                 "AAPLSPVUSD": {
                     "aclass_base": "tokenized_asset",
+                    "aclass_quote": "currency",
                     "altname": "AAPLxUSD",
                     "wsname": "AAPLx/USD",
                     "base": "AAPLx",

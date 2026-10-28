@@ -34,13 +34,28 @@ FILL = {
     "ledgers": ["base", "quote", "fee"],
 }
 LEDGERS = {
-    "base": {"refid": "t1", "type": "trade", "asset": "AAPLx", "amount": "0.5", "fee": "0"},
-    "quote": {"refid": "t1", "type": "trade", "asset": "ZUSD", "amount": "-50", "fee": "-0.1"},
+    "base": {
+        "refid": "t1",
+        "type": "trade",
+        "asset": "AAPLx",
+        "aclass": "tokenized_asset",
+        "amount": "0.5",
+        "fee": "0",
+    },
+    "quote": {
+        "refid": "t1",
+        "type": "trade",
+        "asset": "ZUSD",
+        "aclass": "currency",
+        "amount": "-50",
+        "fee": "-0.1",
+    },
     "fee": {"refid": "t1", "type": "trade", "asset": "KFEE", "amount": "0", "fee": "0.2"},
 }
 METADATA = {
     "AAPLSPVUSD": {
         "aclass_base": "tokenized_asset",
+        "aclass_quote": "currency",
         "altname": "AAPLxUSD",
         "wsname": "AAPLx/USD",
         "base": "AAPLx",
@@ -173,3 +188,22 @@ def test_ledger_fetch_remains_opt_in(readers, args):
     assert "ledgers" not in body and "ledger_check" not in body and "identities" not in body
     readers.ledger.assert_not_awaited()
     readers.metadata.assert_not_awaited()
+
+
+@pytest.mark.parametrize("entry", ["base", "quote"])
+def test_wrong_class_principal_cannot_match(readers, entry):
+    readers.ledger.return_value[entry]["aclass"] = "wrong"
+    result = invoke()
+    assert result.exit_code == 1, result.output
+    body = json.loads(result.stdout)
+    assert entry not in body["identities"]["ledger_assets"]
+    assert body["ledger_check"]["fills"]["t1"]["reason"] == "ledger_asset_class_mismatch"
+
+
+def test_known_id_wrong_class_fee_does_not_become_third_asset_fee(readers):
+    readers.ledger.return_value["fee"].update(asset="AAPLx", aclass="currency")
+    result = invoke()
+    assert result.exit_code == 1, result.output
+    body = json.loads(result.stdout)
+    assert body["ledger_check"]["fills"]["t1"]["reason"] == "ledger_asset_class_mismatch"
+    assert body["identities"]["ledger_class_mismatches"]["fee"]["expected_class"] == "tokenized_asset"

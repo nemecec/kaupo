@@ -62,6 +62,8 @@ def _check_fill(
             raise ValueError("ledger_reference_mismatch")
         if entry.get("type") != "trade" or entry.get("subtype", "") != "":
             raise ValueError("unsupported_ledger_type")
+        if ref in identities.get("ledger_class_mismatches", {}):
+            raise ValueError("ledger_asset_class_mismatch")
         asset = identities["ledger_assets"].get(ref)
         amount, fee = _decimal(entry.get("amount")), _decimal(entry.get("fee"))
         if asset not in amounts:

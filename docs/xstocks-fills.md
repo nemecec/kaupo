@@ -187,3 +187,13 @@ The check does not compare its final balance with the Balance endpoint or write 
 Live xStocks trading remains disabled. No authenticated account request was made during implementation.
 
 Use the [asset-window ledger reader](xstocks-ledger-history.md) to include activity that is not referenced by fills.
+
+### Asset classes in identity mapping
+
+Ledger mapping compares both the raw asset ID and its `aclass` with the corresponding public metadata.
+Base and quote classes come from `aclass_base` and `aclass_quote`; neither is inferred from a symbol.
+See Kraken's [API symbols and tickers](https://support.kraken.com/articles/360000920306-api-symbols-and-tickers).
+A known ID with a different or missing class remains unmapped and appears in `identities.ledger_class_mismatches`.
+The ledger checker reports `ledger_asset_class_mismatch` for that fill, including for fee-only entries.
+Missing quote-class metadata and conflicting classes for one raw asset ID cause an error.
+Unknown asset IDs retain their existing treatment; this check does not establish their identity.
