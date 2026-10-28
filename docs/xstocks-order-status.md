@@ -139,3 +139,16 @@ Ledger mapping requires both the exact asset ID and the asset class declared in 
 A known ID with a different or missing class stays unmapped and appears in `identities.ledger_class_mismatches`.
 Such an entry makes its fill unresolved, including when the entry contains only a fee.
 Missing quote-class metadata or conflicting classes for the same raw asset ID cause an error; no class is assumed.
+
+### Compare order and fill instruments
+
+`--check-ledgers` also adds `order_identity_check`, using the same public metadata response.
+The order description and each referenced fill must map to the same canonical pair through exact metadata aliases.
+For example, different raw spellings can match when both are declared aliases for one instrument.
+The check does not change case, strip suffixes, or infer historical aliases.
+
+The report preserves raw and mapped pairs for the order and its fills.
+Unknown order or fill aliases and different mapped instruments produce `needs_review` and exit code 1.
+Matching volume, timestamps, or ledger principal cannot override an instrument mismatch.
+Empty executions report `no_fills`. A successful comparison uses `pairs_match` with scope `referenced_order_fills`.
+This uses current metadata; it does not establish historical identity after a symbol change or corporate action.

@@ -105,6 +105,7 @@ def test_ledger_flag_implies_fill_checks_and_preserves_asset_fees(readers, units
     assert body["fill_check"]["status"] == "volumes_match"
     assert body["fill_time_check"]["status"] == "times_match"
     assert body["ledger_check"]["status"] == "amounts_match"
+    assert body["order_identity_check"]["status"] == "pairs_match"
     report = body["ledger_check"]["fills"]["t1"]
     assert report["fees_by_asset"] == {"AAPLX": "0", "USD": "-0.1"}
     assert report["other_fees_by_asset_id"] == {"KFEE": "0.2"}
@@ -175,6 +176,7 @@ def test_empty_execution_has_no_fills_or_metadata_claim(readers):
     assert result.exit_code == 0, result.output
     body = json.loads(result.stdout)
     assert body["ledger_check"]["status"] == "no_fills"
+    assert body["order_identity_check"]["status"] == "no_fills"
     assert body["fill_time_check"]["status"] == "no_fills"
     assert body["ledgers"] == {} and body["fills"] == {}
     readers.metadata.assert_not_awaited()
@@ -207,3 +209,20 @@ def test_known_id_wrong_class_fee_does_not_become_third_asset_fee(readers):
     body = json.loads(result.stdout)
     assert body["ledger_check"]["fills"]["t1"]["reason"] == "ledger_asset_class_mismatch"
     assert body["identities"]["ledger_class_mismatches"]["fee"]["expected_class"] == "tokenized_asset"
+
+
+def test_order_pair_mismatch_is_not_hidden_by_matching_fill_ledgers(readers):
+    readers.order.return_value["o1"]["descr"]["pair"] = "TSLAxUSD"
+    readers.metadata.return_value["TSLASPVUSD"] = {
+        **readers.metadata.return_value["AAPLSPVUSD"],
+        "base": "TSLAx",
+        "altname": "TSLAxUSD",
+        "wsname": "TSLAx/USD",
+    }
+    result = invoke()
+    assert result.exit_code == 1, result.output
+    body = json.loads(result.stdout)
+    assert body["ledger_check"]["status"] == "amounts_match"
+    assert body["fill_check"]["status"] == "volumes_match"
+    assert body["order_identity_check"]["status"] == "needs_review"
+    assert body["order_identity_check"]["orders"]["o1"]["fills"]["t1"]["reason"] == "order_fill_pair_mismatch"
