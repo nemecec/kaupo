@@ -34,3 +34,6 @@ It does not enable xStocks live trading. Explicit [trading schedules](trading-sc
 Compatible restarts restore [risk checkpoints](risk-resume.md). xStocks routing remains separate work. See the [support status](non-24-7-status.md).
 
 Validation uses fake exchange calls and the installed ccxt parameter builder. No authenticated order was submitted to validate this change.
+
+The read-only [order-status command](xstocks-order-status.md#compare-an-intended-expiry) can compare an existing order with its intended deadline.
+Its report checks returned timestamps and status; it does not submit a test order or validate complete fill reconciliation.

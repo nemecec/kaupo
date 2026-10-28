@@ -252,12 +252,18 @@ def xstocks_open_orders(
 def xstocks_order_status(
     units: Annotated[str, typer.Option(help="Required xStocks units: rebased or base")],
     order_id: Annotated[list[str], typer.Option(help="Exact Kraken order ID; repeat for up to 50 IDs")],
+    expected_expiry: Annotated[
+        int | None, typer.Option(help="Assert an absolute Unix expiry for one order")
+    ] = None,
 ) -> None:
     """Read specific orders, including closed, canceled, and expired orders."""
+    from kaupo.venues.xstocks_expiry_check import check_expiry_request, check_order_expiry
     from kaupo.venues.xstocks_order_status import check_order_request, read_order_status
 
     try:
         check_order_request(order_id, units)
+        if expected_expiry is not None:
+            check_expiry_request(order_id, expected_expiry)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from None
     settings = get_settings()
@@ -273,6 +279,17 @@ def xstocks_order_status(
     except ValueError as exc:
         err_console.print(f"Order-status read failed: {exc}", markup=False)
         raise typer.Exit(1) from None
+    completed_at = datetime.now(UTC)
+    expiry_check = (
+        check_order_expiry(
+            orders[order_id[0]],
+            expected_expiry=expected_expiry,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+        if expected_expiry is not None
+        else None
+    )
     typer.echo(
         json.dumps(
             {
@@ -280,12 +297,16 @@ def xstocks_order_status(
                 "wallet": "default",
                 "rebase_multiplier": units,
                 "started_at": started_at.isoformat(),
-                "completed_at": datetime.now(UTC).isoformat(),
+                "completed_at": completed_at.isoformat(),
                 "requested_order_ids": order_id,
                 "orders": orders,
+                **({"expiry_check": expiry_check} if expiry_check is not None else {}),
             }
         )
     )
+
+    if expiry_check is not None and expiry_check["status"] == "needs_review":
+        raise typer.Exit(1)
 
 
 @run_app.command(name="xstocks-fills")
