@@ -1378,6 +1378,16 @@ def run_shadow_cmd(
             help="use the flags as given; do not read or seed the settings table (static side runs)"
         ),
     ] = False,
+    asset_class: Annotated[str, typer.Option(help="currency or tokenized_asset")] = "currency",
+    trading_schedule: Annotated[
+        Path | None, typer.Option(help="JSON file containing a TradingSchedule")
+    ] = None,
+    maker_fee_bps: Annotated[
+        float | None, typer.Option(help="Maker fee in basis points; negative values are rebates")
+    ] = None,
+    taker_fee_bps: Annotated[
+        float | None, typer.Option(help="Taker fee in basis points; negative values are rebates")
+    ] = None,
     strategies_dir: StrategiesDirOpt = None,
     verbose: VerboseOpt = False,
 ) -> None:
@@ -1389,6 +1399,25 @@ def run_shadow_cmd(
     pair only.
     """
     _setup_logging(verbose)
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+    from math import isfinite
+    from typing import cast
+
+    from kaupo.config import default_maker_bps, default_taker_bps
+    from kaupo.data.market_data import AssetClass, CandleClient
+    from kaupo.data.xstocks import XStocksClient
+
+    if asset_class not in ("currency", "tokenized_asset"):
+        raise typer.BadParameter("--asset-class must be currency or tokenized_asset")
+    if asset_class == "tokenized_asset" and not no_config_from_db:
+        raise typer.BadParameter("xStocks shadow runs require --no-config-from-db")
+    schedule = _load_trading_schedule(trading_schedule)
+    maker = default_maker_bps() if maker_fee_bps is None else maker_fee_bps
+    taker = default_taker_bps() if taker_fee_bps is None else taker_fee_bps
+    if not isfinite(maker) or not isfinite(taker):
+        raise typer.BadParameter("Shadow fees must be finite")
+    selected_class = cast(AssetClass, asset_class)
     from kaupo.core.runner import PortfolioShadowRequest, ShadowRequest, run_portfolio_shadow, run_shadow
     from kaupo.data.binance import BinanceClient
     from kaupo.data.kraken import KrakenClient
@@ -1399,6 +1428,15 @@ def run_shadow_cmd(
     directory = strategies_dir or get_settings().strategies_dir
     _ensure_strategies_clean(directory)
     strategies = load_strategies(directory)
+
+    @asynccontextmanager
+    async def _clients() -> AsyncIterator[tuple[CandleClient, BinanceClient | None]]:
+        if selected_class == "tokenized_asset":
+            async with XStocksClient() as xstocks:
+                yield xstocks, None
+        else:
+            async with KrakenClient() as crypto, BinanceClient() as funding:
+                yield crypto, funding
 
     async def _run() -> Any:
         stop = asyncio.Event()
@@ -1431,6 +1469,10 @@ def run_shadow_cmd(
                 raise typer.Exit(1)
             try:
                 portfolio_request = PortfolioShadowRequest(
+                    asset_class=selected_class,
+                    schedule_provider=(lambda: schedule) if schedule is not None else None,
+                    maker_fee_bps=maker,
+                    taker_fee_bps=taker,
                     strategy=strategies[strategy],
                     params=_parse_params(param),
                     pairs=[Pair.parse(p) for p in pairs.split(",")],
@@ -1446,7 +1488,7 @@ def run_shadow_cmd(
             console.print(
                 f"Starting portfolio shadow run: {strategy} on {portfolio_request.pairs} {timeframe}"
             )
-            async with KrakenClient() as client, BinanceClient() as funding_client:
+            async with _clients() as (client, funding_client):
                 return await run_portfolio_shadow(
                     portfolio_request, sessionmaker, client, stop=stop, funding_client=funding_client
                 )
@@ -1469,6 +1511,10 @@ def run_shadow_cmd(
             )
             raise typer.Exit(1)
         request = ShadowRequest(
+            asset_class=selected_class,
+            schedule_provider=(lambda: schedule) if schedule is not None else None,
+            maker_fee_bps=maker,
+            taker_fee_bps=taker,
             strategy=strategies[resolved.strategy],
             params=_parse_params(param),
             pair=Pair.parse(resolved.pair),
@@ -1479,7 +1525,7 @@ def run_shadow_cmd(
             funding_refresh_seconds=get_settings().funding_refresh_seconds,
         )
         console.print(f"Starting shadow run: {resolved.strategy} on {resolved.pair} {resolved.timeframe}")
-        async with KrakenClient() as client, BinanceClient() as funding_client:
+        async with _clients() as (client, funding_client):
             return await run_shadow(request, sessionmaker, client, stop=stop, funding_client=funding_client)
 
     result = asyncio.run(_run())
