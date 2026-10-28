@@ -23,7 +23,7 @@ Invalid requests fail before network access. API errors and transport failures p
 
 A missing order is not evidence that it expired, filled, or was canceled.
 An expired or canceled order can have partial fills. Inspect its executed volume and returned trade IDs.
-Trade references are preserved, but this command does not fetch or reconcile those fills.
+Trade references are preserved. The optional fill check below can fetch those references and compare their volumes.
 The exchange status and timestamps are inspection evidence; the command does not assert that an expiry deadline was enforced correctly.
 Results do not form an atomic account snapshot. Active orders can change after the request.
 
@@ -61,3 +61,30 @@ The checker applies no assumed grace period. Even a fractional late timestamp re
 Observation times come from the local host; exchange timestamps come from Kraken. Clock differences can affect the result.
 A matching report does not establish trade execution times, complete fills, or correct account reconciliation.
 Without this option, the command retains its existing inspection output and exit behavior.
+
+## Check referenced fills
+
+To fetch an order's reported trade references and compare executed volumes, add `--check-fills`:
+
+```sh
+kaupo run xstocks-order-status --units base --order-id OEXAMPLE-ORDER1-ABCDEF --check-fills
+```
+
+The command calls [Query Trades Info](https://docs.kraken.com/api-reference/account-data/query-trades-info) in batches of at most 20 IDs.
+It uses the same unit mode and default wallet as the order request.
+The key needs permission to query closed orders and trades.
+Kaupo limits the lookup to 2,000 trade IDs across the requested orders.
+Each trade must belong to its referencing order and have the same side.
+Missing or additional trade IDs, shared references, or failed batches cause an error without success JSON.
+An order with nonzero executed volume must have trade references. A zero-execution order can have none.
+
+Output adds raw `fills`, a `fill_check` report, and the completion time of the initial order request.
+Each order's report compares the sum of referenced fill volumes with its reported `vol_exec`, using exact decimal arithmetic.
+Mismatches and unsupported precision produce `needs_review` and exit code 1 with the evidence.
+A successful report uses `volumes_match` and scope `referenced_order_fills`.
+Fees, costs, symbols, and returned ledger references remain unchanged. The check does not reconcile fees or infer symbol aliases.
+
+Order and fill requests are separate observations. Active orders can change between requests.
+A volume match does not prove complete account history, correct fill timing, or corporate-action treatment.
+The optional expiry check uses the initial order observation interval, excluding time spent fetching fills.
+If both checks are requested, either `needs_review` result causes exit code 1.
