@@ -198,11 +198,19 @@ def test_third_asset_fee_only_entries_preserve_actual_currency(fee, net):
     fill = {**FILL, "ledgers": [*FILL["ledgers"], "credit"]}
     entries = {
         **LEDGERS,
-        "credit": {"refid": "trade", "type": "trade", "asset": "KFEE", "amount": "0", "fee": fee},
+        "credit": {
+            "refid": "trade",
+            "type": "trade",
+            "asset": "KFEE",
+            "aclass": "currency",
+            "amount": "0",
+            "fee": fee,
+        },
     }
     report = check(fill, entries)
     assert report["status"] == "amounts_match"
     row = report["fills"]["trade"]
+    assert row["other_fee_asset_classes"] == {"KFEE": "currency"}
     assert row["other_fees_by_asset_id"] == {"KFEE": fee}
     assert row["other_net_movements_by_asset_id"] == {"KFEE": net}
     assert "KFEE" not in row["fees_by_asset"]
@@ -217,7 +225,14 @@ def test_other_fee_entries_sum_by_exact_id_without_alias_merging():
         ("c", "kfee", "2"),
         ("d", "USD.F", "3"),
     ]:
-        entries[ref] = {"refid": "trade", "type": "trade", "asset": asset, "amount": "0", "fee": fee}
+        entries[ref] = {
+            "refid": "trade",
+            "type": "trade",
+            "asset": asset,
+            "aclass": "currency",
+            "amount": "0",
+            "fee": fee,
+        }
     fill = {**FILL, "ledgers": list(entries)}
     row = check(fill, entries)["fills"]["trade"]
     assert row["other_fees_by_asset_id"] == {"KFEE": "1.00000000000000000000", "kfee": "2", "USD.F": "3"}
@@ -237,7 +252,14 @@ def test_other_fee_entries_sum_by_exact_id_without_alias_merging():
     ],
 )
 def test_invalid_other_fee_entries_remain_unresolved(field, value, reason):
-    entry = {"refid": "trade", "type": "trade", "asset": "KFEE", "amount": "0", "fee": "1"}
+    entry = {
+        "refid": "trade",
+        "type": "trade",
+        "asset": "KFEE",
+        "aclass": "currency",
+        "amount": "0",
+        "fee": "1",
+    }
     entry[field] = value
     report = check({**FILL, "ledgers": [*FILL["ledgers"], "credit"]}, {**LEDGERS, "credit": entry})
     assert report["status"] == "needs_review"
@@ -248,7 +270,14 @@ def test_fee_only_entry_cannot_replace_missing_principal_side():
     fill = {**FILL, "ledgers": ["base", "credit"]}
     entries = {
         "base": LEDGERS["base"],
-        "credit": {"refid": "trade", "type": "trade", "asset": "KFEE", "amount": "0", "fee": "1"},
+        "credit": {
+            "refid": "trade",
+            "type": "trade",
+            "asset": "KFEE",
+            "aclass": "currency",
+            "amount": "0",
+            "fee": "1",
+        },
     }
     assert check(fill, entries)["fills"]["trade"]["reason"] == "missing_base_or_quote_entry"
 
@@ -257,8 +286,49 @@ def test_mapped_third_asset_still_keeps_exchange_id():
     fill = {**FILL, "ledgers": [*FILL["ledgers"], "other"]}
     entries = {
         **LEDGERS,
-        "other": {"refid": "trade", "type": "trade", "asset": "ZEUR", "amount": "0", "fee": "1"},
+        "other": {
+            "refid": "trade",
+            "type": "trade",
+            "asset": "ZEUR",
+            "aclass": "currency",
+            "amount": "0",
+            "fee": "1",
+        },
     }
     identities = deepcopy(IDENTITIES)
     identities["ledger_assets"]["other"] = "EUR"
     assert check(fill, entries, identities)["fills"]["trade"]["other_fees_by_asset_id"] == {"ZEUR": "1"}
+
+
+@pytest.mark.parametrize("asset_class", [None, "", "currency bad", 1])
+def test_fee_class_must_be_explicit_and_valid(asset_class):
+    entry = {
+        "refid": "trade",
+        "type": "trade",
+        "asset": "KFEE",
+        "aclass": asset_class,
+        "amount": "0",
+        "fee": "1",
+    }
+    report = check({**FILL, "ledgers": [*FILL["ledgers"], "credit"]}, {**LEDGERS, "credit": entry})
+    assert report["status"] == "needs_review"
+    assert report["fills"]["trade"]["reason"] == "invalid_fee_asset_class"
+
+
+def test_fees_in_different_classes_cannot_cancel_each_other():
+    entries = deepcopy(LEDGERS)
+    for ref, asset_class, fee in [("a", "currency", "1"), ("b", "tokenized_asset", "-1")]:
+        entries[ref] = {
+            "refid": "trade",
+            "type": "trade",
+            "asset": "KFEE",
+            "aclass": asset_class,
+            "amount": "0",
+            "fee": fee,
+        }
+    report = check({**FILL, "ledgers": list(entries)}, entries)
+    assert report["status"] == "needs_review"
+    assert report["fills"]["trade"] == {
+        "status": "unresolved",
+        "reason": "conflicting_fee_asset_classes",
+    }

@@ -53,6 +53,7 @@ def _check_fill(
     amounts = {pair.base: Decimal(0), pair.quote: Decimal(0)}
     fees = {pair.base: Decimal(0), pair.quote: Decimal(0)}
     other_fees: dict[str, Decimal] = {}
+    other_fee_classes: dict[str, str] = {}
     seen: set[str] = set()
     for ref in references:
         entry = ledgers.get(ref)
@@ -72,6 +73,12 @@ def _check_fill(
             asset_id = entry.get("asset")
             if not isinstance(asset_id, str) or not asset_id or any(c.isspace() for c in asset_id):
                 raise ValueError("invalid_fee_asset_id")
+            asset_class = entry.get("aclass")
+            if not isinstance(asset_class, str) or not asset_class or any(c.isspace() for c in asset_class):
+                raise ValueError("invalid_fee_asset_class")
+            if asset_id in other_fee_classes and other_fee_classes[asset_id] != asset_class:
+                raise ValueError("conflicting_fee_asset_classes")
+            other_fee_classes[asset_id] = asset_class
             other_fees[asset_id] = other_fees.get(asset_id, Decimal(0)) + fee
             continue
         seen.add(asset)
@@ -88,6 +95,7 @@ def _check_fill(
         "ledger_amounts": {asset: str(value) for asset, value in amounts.items()},
         "fees_by_asset": {asset: str(value) for asset, value in fees.items()},
         "net_movements": {asset: str(amounts[asset] - fees[asset]) for asset in amounts},
+        "other_fee_asset_classes": dict(sorted(other_fee_classes.items())),
         "other_fees_by_asset_id": {asset: str(fee) for asset, fee in sorted(other_fees.items())},
         "other_net_movements_by_asset_id": {asset: str(-fee) for asset, fee in sorted(other_fees.items())},
     }
