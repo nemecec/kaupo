@@ -198,3 +198,9 @@ A known ID with a different or missing class remains unmapped and appears in `id
 The ledger checker reports `ledger_asset_class_mismatch` for that fill, including for fee-only entries.
 Missing quote-class metadata and conflicting classes for one raw asset ID cause an error.
 Unknown asset IDs retain their existing treatment; this check does not establish their identity.
+
+Fee-only entries also require an explicit, nonblank asset class.
+The report preserves each class in `other_fee_asset_classes`, keyed by raw asset ID.
+Entries with the same ID and class can sum, including signed rebates.
+Conflicting classes for one fee asset ID make the fill unresolved with `conflicting_fee_asset_classes`.
+They cannot cancel each other out or produce a principal match.

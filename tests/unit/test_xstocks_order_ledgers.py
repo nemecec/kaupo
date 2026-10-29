@@ -50,7 +50,14 @@ LEDGERS = {
         "amount": "-50",
         "fee": "-0.1",
     },
-    "fee": {"refid": "t1", "type": "trade", "asset": "KFEE", "amount": "0", "fee": "0.2"},
+    "fee": {
+        "refid": "t1",
+        "type": "trade",
+        "asset": "KFEE",
+        "aclass": "currency",
+        "amount": "0",
+        "fee": "0.2",
+    },
 }
 METADATA = {
     "AAPLSPVUSD": {
@@ -226,3 +233,20 @@ def test_order_pair_mismatch_is_not_hidden_by_matching_fill_ledgers(readers):
     assert body["fill_check"]["status"] == "volumes_match"
     assert body["order_identity_check"]["status"] == "needs_review"
     assert body["order_identity_check"]["orders"]["o1"]["fills"]["t1"]["reason"] == "order_fill_pair_mismatch"
+
+
+def test_conflicting_fee_classes_require_review(readers):
+    readers.fill.return_value["t1"]["ledgers"].append("rebate")
+    readers.ledger.return_value["rebate"] = {
+        **readers.ledger.return_value["fee"],
+        "aclass": "tokenized_asset",
+        "fee": "-0.2",
+    }
+    result = invoke()
+    assert result.exit_code == 1, result.output
+    body = json.loads(result.stdout)
+    assert body["ledger_check"]["status"] == "needs_review"
+    assert body["ledger_check"]["fills"]["t1"] == {
+        "status": "unresolved",
+        "reason": "conflicting_fee_asset_classes",
+    }
