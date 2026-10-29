@@ -162,7 +162,8 @@ Changing `asset_class` restarts the assignment with a new ledger and risk identi
 An omitted or null `asset_class` in an update preserves the stored class.
 The run configuration records the class. Rolling reports reject comparisons against a chain with a different class.
 
-This routing applies to supervised shadow assignments. The standalone `kaupo run shadow` command retains crypto routing.
+Supervised assignments use this routing through `asset_class`.
+For standalone runs, use the explicit options in [Start a standalone shadow run](#start-a-standalone-shadow-run).
 The assignment API and supervisor reject xStocks live mode. Authenticated xStocks orders remain unsupported.
 
 ## Trading readiness
@@ -194,3 +195,31 @@ For read-only account evidence, use the [balance inspection command](xstocks-bal
 Use [open-order inspection](xstocks-open-orders.md) to read resting orders with explicit xStocks units.
 
 Use [fill-history inspection](xstocks-fills.md) to read authenticated trades within an explicit time window.
+
+## Start a standalone shadow run
+
+Use explicit static configuration for an xStocks side run:
+
+```sh
+uv run kaupo run shadow --no-config-from-db --asset-class tokenized_asset \
+  --strategy regime-switch --pair AAPLX/USD --timeframe 1h \
+  --trading-schedule ./xstocks-schedule.json --maker-fee-bps=-2 --taker-fee-bps=10
+```
+
+The fee values above illustrate signed basis points. Set them to the rates you intend to simulate.
+Without fee overrides, the command retains the configured default rates; it does not infer xStocks fees.
+The schedule file contains a [TradingSchedule](trading-schedules.md), without an outer `trading_schedule` key.
+Maintain the actual venue hours and date overrides. Without a schedule, the existing 24/7 assumptions apply to diagnostics.
+
+For a portfolio strategy, replace `--pair` with a comma-separated `--pairs` universe.
+Use a schedule that covers every instrument in that universe.
+Both paths use public xStocks discovery, warm-up, and polling. The runner validates every requested pair.
+Neither path constructs a Binance funding client.
+
+xStocks requires `--no-config-from-db` because shared instance settings do not contain an asset-class field.
+This prevents stored crypto strategy or pair settings from overriding the explicit xStocks configuration.
+The default `--asset-class currency` retains existing crypto routing and database-backed settings behavior.
+Schedule and fee options are also available for crypto shadow runs.
+
+Shadow runs use virtual money but persist their candles, run records, and simulated activity to the configured database.
+This command does not enable live xStocks trading or deploy a supervised assignment.
